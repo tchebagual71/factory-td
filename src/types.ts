@@ -6,7 +6,7 @@ export const DX = [1, 0, -1, 0];
 export const DY = [0, 1, 0, -1];
 
 export type ItemType = 'ore' | 'ammo' | 'shell';
-export type BuildingType = 'belt' | 'splitter' | 'miner' | 'press' | 'forge' | 'tower' | 'cannon';
+export type BuildingType = 'belt' | 'splitter' | 'tunnel' | 'miner' | 'press' | 'forge' | 'tower' | 'cannon';
 
 export interface ItemEnt {
   type: ItemType;
@@ -38,11 +38,17 @@ export interface Building {
   ammo: number;
   /** tower: seconds until next shot allowed */
   cooldown: number;
+  /** tower: upgrade mark (1-3) */
+  mk: number;
+  /** total money sunk into this building (base cost + upgrades) — sell refunds half */
+  invested: number;
   barrel?: Phaser.GameObjects.Image;
   ammoBar?: Phaser.GameObjects.Rectangle;
+  mkPips?: Phaser.GameObjects.Rectangle[];
 }
 
 export interface Enemy {
+  kind: 'normal' | 'swift' | 'armored' | 'boss';
   x: number;
   y: number;
   hp: number;

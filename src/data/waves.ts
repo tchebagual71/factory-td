@@ -1,4 +1,4 @@
-export type WaveKind = 'normal' | 'swift' | 'boss';
+export type WaveKind = 'normal' | 'swift' | 'armored' | 'boss';
 
 export interface WaveDef {
   kind: WaveKind;
@@ -12,7 +12,8 @@ export interface WaveDef {
 
 /**
  * Wave rhythm: every 5th is a boss wave (few, slow, tanky, 5-life leaks),
- * every 3rd otherwise is a swift wave (fast, fragile, numerous).
+ * every 3rd otherwise is a swift wave (fast, fragile, numerous), and from
+ * wave 6 the remaining even waves are armored (resist bullets, not shells).
  */
 export function waveDef(n: number): WaveDef {
   const baseHp = Math.round(25 * Math.pow(1.22, n - 1));
@@ -39,6 +40,17 @@ export function waveDef(n: number): WaveDef {
       leak: 1,
     };
   }
+  if (n >= 6 && n % 2 === 0) {
+    return {
+      kind: 'armored',
+      count: Math.max(4, Math.round(baseCount * 0.8)),
+      hp: Math.round(baseHp * 1.35),
+      speed: Math.min(110, Math.round((52 + 2 * n) * 0.85)),
+      interval: Math.max(0.5, 1.1 - 0.02 * n),
+      bounty: Math.round((5 + n) * 1.5),
+      leak: 2,
+    };
+  }
   return {
     kind: 'normal',
     count: baseCount,
@@ -53,8 +65,15 @@ export function waveDef(n: number): WaveDef {
 export const WAVE_KIND_LABEL: Record<WaveKind, string> = {
   normal: 'raider',
   swift: 'SWIFT',
+  armored: 'ARMORED',
   boss: 'BOSS',
 };
+
+/** Damage multiplier for a hit of `source` type against an enemy kind. */
+export function resistMult(kind: WaveKind, source: 'ore' | 'ammo' | 'shell'): number {
+  if (kind === 'armored' && source === 'ammo') return 0.25;
+  return 1;
+}
 
 export function waveClearBonus(n: number): number {
   return 30 + 10 * n;

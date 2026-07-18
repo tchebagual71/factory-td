@@ -95,6 +95,9 @@ src/
   - Press: 1 ore → 1 ammo → **Gun Tower** (fast, single-target)
   - Forge: 2 ore → 1 shell → **Cannon** (slow, splash damage, multi-kill money bonus at 3+ kills)
 - **Splitter**: belt node that round-robins items between straight/left/right outputs (skipping blocked ones); merging needs no special building — any belts pointing into the same cell merge
+- **Tunnel**: items dive underground and surface at the next tunnel with the same facing within 4 tiles (rendered at low alpha in transit); crosses the enemy path, other belts, anything. An unpaired tunnel degrades to plain-belt behavior
+- **Tower upgrades**: click a tower → upgrade panel. Each Mk costs money + the tower's *full loaded magazine* — the factory arms the upgrade. Multipliers live in `effStats()`; combat always reads effective stats, never `TOWERS` directly
+- **Resistances**: armored enemies take 25% damage from bullets, 100% from shells (`resistMult`) — the wave preview + tower mix read is the core strategic decision
 - Strategic intent: guns are cheap sustained DPS for bosses/normals; cannons counter swift swarms at choke points but their shells cost 2× ore — ore allocation between press and forge lines is the mid-game decision
 - Balance intent: one miner+press line sustains roughly *half* a continuously-firing gun tower — players must parallelize production, and between-wave downtime refills magazines
 
@@ -114,11 +117,23 @@ src/
 
 Numbers live in `data/buildings.ts` and `data/waves.ts` — tune there, not inline. Current curve: enemy HP ×1.22/wave, count 4+2n; boss waves (every 5th) are few/slow/tanky with 5-life leaks. When changing tower fire rate or press cycle time, keep the "one supply line ≈ half a tower" pressure.
 
-## Roadmap (not yet built)
+## Release Roadmap (tracked — update status here as each lands)
 
-- More towers (slow/freeze, laser with power-based supply) and deeper recipe chains (second raw resource, smelting step)
-- Underground belts for crossing lanes
-- Tower upgrades purchased with manufactured goods, not money
-- Ore patch depletion + prospecting
-- More enemy behaviors (armored/ammo-resistant, belt-attackers that threaten the factory itself)
-- Real audio, menu scene, save/load, meta-progression
+Ranked for fun/strategy impact. Mark `[x]` with a one-line note when shipped.
+
+1. `[x]` **Tower upgrades paid in manufactured goods** — shipped: click a tower → panel top-right; Mk2/Mk3 cost money + the full loaded magazine (`UPGRADES`/`effStats` in `data/buildings.ts`); sell refunds half of total invested
+2. `[x]` **Armor/resistance enemy types** — shipped: armored waves (even waves from 6 that aren't swift/boss) take 25% bullet damage, full shell damage (`resistMult` in `data/waves.ts`); resisted hits flash steel-gray
+3. `[x]` **Underground belts** — shipped: Tunnel building; items dive to the next tunnel with the same facing within 4 tiles (crosses path/buildings), falls back to belt behavior if unpaired
+4. `[ ]` **Second raw resource + tier-2 recipes** — crystal patches; ore+crystal recipes (piercing rounds etc.) for mid-game ratio planning
+5. `[ ]` **Early-send bonus + wave summary** — cash bonus scaling with how fast the next wave is sent; wave-clear card showing kills, income, ammo fired vs produced
+6. `[ ]` **Logistics overlay** — toggleable view: per-tower ammo uptime %, starved machines flashing, belt throughput legibility
+7. `[ ]` **Slow/coolant tower** — area slow consuming a cheap coolant item; multiplies other towers at choke points
+8. `[ ]` **Ore patch depletion + prospecting** — patches exhaust, new ones revealed for a fee; forces periodic factory re-engineering
+9. `[ ]` **Save/load + best-wave record** — localStorage persistence and personal-best display on game over
+10. `[ ]` **Map variety + presentation pass** — additional path layouts, menu scene, audio mix with volume control
+
+## Deployment
+
+- Live at https://tchebagual71.github.io/factory-td/ (GitHub Pages, serves the `gh-pages` branch)
+- `.github/workflows/deploy.yml` auto-builds and republishes `gh-pages` on every push to `main` — never push `gh-pages` manually
+- `vite.config.ts` uses `base: './'` so the build works under the `/factory-td/` subpath

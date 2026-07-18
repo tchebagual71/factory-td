@@ -54,7 +54,7 @@ export class UIScene extends Phaser.Scene {
       });
       frame.on('pointerout', () => {
         frame.setFillStyle(0x1e2233);
-        this.descText.setText('R rotate · drag paints belts · right-click sells 50%');
+        this.descText.setText('R rotate · drag paints belts · right-click sells 50% · click a tower to upgrade');
       });
       container.add([
         frame,
@@ -67,12 +67,12 @@ export class UIScene extends Phaser.Scene {
       this.paletteButtons.set(info.type, container);
       bx += BW + 6;
     }
-    this.descText = this.add.text(bx + 10, PLAYFIELD_H + 12, 'R rotate · drag paints belts · right-click sells 50%', {
+    this.descText = this.add.text(12, PLAYFIELD_H - 22, 'R rotate · drag paints belts · right-click sells 50% · click a tower to upgrade', {
       ...FONT,
       fontSize: '11px',
-      color: '#8892a6',
-      wordWrap: { width: 180 },
-      lineSpacing: 3,
+      color: '#cdd6e4',
+      stroke: '#000000',
+      strokeThickness: 3,
     });
 
     // ----- wave control (bottom right) -----

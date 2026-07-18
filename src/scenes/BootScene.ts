@@ -36,6 +36,23 @@ export class BootScene extends Phaser.Scene {
     g.generateTexture('splitter', 32, 32);
     g.clear();
 
+    // Tunnel: belt stub diving into a dark portal on the East side
+    g.fillStyle(0x262b38);
+    g.fillRect(0, 0, 32, 32);
+    g.fillStyle(0x323949);
+    g.fillRect(0, 2, 32, 2);
+    g.fillRect(0, 28, 32, 2);
+    g.fillStyle(0x6b7689);
+    g.fillTriangle(4, 10, 11, 16, 4, 22);
+    g.fillStyle(0x11141c);
+    g.fillRoundedRect(14, 5, 18, 22, 6);
+    g.fillStyle(0x000000);
+    g.fillRoundedRect(17, 8, 15, 16, 5);
+    g.fillStyle(0xffd75e);
+    g.fillRect(14, 5, 2, 22);
+    g.generateTexture('tunnel', 32, 32);
+    g.clear();
+
     // Miner: bronze block with drill + output notch on the East side
     g.fillStyle(0x8a5a2b);
     g.fillRoundedRect(2, 2, 28, 28, 5);
@@ -119,6 +136,21 @@ export class BootScene extends Phaser.Scene {
     g.fillStyle(0xffb3b3);
     g.fillCircle(8, 8, 2.5);
     g.generateTexture('enemy', 22, 22);
+    g.clear();
+
+    // Armored: red core inside a steel ring
+    g.fillStyle(0x59677f);
+    g.fillCircle(11, 11, 10);
+    g.fillStyle(0x2b313d);
+    g.fillCircle(11, 11, 7.5);
+    g.fillStyle(0xff5555);
+    g.fillCircle(11, 11, 5);
+    g.fillStyle(0xcdd6e4);
+    g.fillRect(9, 1, 4, 4);
+    g.fillRect(9, 17, 4, 4);
+    g.fillRect(1, 9, 4, 4);
+    g.fillRect(17, 9, 4, 4);
+    g.generateTexture('armored', 22, 22);
     g.clear();
 
     g.fillStyle(0x1f6f8f);

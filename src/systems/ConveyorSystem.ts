@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { BELT_SPEED, TILE } from '../config';
-import { isMachine, isTower, MACHINES, TOWERS } from '../data/buildings';
+import { isMachine, isTower, MACHINES, TOWERS, TUNNEL } from '../data/buildings';
 import { Building, Dir, DX, DY, ItemEnt, ItemType } from '../types';
 import { GridSystem } from './GridSystem';
 
@@ -39,13 +39,15 @@ export class ConveyorSystem {
         it.sprite.y += (dy / d) * step;
         continue;
       }
-      it.sprite.setPosition(tx, ty);
+      it.sprite.setPosition(tx, ty).setAlpha(1);
 
       const host = this.grid.cellAt(it.cx, it.cy)?.building;
       if (!host) continue;
 
       if (host.type === 'belt') {
         this.tryTransfer(i, it, host, host.dir);
+      } else if (host.type === 'tunnel') {
+        if (!this.tryTunnel(it, host)) this.tryTransfer(i, it, host, host.dir);
       } else if (host.type === 'splitter') {
         // offsets relative to facing: 0=straight, 3=left, 1=right
         const offsets = [0, 3, 1];
@@ -61,6 +63,25 @@ export class ConveyorSystem {
     }
   }
 
+  /**
+   * Send the item underground to the next tunnel with the same facing within
+   * reach. Returns true if it dove (or is waiting on a blocked exit ahead).
+   */
+  private tryTunnel(it: ItemEnt, host: Building): boolean {
+    for (let k = 1; k <= TUNNEL.reach; k++) {
+      const exit = this.grid.cellAt(it.cx + DX[host.dir] * k, it.cy + DY[host.dir] * k)?.building;
+      if (!exit || exit.type !== 'tunnel' || exit.dir !== host.dir) continue;
+      if (exit.item) return true; // paired exit exists but is occupied — wait here
+      host.item = null;
+      exit.item = it;
+      it.cx = exit.x;
+      it.cy = exit.y;
+      it.sprite.setAlpha(0.35); // "underground" while gliding to the exit
+      return true;
+    }
+    return false; // no exit ahead — behave like a plain belt
+  }
+
   /** Move/insert the item one cell in `dir`. Returns true if the item left its host. */
   private tryTransfer(index: number, it: ItemEnt, host: Building, dir: Dir): boolean {
     const nx = it.cx + DX[dir];
@@ -68,7 +89,7 @@ export class ConveyorSystem {
     const nb = this.grid.cellAt(nx, ny)?.building;
     if (!nb) return false;
 
-    if ((nb.type === 'belt' || nb.type === 'splitter') && !nb.item) {
+    if ((nb.type === 'belt' || nb.type === 'splitter' || nb.type === 'tunnel') && !nb.item) {
       host.item = null;
       nb.item = it;
       it.cx = nx;
@@ -95,7 +116,7 @@ export class ConveyorSystem {
     const nx = fromX + DX[dir];
     const ny = fromY + DY[dir];
     const nb = this.grid.cellAt(nx, ny)?.building;
-    if (!nb || (nb.type !== 'belt' && nb.type !== 'splitter') || nb.item) return false;
+    if (!nb || (nb.type !== 'belt' && nb.type !== 'splitter' && nb.type !== 'tunnel') || nb.item) return false;
     const sprite = this.scene.add
       .image(fromX * TILE + TILE / 2, fromY * TILE + TILE / 2, ITEM_TEXTURE[type])
       .setDepth(4);

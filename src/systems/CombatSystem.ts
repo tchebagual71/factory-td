@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { TILE } from '../config';
-import { isTower, TOWERS, TowerStats } from '../data/buildings';
+import { effStats, isTower, TOWERS, TowerStats } from '../data/buildings';
 import { GameState } from '../state/GameState';
 import { Enemy } from '../types';
 import { sfx } from '../utils/sfx';
@@ -27,12 +27,12 @@ export class CombatSystem {
   update(dt: number): void {
     for (const b of this.grid.buildings) {
       if (!isTower(b.type)) continue;
-      const stats = TOWERS[b.type];
+      const stats = effStats(b.type, b.mk);
       const cx = b.x * TILE + TILE / 2;
       const cy = b.y * TILE + TILE / 2;
 
       b.cooldown -= dt;
-      if (b.ammoBar) b.ammoBar.scaleX = b.ammo / stats.ammoCap;
+      if (b.ammoBar) b.ammoBar.scaleX = b.ammo / TOWERS[b.type].ammoCap;
       const starved = b.ammo <= 0;
       if (starved) {
         b.sprite.setTint(0x8a8a8a);
@@ -91,7 +91,7 @@ export class CombatSystem {
   private impact(bl: Bullet, ix: number, iy: number): void {
     const { stats, target } = bl;
     if (stats.splash === 0) {
-      if (!target.dead) this.wave.hit(target, stats.damage);
+      if (!target.dead) this.wave.hit(target, stats.damage, stats.ammoType);
       this.scene.burst(ix, iy, 0xffe066, 4);
       return;
     }
@@ -103,7 +103,7 @@ export class CombatSystem {
       const d = Phaser.Math.Distance.Between(ix, iy, e.x, e.y);
       if (d > stats.splash) continue;
       const dmg = e === target ? stats.damage : Math.round(stats.damage * 0.6);
-      if (this.wave.hit(e, dmg)) kills += 1;
+      if (this.wave.hit(e, dmg, stats.ammoType)) kills += 1;
     }
     this.scene.burst(ix, iy, 0xff9f43, 22);
     this.scene.cameras.main.shake(90, 0.003);

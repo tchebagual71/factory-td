@@ -1,5 +1,5 @@
 import { PATH_PX } from '../data/map';
-import { waveClearBonus, waveDef, WaveDef } from '../data/waves';
+import { resistMult, waveClearBonus, waveDef, WaveDef } from '../data/waves';
 import { GameState } from '../state/GameState';
 import { Enemy } from '../types';
 import { sfx } from '../utils/sfx';
@@ -20,7 +20,7 @@ export class WaveSystem {
     this.toSpawn = this.def.count;
     this.spawnTimer = 0;
     GameState.setPhase('wave');
-    const suffix = this.def.kind === 'boss' ? ' — BOSS' : this.def.kind === 'swift' ? ' — SWIFT' : '';
+    const suffix = this.def.kind === 'normal' ? '' : ` — ${this.def.kind.toUpperCase()}`;
     this.scene.bigText(`WAVE ${GameState.wave}${suffix}`);
     sfx.waveStart();
   }
@@ -52,12 +52,14 @@ export class WaveSystem {
     }
   }
 
-  /** Apply damage; handles death, bounty, and juice. Returns true on kill. */
-  hit(e: Enemy, dmg: number): boolean {
+  /** Apply damage (scaled by kind resistances); handles death, bounty, and juice. Returns true on kill. */
+  hit(e: Enemy, dmg: number, source: 'ore' | 'ammo' | 'shell' = 'ammo'): boolean {
     if (e.dead) return false;
-    e.hp -= dmg;
+    const mult = resistMult(e.kind, source);
+    e.hp -= Math.max(1, Math.round(dmg * mult));
     sfx.hit();
-    e.sprite.setTintFill(0xffffff);
+    // resisted hits flash steel-gray instead of white — the "wrong ammo" tell
+    e.sprite.setTintFill(mult < 1 ? 0x7a8494 : 0xffffff);
     this.scene.time.delayedCall(45, () => {
       if (!e.dead) e.sprite.clearTint();
     });
@@ -122,12 +124,14 @@ export class WaveSystem {
 
   private spawn(def: WaveDef): void {
     const p = PATH_PX[0];
-    const texture = def.kind === 'boss' ? 'boss' : def.kind === 'swift' ? 'swift' : 'enemy';
+    const texture =
+      def.kind === 'boss' ? 'boss' : def.kind === 'swift' ? 'swift' : def.kind === 'armored' ? 'armored' : 'enemy';
     const barW = def.kind === 'boss' ? 28 : def.kind === 'swift' ? 16 : 22;
     const barY = def.kind === 'boss' ? 21 : 16;
     const sprite = this.scene.add.image(p.x, p.y, texture).setDepth(5);
     const hpBar = this.scene.add.rectangle(p.x - barW / 2, p.y - barY, barW, 3, 0x5ef078).setOrigin(0, 0.5).setDepth(6);
     this.enemies.push({
+      kind: def.kind,
       x: p.x,
       y: p.y,
       hp: def.hp,

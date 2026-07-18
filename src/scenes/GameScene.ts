@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
-import { GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
-import { costOf, isTower, TOWERS } from '../data/buildings';
+import { GAME_W, GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
+import { costOf, effStats, isTower, TOWERS, UPGRADES } from '../data/buildings';
 import { computePathCells, ORE_PATCHES, PATH_WAYPOINTS } from '../data/map';
 import { GameState } from '../state/GameState';
 import { CombatSystem } from '../systems/CombatSystem';
@@ -22,6 +22,13 @@ export class GameScene extends Phaser.Scene {
   private buildDir: Dir = 0;
   private ghost!: Phaser.GameObjects.Image;
   private rangeCircle!: Phaser.GameObjects.Arc;
+
+  private selTower: Building | null = null;
+  private panel!: Phaser.GameObjects.Container;
+  private panelTitle!: Phaser.GameObjects.Text;
+  private panelInfo!: Phaser.GameObjects.Text;
+  private panelBtn!: Phaser.GameObjects.Rectangle;
+  private panelBtnText!: Phaser.GameObjects.Text;
 
   constructor() {
     super('game');
@@ -45,6 +52,7 @@ export class GameScene extends Phaser.Scene {
       .setVisible(false)
       .setDepth(10);
 
+    this.createUpgradePanel();
     this.setupInput();
 
     // Scene events from the UI (off first — create() re-runs on restart)
@@ -71,6 +79,16 @@ export class GameScene extends Phaser.Scene {
     this.production.update(dt);
     this.combat.update(dt);
     this.updateGhost();
+
+    const st = this.selTower;
+    if (st && this.panel.visible) {
+      const tier = UPGRADES[st.type as 'tower' | 'cannon'][st.mk - 1];
+      if (tier) {
+        const can = GameState.money >= tier.money && st.ammo >= tier.ammo;
+        this.panelBtn.setFillStyle(can ? 0x2e7d4f : 0x3a3f52);
+        this.panelBtnText.setColor(can ? '#ffffff' : '#8892a6');
+      }
+    }
   }
 
   // ---------- juice helpers (used by systems) ----------
@@ -106,6 +124,85 @@ export class GameScene extends Phaser.Scene {
     this.time.delayedCall(500, () => e.destroy());
   }
 
+  // ---------- tower upgrades ----------
+
+  private createUpgradePanel(): void {
+    this.panel = this.add.container(GAME_W - 266, 44).setDepth(40).setVisible(false);
+    const bg = this.add.rectangle(0, 0, 258, 80, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
+    this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: '13px', fontStyle: 'bold', color: '#ffe066' });
+    this.panelInfo = this.add.text(10, 26, '', { fontFamily: 'monospace', fontSize: '11px', color: '#cdd6e4', lineSpacing: 3 });
+    this.panelBtn = this.add
+      .rectangle(10, 56, 130, 18, 0x2e7d4f)
+      .setOrigin(0)
+      .setStrokeStyle(1, 0x5ef078)
+      .setInteractive({ useHandCursor: true });
+    this.panelBtn.on('pointerdown', () => this.tryUpgrade());
+    this.panelBtnText = this.add
+      .text(75, 65, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold', color: '#ffffff' })
+      .setOrigin(0.5);
+    this.panel.add([bg, this.panelTitle, this.panelInfo, this.panelBtn, this.panelBtnText]);
+  }
+
+  private selectTower(b: Building | null): void {
+    this.selTower = b;
+    this.refreshPanel();
+  }
+
+  private refreshPanel(): void {
+    const b = this.selTower;
+    if (!b || !isTower(b.type)) {
+      this.panel.setVisible(false);
+      return;
+    }
+    const cur = effStats(b.type, b.mk);
+    const tier = UPGRADES[b.type][b.mk - 1];
+    this.panel.setVisible(true);
+    this.panelTitle.setText(`${b.type === 'cannon' ? 'CANNON' : 'GUN TOWER'} Mk${b.mk}`);
+    if (tier) {
+      const next = effStats(b.type, b.mk + 1);
+      this.panelInfo.setText(
+        `DMG ${cur.damage}→${next.damage} · RNG ${cur.range}→${next.range}\nCost: $${tier.money} + full magazine (${tier.ammo} ${cur.ammoType})`,
+      );
+      this.panelBtn.setVisible(true);
+      this.panelBtnText.setVisible(true);
+    } else {
+      this.panelInfo.setText(`DMG ${cur.damage} · RNG ${cur.range} · MAXED`);
+      this.panelBtn.setVisible(false);
+      this.panelBtnText.setVisible(false);
+    }
+  }
+
+  private tryUpgrade(): void {
+    const b = this.selTower;
+    if (!b || !isTower(b.type) || GameState.gameOver) return;
+    const tier = UPGRADES[b.type][b.mk - 1];
+    if (!tier) return;
+    const cx = b.x * TILE + TILE / 2;
+    const cy = b.y * TILE + TILE / 2;
+    if (b.ammo < tier.ammo) {
+      sfx.error();
+      this.floatText(cx, cy - 12, 'Need a full magazine!', '#ff5555');
+      return;
+    }
+    if (!GameState.spend(tier.money)) {
+      sfx.error();
+      this.floatText(cx, cy - 12, `Need $${tier.money}`, '#ff5555');
+      return;
+    }
+    b.ammo -= tier.ammo;
+    b.mk += 1;
+    b.invested += tier.money;
+    b.mkPips = b.mkPips ?? [];
+    b.mkPips.push(
+      this.add.rectangle(cx - 8 + (b.mk - 2) * 8, cy - 15, 5, 5, 0xffe066).setDepth(6).setStrokeStyle(1, 0xb8962e),
+    );
+    this.burst(cx, cy, 0xffe066, 20);
+    this.floatText(cx, cy - 16, `Mk${b.mk}!`, '#ffe066');
+    this.cameras.main.shake(80, 0.002);
+    sfx.waveClear();
+    this.refreshPanel();
+  }
+
   // ---------- input & placement ----------
 
   private setupInput(): void {
@@ -114,11 +211,13 @@ export class GameScene extends Phaser.Scene {
     kb.removeAllListeners();
     kb.on('keydown-ONE', () => this.select('belt'));
     kb.on('keydown-TWO', () => this.select('splitter'));
-    kb.on('keydown-THREE', () => this.select('miner'));
-    kb.on('keydown-FOUR', () => this.select('press'));
-    kb.on('keydown-FIVE', () => this.select('forge'));
-    kb.on('keydown-SIX', () => this.select('tower'));
-    kb.on('keydown-SEVEN', () => this.select('cannon'));
+    kb.on('keydown-THREE', () => this.select('tunnel'));
+    kb.on('keydown-FOUR', () => this.select('miner'));
+    kb.on('keydown-FIVE', () => this.select('press'));
+    kb.on('keydown-SIX', () => this.select('forge'));
+    kb.on('keydown-SEVEN', () => this.select('tower'));
+    kb.on('keydown-EIGHT', () => this.select('cannon'));
+    kb.on('keydown-U', () => this.tryUpgrade());
     kb.on('keydown-R', () => {
       this.buildDir = ((this.buildDir + 1) % 4) as Dir;
     });
@@ -136,7 +235,12 @@ export class GameScene extends Phaser.Scene {
         else this.select(null);
         return;
       }
-      if (this.selected) this.tryPlace(this.selected, tx, ty, false);
+      if (this.selected) {
+        this.tryPlace(this.selected, tx, ty, false);
+      } else {
+        const b = this.grid.cellAt(tx, ty)?.building;
+        this.selectTower(b && isTower(b.type) ? b : null);
+      }
     });
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
@@ -150,7 +254,10 @@ export class GameScene extends Phaser.Scene {
   private select(type: BuildingType | null): void {
     this.selected = type;
     GameState.events.emit('selected', type);
-    if (type) this.ghost.setTexture(type);
+    if (type) {
+      this.ghost.setTexture(type);
+      this.selectTower(null);
+    }
   }
 
   private tryPlace(type: BuildingType, tx: number, ty: number, silent: boolean): void {
@@ -188,6 +295,8 @@ export class GameScene extends Phaser.Scene {
       outputBuf: 0,
       ammo: tower ? TOWERS[type].startAmmo : 0,
       cooldown: 0,
+      mk: 1,
+      invested: costOf(type),
     };
     if (tower) {
       const barColor = type === 'cannon' ? 0xff9f43 : 0xffe066;
@@ -205,11 +314,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   private sell(b: Building): void {
-    const refund = Math.floor(costOf(b.type) / 2);
+    const refund = Math.floor(b.invested / 2);
     if (b.item) this.conveyor.destroyItem(b.item);
     b.sprite.destroy();
     b.barrel?.destroy();
     b.ammoBar?.destroy();
+    b.mkPips?.forEach((p) => p.destroy());
+    if (this.selTower === b) this.selectTower(null);
     this.grid.remove(b);
     GameState.addMoney(refund);
     this.floatText(b.x * TILE + 16, b.y * TILE + 8, `+$${refund}`, '#9aa7bd');
@@ -225,11 +336,12 @@ export class GameScene extends Phaser.Scene {
       this.ghost.setAlpha(0);
       // show range of an existing tower under the cursor
       const hovered = p.y < PLAYFIELD_H ? this.grid.cellAt(tx, ty)?.building : null;
-      if (hovered && isTower(hovered.type)) {
+      const show = hovered && isTower(hovered.type) ? hovered : this.selTower;
+      if (show && isTower(show.type)) {
         this.rangeCircle
-          .setRadius(TOWERS[hovered.type].range)
+          .setRadius(effStats(show.type, show.mk).range)
           .setVisible(true)
-          .setPosition(hovered.x * TILE + TILE / 2, hovered.y * TILE + TILE / 2);
+          .setPosition(show.x * TILE + TILE / 2, show.y * TILE + TILE / 2);
       } else {
         this.rangeCircle.setVisible(false);
       }
