@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Factory TD</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏭</text></svg>" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #14161a;
+        --panel: #1e2228;
+        --border: #343b45;
+        --text: #d7dce2;
+        --dim: #8a94a0;
+        --accent: #e8b93e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        display: flex;
+        justify-content: center;
+      }
+      #app { padding: 12px; }
+      #topbar {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 8px 12px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px 6px 0 0;
+        font-size: 14px;
+      }
+      #topbar .stat b { color: var(--accent); font-variant-numeric: tabular-nums; }
+      #topbar .spacer { flex: 1; }
+      #main { display: flex; }
+      canvas {
+        display: block;
+        border: 1px solid var(--border);
+        border-top: none;
+        background: #23301f;
+        cursor: crosshair;
+      }
+      #sidebar {
+        width: 210px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-left: none;
+        border-top: none;
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 13px;
+      }
+      button {
+        background: #2a313a;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 10px;
+        font-size: 13px;
+        cursor: pointer;
+        text-align: left;
+      }
+      button:hover { border-color: var(--accent); }
+      button.selected { border-color: var(--accent); background: #3a3524; }
+      button:disabled { opacity: 0.45; cursor: default; }
+      #start-wave {
+        background: #2e4a2e;
+        font-weight: bold;
+        text-align: center;
+      }
+      #start-wave:hover { border-color: #7ec97e; }
+      .cost { float: right; color: var(--dim); }
+      #info {
+        margin-top: auto;
+        min-height: 84px;
+        color: var(--dim);
+        font-size: 12px;
+        line-height: 1.4;
+        border-top: 1px solid var(--border);
+        padding-top: 8px;
+        white-space: pre-wrap;
+      }
+      #message {
+        text-align: center;
+        padding: 6px;
+        font-size: 14px;
+        color: var(--accent);
+        min-height: 28px;
+      }
+      .hint { color: var(--dim); font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="topbar">
+        <span class="stat">💰 <b id="stat-money">0</b></span>
+        <span class="stat">❤️ <b id="stat-lives">0</b></span>
+        <span class="stat">🌊 Wave <b id="stat-wave">0</b></span>
+        <span class="stat">⚡ <b id="stat-power">0/0</b></span>
+        <span class="spacer"></span>
+        <button id="speed-btn" title="Toggle game speed">1×</button>
+      </div>
+      <div id="main">
+        <canvas id="game"></canvas>
+        <div id="sidebar">
+          <button id="start-wave">▶ Start Wave (Space)</button>
+          <div id="toolbar"></div>
+          <div class="hint">R rotate · Esc cancel · drag to lay belts</div>
+          <div id="info"></div>
+        </div>
+      </div>
+      <div id="message"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
