@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { TILE } from '../config';
 import { effStats, isTower, TOWERS, TowerStats } from '../data/buildings';
 import { GameState } from '../state/GameState';
+import { progress } from '../state/progress';
 import { Enemy } from '../types';
 import { sfx } from '../utils/sfx';
 import { GridSystem } from './GridSystem';
@@ -27,7 +28,7 @@ export class CombatSystem {
   update(dt: number): void {
     for (const b of this.grid.buildings) {
       if (!isTower(b.type)) continue;
-      const stats = effStats(b.type, b.mk);
+      const stats = effStats(b.type, b.mk, b.path);
       const cx = b.x * TILE + TILE / 2;
       const cy = b.y * TILE + TILE / 2;
 
@@ -110,6 +111,7 @@ export class CombatSystem {
     if (kills >= 3) {
       const bonus = kills * 3;
       GameState.addMoney(bonus);
+      progress.record('multiKills');
       this.scene.floatText(ix, iy - 24, `MULTI ×${kills}  +$${bonus}`, '#ff9f43');
     }
   }

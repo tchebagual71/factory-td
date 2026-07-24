@@ -1,9 +1,12 @@
 import Phaser from 'phaser';
 import { GAME_H, GAME_W, PLAYFIELD_H } from '../config';
+import { AchievementDef } from '../data/achievements';
 import { BUILD_INFO } from '../data/buildings';
 import { waveDef, WAVE_KIND_LABEL } from '../data/waves';
 import { GameState } from '../state/GameState';
+import { progress } from '../state/progress';
 import { BuildingType } from '../types';
+import { sfx } from '../utils/sfx';
 
 const FONT = { fontFamily: 'monospace' };
 
@@ -22,6 +25,8 @@ export class UIScene extends Phaser.Scene {
   private paletteButtons = new Map<BuildingType, Phaser.GameObjects.Container>();
   private descText!: Phaser.GameObjects.Text;
   private overlay: Phaser.GameObjects.GameObject[] = [];
+  private toastQueue: AchievementDef[] = [];
+  private toastActive = false;
 
   constructor() {
     super('ui');
@@ -118,7 +123,14 @@ export class UIScene extends Phaser.Scene {
     ev.on('wave', () => this.refreshStats());
     ev.on('phase', () => this.refreshWaveBtn());
     ev.on('selected', (t: BuildingType | null) => this.refreshSelection(t));
-    ev.on('gameover', () => this.showGameOver());
+    ev.on('gameover', () => {
+      progress.recordMax('bestWave', GameState.wave);
+      this.showGameOver();
+    });
+    ev.on('achievement', (def: AchievementDef) => {
+      this.toastQueue.push(def);
+      this.pumpToasts();
+    });
     ev.on('speed', (s: number) => this.speedBtnText.setText(`×${s}`).setColor(s > 1 ? '#ffe066' : '#cdd6e4'));
     ev.on('auto', (on: boolean) => {
       this.autoBtnText.setColor(on ? '#5ef078' : '#8892a6');
@@ -152,6 +164,33 @@ export class UIScene extends Phaser.Scene {
     this.refreshStats();
   }
 
+  /** Slide-in achievement cards, one at a time, top-right above the upgrade panel. */
+  private pumpToasts(): void {
+    if (this.toastActive) return;
+    const def = this.toastQueue.shift();
+    if (!def) return;
+    this.toastActive = true;
+    const c = this.add.container(GAME_W + 270, 8).setDepth(60);
+    const bg = this.add.rectangle(0, 0, 262, 34, 0x141625, 0.95).setOrigin(0).setStrokeStyle(2, 0xffe066);
+    const name = this.add.text(10, 4, `★ ${def.name}`, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#ffe066' });
+    const desc = this.add.text(10, 20, def.unlock ? `${def.desc} — ${def.unlock.label}` : def.desc, { ...FONT, fontSize: '9px', color: '#cdd6e4' });
+    c.add([bg, name, desc]);
+    sfx.coin();
+    this.tweens.add({ targets: c, x: GAME_W - 270, duration: 250, ease: 'Back.out' });
+    this.tweens.add({
+      targets: c,
+      x: GAME_W + 270,
+      delay: 3000,
+      duration: 200,
+      ease: 'Cubic.in',
+      onComplete: () => {
+        c.destroy();
+        this.toastActive = false;
+        this.pumpToasts();
+      },
+    });
+  }
+
   private refreshSelection(t: BuildingType | null): void {
     for (const [type, frame] of this.paletteFrames) {
       frame.setStrokeStyle(2, type === t ? 0xffe066 : 0x2b3040);
@@ -168,6 +207,10 @@ export class UIScene extends Phaser.Scene {
       .text(GAME_W / 2, 320, `You survived to wave ${GameState.wave}`, { ...FONT, fontSize: '18px', color: '#cdd6e4' })
       .setOrigin(0.5)
       .setDepth(51);
+    const best = this.add
+      .text(GAME_W / 2, 348, `Personal best: wave ${Math.max(progress.stats.bestWave, GameState.wave)}`, { ...FONT, fontSize: '14px', color: '#ffe066' })
+      .setOrigin(0.5)
+      .setDepth(51);
     const btn = this.add
       .rectangle(GAME_W / 2, 400, 220, 52, 0x2e7d4f)
       .setStrokeStyle(2, 0x5ef078)
@@ -177,7 +220,7 @@ export class UIScene extends Phaser.Scene {
       .text(GAME_W / 2, 400, 'REBUILD', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5)
       .setDepth(52);
-    this.overlay = [dim, title, sub, btn, btnText];
+    this.overlay = [dim, title, sub, best, btn, btnText];
     btn.on('pointerdown', () => {
       this.overlay.forEach((o) => o.destroy());
       this.overlay = [];

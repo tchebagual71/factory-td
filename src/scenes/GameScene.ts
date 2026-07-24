@@ -1,15 +1,19 @@
 import Phaser from 'phaser';
 import { GAME_W, GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
-import { costOf, effStats, isTower, TOWERS, UPGRADES } from '../data/buildings';
+import { costOf, effStats, isTower, MAX_MK, nextTier, pathOf, TOWERS, UPGRADE_TREE, UpgradeTier } from '../data/buildings';
 import { computePathCells, ORE_PATCHES, PATH_WAYPOINTS } from '../data/map';
 import { GameState } from '../state/GameState';
+import { progress } from '../state/progress';
 import { CombatSystem } from '../systems/CombatSystem';
 import { ConveyorSystem } from '../systems/ConveyorSystem';
 import { GridSystem } from '../systems/GridSystem';
 import { ProductionSystem } from '../systems/ProductionSystem';
 import { WaveSystem } from '../systems/WaveSystem';
-import { Building, BuildingType, Dir } from '../types';
+import { Building, BuildingType, Dir, PathId } from '../types';
 import { sfx } from '../utils/sfx';
+
+/** Mk-pip / float-text tint per specialization path. */
+const PATH_COLORS: Record<PathId, number> = { sniper: 0x6bd4ff, gatling: 0xffe066, siege: 0xff9f43, flak: 0xb18cff };
 
 export class GameScene extends Phaser.Scene {
   private grid!: GridSystem;
@@ -27,8 +31,10 @@ export class GameScene extends Phaser.Scene {
   private panel!: Phaser.GameObjects.Container;
   private panelTitle!: Phaser.GameObjects.Text;
   private panelInfo!: Phaser.GameObjects.Text;
-  private panelBtn!: Phaser.GameObjects.Rectangle;
-  private panelBtnText!: Phaser.GameObjects.Text;
+  private panelBtnA!: Phaser.GameObjects.Rectangle;
+  private panelBtnAText!: Phaser.GameObjects.Text;
+  private panelBtnB!: Phaser.GameObjects.Rectangle;
+  private panelBtnBText!: Phaser.GameObjects.Text;
 
   constructor() {
     super('game');
@@ -81,14 +87,22 @@ export class GameScene extends Phaser.Scene {
     this.updateGhost();
 
     const st = this.selTower;
-    if (st && this.panel.visible) {
-      const tier = UPGRADES[st.type as 'tower' | 'cannon'][st.mk - 1];
-      if (tier) {
-        const can = GameState.money >= tier.money && st.ammo >= tier.ammo;
-        this.panelBtn.setFillStyle(can ? 0x2e7d4f : 0x3a3f52);
-        this.panelBtnText.setColor(can ? '#ffffff' : '#8892a6');
+    if (st && this.panel.visible && isTower(st.type)) {
+      if (st.mk === 2) {
+        const [pa, pb] = UPGRADE_TREE[st.type].paths;
+        this.tintAfford(this.panelBtnA, this.panelBtnAText, st, pa.tiers[0]);
+        this.tintAfford(this.panelBtnB, this.panelBtnBText, st, pb.tiers[0]);
+      } else {
+        const tier = nextTier(st.type, st.mk, st.path);
+        if (tier) this.tintAfford(this.panelBtnA, this.panelBtnAText, st, tier);
       }
     }
+  }
+
+  private tintAfford(btn: Phaser.GameObjects.Rectangle, label: Phaser.GameObjects.Text, b: Building, tier: UpgradeTier): void {
+    const can = GameState.money >= tier.money && b.ammo >= tier.ammo;
+    btn.setFillStyle(can ? 0x2e7d4f : 0x3a3f52);
+    label.setColor(can ? '#ffffff' : '#8892a6');
   }
 
   // ---------- juice helpers (used by systems) ----------
@@ -128,19 +142,29 @@ export class GameScene extends Phaser.Scene {
 
   private createUpgradePanel(): void {
     this.panel = this.add.container(GAME_W - 266, 44).setDepth(40).setVisible(false);
-    const bg = this.add.rectangle(0, 0, 258, 80, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
+    const bg = this.add.rectangle(0, 0, 258, 104, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
     this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: '13px', fontStyle: 'bold', color: '#ffe066' });
-    this.panelInfo = this.add.text(10, 26, '', { fontFamily: 'monospace', fontSize: '11px', color: '#cdd6e4', lineSpacing: 3 });
-    this.panelBtn = this.add
-      .rectangle(10, 56, 130, 18, 0x2e7d4f)
+    this.panelInfo = this.add.text(10, 25, '', { fontFamily: 'monospace', fontSize: '10px', color: '#cdd6e4', lineSpacing: 2 });
+    // Two fixed button slots: A alone for linear tiers, A+B at the Mk3 branch.
+    this.panelBtnA = this.add
+      .rectangle(10, 78, 114, 20, 0x2e7d4f)
       .setOrigin(0)
       .setStrokeStyle(1, 0x5ef078)
       .setInteractive({ useHandCursor: true });
-    this.panelBtn.on('pointerdown', () => this.tryUpgrade());
-    this.panelBtnText = this.add
-      .text(75, 65, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold', color: '#ffffff' })
+    this.panelBtnA.on('pointerdown', () => this.tryUpgrade(0));
+    this.panelBtnAText = this.add
+      .text(67, 88, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
-    this.panel.add([bg, this.panelTitle, this.panelInfo, this.panelBtn, this.panelBtnText]);
+    this.panelBtnB = this.add
+      .rectangle(134, 78, 114, 20, 0x2e7d4f)
+      .setOrigin(0)
+      .setStrokeStyle(1, 0x5ef078)
+      .setInteractive({ useHandCursor: true });
+    this.panelBtnB.on('pointerdown', () => this.tryUpgrade(1));
+    this.panelBtnBText = this.add
+      .text(191, 88, '', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
+      .setOrigin(0.5);
+    this.panel.add([bg, this.panelTitle, this.panelInfo, this.panelBtnA, this.panelBtnAText, this.panelBtnB, this.panelBtnBText]);
   }
 
   private selectTower(b: Building | null): void {
@@ -154,28 +178,65 @@ export class GameScene extends Phaser.Scene {
       this.panel.setVisible(false);
       return;
     }
-    const cur = effStats(b.type, b.mk);
-    const tier = UPGRADES[b.type][b.mk - 1];
+    const cur = effStats(b.type, b.mk, b.path);
+    const label = b.type === 'cannon' ? 'CANNON' : 'GUN TOWER';
+    const pathName = b.path ? ` · ${pathOf(b.type, b.path).name}` : '';
     this.panel.setVisible(true);
-    this.panelTitle.setText(`${b.type === 'cannon' ? 'CANNON' : 'GUN TOWER'} Mk${b.mk}`);
-    if (tier) {
-      const next = effStats(b.type, b.mk + 1);
+    this.panelTitle.setText(`${label} Mk${b.mk}${pathName}`);
+
+    const showA = (text: string) => {
+      this.panelBtnA.setVisible(true);
+      this.panelBtnAText.setVisible(true).setText(text);
+    };
+    const showB = (text: string) => {
+      this.panelBtnB.setVisible(true);
+      this.panelBtnBText.setVisible(true).setText(text);
+    };
+    this.panelBtnB.setVisible(false);
+    this.panelBtnBText.setVisible(false);
+
+    if (b.mk === 2) {
+      // The branch: choose a specialization
+      const [pa, pb] = UPGRADE_TREE[b.type].paths;
+      const sa = effStats(b.type, 3, pa.id);
+      const sb = effStats(b.type, 3, pb.id);
       this.panelInfo.setText(
-        `DMG ${cur.damage}→${next.damage} · RNG ${cur.range}→${next.range}\nCost: $${tier.money} + full magazine (${tier.ammo} ${cur.ammoType})`,
+        `${pa.name}: DMG ${sa.damage} RNG ${sa.range} ROF ${sa.fireRate.toFixed(1)}\n  $${pa.tiers[0].money} + full mag (${pa.tiers[0].ammo})\n` +
+          `${pb.name}: DMG ${sb.damage} RNG ${sb.range} ROF ${sb.fireRate.toFixed(1)}\n  $${pb.tiers[0].money} + full mag (${pb.tiers[0].ammo})`,
       );
-      this.panelBtn.setVisible(true);
-      this.panelBtnText.setVisible(true);
+      showA(`${pa.name} [U]`);
+      showB(`${pb.name} [I]`);
+      return;
+    }
+
+    const tier = nextTier(b.type, b.mk, b.path);
+    if (tier) {
+      const next = effStats(b.type, b.mk + 1, b.path ?? UPGRADE_TREE[b.type].paths[0].id);
+      const nextStats = b.mk === 1 ? effStats(b.type, 2) : next;
+      this.panelInfo.setText(
+        `DMG ${cur.damage}→${nextStats.damage} · RNG ${cur.range}→${nextStats.range}\nROF ${cur.fireRate.toFixed(1)}→${nextStats.fireRate.toFixed(1)}/s\nCost: $${tier.money} + full magazine (${tier.ammo} ${cur.ammoType})`,
+      );
+      showA('UPGRADE [U]');
     } else {
-      this.panelInfo.setText(`DMG ${cur.damage} · RNG ${cur.range} · MAXED`);
-      this.panelBtn.setVisible(false);
-      this.panelBtnText.setVisible(false);
+      this.panelInfo.setText(`DMG ${cur.damage} · RNG ${cur.range} · ROF ${cur.fireRate.toFixed(1)}/s\nMAXED`);
+      this.panelBtnA.setVisible(false);
+      this.panelBtnAText.setVisible(false);
     }
   }
 
-  private tryUpgrade(): void {
+  private tryUpgrade(choice: 0 | 1 = 0): void {
     const b = this.selTower;
     if (!b || !isTower(b.type) || GameState.gameOver) return;
-    const tier = UPGRADES[b.type][b.mk - 1];
+    let tier: UpgradeTier | null;
+    let newPath: PathId | null = null;
+    if (b.mk === 2) {
+      const p = UPGRADE_TREE[b.type].paths[choice];
+      tier = p.tiers[0];
+      newPath = p.id;
+    } else {
+      if (choice === 1) return; // [I] only picks the second path at the branch
+      tier = nextTier(b.type, b.mk, b.path);
+    }
     if (!tier) return;
     const cx = b.x * TILE + TILE / 2;
     const cy = b.y * TILE + TILE / 2;
@@ -191,13 +252,17 @@ export class GameScene extends Phaser.Scene {
     }
     b.ammo -= tier.ammo;
     b.mk += 1;
+    if (newPath) b.path = newPath;
     b.invested += tier.money;
+    const pipColor = b.path ? PATH_COLORS[b.path] : 0xffe066;
     b.mkPips = b.mkPips ?? [];
     b.mkPips.push(
-      this.add.rectangle(cx - 8 + (b.mk - 2) * 8, cy - 15, 5, 5, 0xffe066).setDepth(6).setStrokeStyle(1, 0xb8962e),
+      this.add.rectangle(cx - 12 + (b.mk - 2) * 8, cy - 15, 5, 5, pipColor).setDepth(6).setStrokeStyle(1, 0xb8962e),
     );
-    this.burst(cx, cy, 0xffe066, 20);
-    this.floatText(cx, cy - 16, `Mk${b.mk}!`, '#ffe066');
+    progress.record('upgradesBought');
+    if (b.mk === MAX_MK) progress.record('maxedTowers');
+    this.burst(cx, cy, pipColor, 20);
+    this.floatText(cx, cy - 16, newPath ? `${pathOf(b.type, newPath).name}!` : `Mk${b.mk}!`, '#ffe066');
     this.cameras.main.shake(80, 0.002);
     sfx.waveClear();
     this.refreshPanel();
@@ -217,7 +282,8 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-SIX', () => this.select('forge'));
     kb.on('keydown-SEVEN', () => this.select('tower'));
     kb.on('keydown-EIGHT', () => this.select('cannon'));
-    kb.on('keydown-U', () => this.tryUpgrade());
+    kb.on('keydown-U', () => this.tryUpgrade(0));
+    kb.on('keydown-I', () => this.tryUpgrade(1));
     kb.on('keydown-R', () => {
       this.buildDir = ((this.buildDir + 1) % 4) as Dir;
     });
@@ -296,6 +362,7 @@ export class GameScene extends Phaser.Scene {
       ammo: tower ? TOWERS[type].startAmmo : 0,
       cooldown: 0,
       mk: 1,
+      path: null,
       invested: costOf(type),
     };
     if (tower) {
@@ -311,6 +378,7 @@ export class GameScene extends Phaser.Scene {
     sprite.setScale(0.5);
     this.tweens.add({ targets: sprite, scale: 1, duration: 130, ease: 'Back.out' });
     sfx.place();
+    if (type === 'tunnel') progress.record('tunnelsBuilt');
   }
 
   private sell(b: Building): void {
@@ -339,7 +407,7 @@ export class GameScene extends Phaser.Scene {
       const show = hovered && isTower(hovered.type) ? hovered : this.selTower;
       if (show && isTower(show.type)) {
         this.rangeCircle
-          .setRadius(effStats(show.type, show.mk).range)
+          .setRadius(effStats(show.type, show.mk, show.path).range)
           .setVisible(true)
           .setPosition(show.x * TILE + TILE / 2, show.y * TILE + TILE / 2);
       } else {

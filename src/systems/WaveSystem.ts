@@ -1,6 +1,7 @@
 import { PATH_PX } from '../data/map';
 import { resistMult, waveClearBonus, waveDef, WaveDef } from '../data/waves';
 import { GameState } from '../state/GameState';
+import { progress } from '../state/progress';
 import { Enemy } from '../types';
 import { sfx } from '../utils/sfx';
 import type { GameScene } from '../scenes/GameScene';
@@ -73,6 +74,11 @@ export class WaveSystem {
   private kill(e: Enemy): void {
     e.dead = true;
     GameState.addMoney(e.bounty);
+    progress.record('kills');
+    if (e.kind === 'armored') progress.record('killsArmored');
+    else if (e.kind === 'swift') progress.record('killsSwift');
+    else if (e.kind === 'boss') progress.record('killsBoss');
+    progress.record('moneyEarned', e.bounty);
     this.scene.floatText(e.x, e.y - 10, `+$${e.bounty}`, '#ffe066');
     this.scene.burst(e.x, e.y, 0xff5555, e.leak > 1 ? 26 : 12);
     if (e.leak > 1) this.scene.cameras.main.shake(150, 0.005);
@@ -154,7 +160,10 @@ export class WaveSystem {
     GameState.addMoney(bonus);
     this.scene.bigText(`WAVE ${GameState.wave} CLEAR  +$${bonus}`);
     sfx.waveClear();
+    progress.record('wavesCleared');
+    progress.record('moneyEarned', bonus);
     GameState.nextWave();
+    progress.recordMax('bestWave', GameState.wave);
     GameState.setPhase('build');
     this.def = null;
     if (GameState.auto) {

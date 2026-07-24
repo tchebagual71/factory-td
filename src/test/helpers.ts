@@ -64,6 +64,7 @@ export function makeBuilding(type: BuildingType, x: number, y: number, dir: Dir 
     ammo: 0,
     cooldown: 0,
     mk: 1,
+    path: null,
     invested: 0,
   };
 }

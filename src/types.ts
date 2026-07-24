@@ -8,6 +8,9 @@ export const DY = [0, 1, 0, -1];
 export type ItemType = 'ore' | 'ammo' | 'shell';
 export type BuildingType = 'belt' | 'splitter' | 'tunnel' | 'miner' | 'press' | 'forge' | 'tower' | 'cannon';
 
+/** Tower specialization path, chosen at the Mk2→Mk3 upgrade. Guns branch sniper/gatling, cannons siege/flak. */
+export type PathId = 'sniper' | 'gatling' | 'siege' | 'flak';
+
 export interface ItemEnt {
   type: ItemType;
   /** belt cell this item currently belongs to */
@@ -38,8 +41,10 @@ export interface Building {
   ammo: number;
   /** tower: seconds until next shot allowed */
   cooldown: number;
-  /** tower: upgrade mark (1-3) */
+  /** tower: upgrade mark (1 to MAX_MK) */
   mk: number;
+  /** tower: specialization path, null until chosen at the Mk3 branch */
+  path: PathId | null;
   /** total money sunk into this building (base cost + upgrades) — sell refunds half */
   invested: number;
   barrel?: Phaser.GameObjects.Image;
