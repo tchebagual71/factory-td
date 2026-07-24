@@ -212,19 +212,37 @@ export class UIScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(51);
     const btn = this.add
-      .rectangle(GAME_W / 2, 400, 220, 52, 0x2e7d4f)
+      .rectangle(GAME_W / 2 - 125, 400, 220, 52, 0x2e7d4f)
       .setStrokeStyle(2, 0x5ef078)
       .setDepth(51)
       .setInteractive({ useHandCursor: true });
     const btnText = this.add
-      .text(GAME_W / 2, 400, 'REBUILD', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#ffffff' })
+      .text(GAME_W / 2 - 125, 400, 'REBUILD', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5)
       .setDepth(52);
-    this.overlay = [dim, title, sub, best, btn, btnText];
-    btn.on('pointerdown', () => {
+    const menuBtn = this.add
+      .rectangle(GAME_W / 2 + 125, 400, 220, 52, 0x1e2233)
+      .setStrokeStyle(2, 0x2b3040)
+      .setDepth(51)
+      .setInteractive({ useHandCursor: true });
+    const menuBtnText = this.add
+      .text(GAME_W / 2 + 125, 400, 'MENU', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(0.5)
+      .setDepth(52);
+    this.overlay = [dim, title, sub, best, btn, btnText, menuBtn, menuBtnText];
+    const clearOverlay = () => {
       this.overlay.forEach((o) => o.destroy());
       this.overlay = [];
+    };
+    btn.on('pointerdown', () => {
+      clearOverlay();
       this.scene.get('game').scene.restart();
+    });
+    menuBtn.on('pointerdown', () => {
+      clearOverlay();
+      this.scene.stop('game');
+      this.scene.launch('menu');
+      this.scene.sleep(); // sleep (not stop) — keeps this scene's GameState listeners singular
     });
   }
 }

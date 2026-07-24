@@ -1,0 +1,147 @@
+import { GRID_H, GRID_W } from '../config';
+import { MAX_MK } from '../data/buildings';
+import { Building, BuildingType, Dir, ItemEnt, ItemType, PathId } from '../types';
+
+/**
+ * Run save format. Pure module: no Phaser objects cross this boundary (sprites
+ * are flattened to x/y/alpha), no storage or network I/O — that lives in
+ * `persistence.ts` and (later) `services/cloud.ts`. Saves are only ever taken
+ * during the build phase, so enemies/bullets never serialize and `phase` is
+ * implicitly 'build'. Bump the version and branch in `validateSave` when the
+ * format changes.
+ */
+
+export interface SavedBuilding {
+  t: BuildingType;
+  x: number;
+  y: number;
+  d: Dir;
+  /** total money invested (sell refunds half) */
+  inv: number;
+  mk?: number;
+  path?: PathId | null;
+  ammo?: number;
+  timer?: number;
+  crafting?: boolean;
+  inOre?: number;
+  outBuf?: number;
+  outIdx?: number;
+}
+
+export interface SavedItem {
+  t: ItemType;
+  /** belt cell the item belongs to */
+  cx: number;
+  cy: number;
+  /** sprite pixel position (mid-glide is fine — it resumes gliding to the cell center) */
+  px: number;
+  py: number;
+  /** sprite alpha; < 1 means tunnel transit */
+  a?: number;
+}
+
+export interface SaveV1 {
+  v: 1;
+  savedAt: number;
+  money: number;
+  lives: number;
+  wave: number;
+  speed: 1 | 2 | 3;
+  auto: boolean;
+  buildings: SavedBuilding[];
+  items: SavedItem[];
+}
+
+interface Snapshot {
+  money: number;
+  lives: number;
+  wave: number;
+  speed: 1 | 2 | 3;
+  auto: boolean;
+}
+
+export function captureRun(buildings: readonly Building[], items: readonly ItemEnt[], gs: Snapshot): SaveV1 {
+  return {
+    v: 1,
+    savedAt: Date.now(),
+    money: gs.money,
+    lives: gs.lives,
+    wave: gs.wave,
+    speed: gs.speed,
+    auto: gs.auto,
+    buildings: buildings.map((b) => {
+      const sb: SavedBuilding = { t: b.type, x: b.x, y: b.y, d: b.dir, inv: b.invested };
+      if (b.mk > 1) sb.mk = b.mk;
+      if (b.path) sb.path = b.path;
+      if (b.ammo > 0) sb.ammo = b.ammo;
+      if (b.timer > 0) sb.timer = b.timer;
+      if (b.crafting) sb.crafting = true;
+      if (b.inputOre > 0) sb.inOre = b.inputOre;
+      if (b.outputBuf > 0) sb.outBuf = b.outputBuf;
+      if (b.outIdx > 0) sb.outIdx = b.outIdx;
+      return sb;
+    }),
+    items: items.map((it) => {
+      const si: SavedItem = { t: it.type, cx: it.cx, cy: it.cy, px: it.sprite.x, py: it.sprite.y };
+      if (it.sprite.alpha < 1) si.a = it.sprite.alpha;
+      return si;
+    }),
+  };
+}
+
+const BUILDING_TYPES: readonly BuildingType[] = ['belt', 'splitter', 'tunnel', 'miner', 'press', 'forge', 'tower', 'cannon'];
+const ITEM_TYPES: readonly ItemType[] = ['ore', 'ammo', 'shell'];
+const PATH_IDS: readonly PathId[] = ['sniper', 'gatling', 'siege', 'flak'];
+
+function isFiniteNum(n: unknown): n is number {
+  return typeof n === 'number' && Number.isFinite(n);
+}
+
+function inGrid(x: unknown, y: unknown): boolean {
+  return isFiniteNum(x) && isFiniteNum(y) && x >= 0 && x < GRID_W && y >= 0 && y < GRID_H;
+}
+
+/**
+ * Structural validation of an untrusted save (localStorage can be hand-edited,
+ * cloud JSON can be anything). Returns null unless the whole save is sound —
+ * a partially-restored factory is worse than a fresh start.
+ */
+export function validateSave(raw: unknown): SaveV1 | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const s = raw as Record<string, unknown>;
+  if (s.v !== 1) return null;
+  if (!isFiniteNum(s.savedAt) || !isFiniteNum(s.money) || s.money < 0) return null;
+  if (!isFiniteNum(s.lives) || s.lives < 1) return null;
+  if (!isFiniteNum(s.wave) || s.wave < 1 || s.wave > 10000) return null;
+  if (s.speed !== 1 && s.speed !== 2 && s.speed !== 3) return null;
+  if (typeof s.auto !== 'boolean') return null;
+  if (!Array.isArray(s.buildings) || !Array.isArray(s.items)) return null;
+
+  const seen = new Set<string>();
+  for (const b of s.buildings as Record<string, unknown>[]) {
+    if (typeof b !== 'object' || b === null) return null;
+    if (!BUILDING_TYPES.includes(b.t as BuildingType)) return null;
+    if (!inGrid(b.x, b.y)) return null;
+    if (b.d !== 0 && b.d !== 1 && b.d !== 2 && b.d !== 3) return null;
+    if (!isFiniteNum(b.inv) || b.inv < 0) return null;
+    if (b.mk !== undefined && (!isFiniteNum(b.mk) || b.mk < 1 || b.mk > MAX_MK)) return null;
+    if (b.path !== undefined && b.path !== null && !PATH_IDS.includes(b.path as PathId)) return null;
+    for (const key of ['ammo', 'timer', 'inOre', 'outBuf', 'outIdx'] as const) {
+      if (b[key] !== undefined && (!isFiniteNum(b[key]) || (b[key] as number) < 0)) return null;
+    }
+    if (b.crafting !== undefined && typeof b.crafting !== 'boolean') return null;
+    const cell = `${b.x},${b.y}`;
+    if (seen.has(cell)) return null; // two buildings on one tile
+    seen.add(cell);
+  }
+
+  for (const it of s.items as Record<string, unknown>[]) {
+    if (typeof it !== 'object' || it === null) return null;
+    if (!ITEM_TYPES.includes(it.t as ItemType)) return null;
+    if (!inGrid(it.cx, it.cy)) return null;
+    if (!isFiniteNum(it.px) || !isFiniteNum(it.py)) return null;
+    if (it.a !== undefined && (!isFiniteNum(it.a) || it.a < 0 || it.a > 1)) return null;
+  }
+
+  return raw as SaveV1;
+}

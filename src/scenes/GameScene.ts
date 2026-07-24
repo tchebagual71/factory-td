@@ -3,7 +3,9 @@ import { GAME_W, GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
 import { costOf, effStats, isTower, MAX_MK, nextTier, pathOf, TOWERS, UPGRADE_TREE, UpgradeTier } from '../data/buildings';
 import { computePathCells, ORE_PATCHES, PATH_WAYPOINTS } from '../data/map';
 import { GameState } from '../state/GameState';
+import { clearLocal, consumePendingLoad, saveLocal } from '../state/persistence';
 import { progress } from '../state/progress';
+import { captureRun, SaveV1 } from '../state/serialize';
 import { CombatSystem } from '../systems/CombatSystem';
 import { ConveyorSystem } from '../systems/ConveyorSystem';
 import { GridSystem } from '../systems/GridSystem';
@@ -24,6 +26,10 @@ export class GameScene extends Phaser.Scene {
 
   private selected: BuildingType | null = null;
   private buildDir: Dir = 0;
+  private saveDirty = false;
+  private saveTimer = 0;
+  /** false while create() is mid-flight — reset()/applySnapshot() event bursts must not autosave a half-built scene */
+  private ready = false;
   private ghost!: Phaser.GameObjects.Image;
   private rangeCircle!: Phaser.GameObjects.Arc;
 
@@ -41,6 +47,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.ready = false;
+    this.saveDirty = false;
     GameState.reset();
 
     this.grid = new GridSystem();
@@ -61,9 +69,18 @@ export class GameScene extends Phaser.Scene {
     this.createUpgradePanel();
     this.setupInput();
 
+    const save = consumePendingLoad();
+    if (save) this.applySave(save);
+
     // Scene events from the UI (off first — create() re-runs on restart)
     GameState.events.off('ui:select').on('ui:select', (t: BuildingType) => this.select(t));
     GameState.events.off('ui:startwave').on('ui:startwave', () => this.waveSystem.start());
+    // Targeted off/on (other scenes listen to these events too; stable refs survive restarts)
+    GameState.events.off('phase', this.onPhaseSave).on('phase', this.onPhaseSave);
+    GameState.events.off('gameover', this.onGameOverClear).on('gameover', this.onGameOverClear);
+    window.removeEventListener('beforeunload', this.onBeforeUnload);
+    window.addEventListener('beforeunload', this.onBeforeUnload);
+    this.events.once('shutdown', () => window.removeEventListener('beforeunload', this.onBeforeUnload));
 
     const hint = this.add
       .text(
@@ -75,10 +92,18 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(30);
     this.tweens.add({ targets: hint, alpha: 0, delay: 14000, duration: 1500, onComplete: () => hint.destroy() });
+    this.ready = true;
   }
 
   update(_t: number, deltaMs: number): void {
     if (GameState.gameOver) return;
+    if (this.saveDirty && GameState.phase === 'build') {
+      this.saveTimer -= deltaMs / 1000; // real time, not game-speed scaled
+      if (this.saveTimer <= 0) {
+        this.saveDirty = false;
+        this.saveRun();
+      }
+    }
     const dt = Math.min(deltaMs / 1000, 0.05) * GameState.speed;
     this.waveSystem.update(dt);
     this.conveyor.update(dt);
@@ -255,17 +280,63 @@ export class GameScene extends Phaser.Scene {
     if (newPath) b.path = newPath;
     b.invested += tier.money;
     const pipColor = b.path ? PATH_COLORS[b.path] : 0xffe066;
-    b.mkPips = b.mkPips ?? [];
-    b.mkPips.push(
-      this.add.rectangle(cx - 12 + (b.mk - 2) * 8, cy - 15, 5, 5, pipColor).setDepth(6).setStrokeStyle(1, 0xb8962e),
-    );
+    this.addMkPip(b, b.mk);
     progress.record('upgradesBought');
+    this.requestSave();
     if (b.mk === MAX_MK) progress.record('maxedTowers');
     this.burst(cx, cy, pipColor, 20);
     this.floatText(cx, cy - 16, newPath ? `${pathOf(b.type, newPath).name}!` : `Mk${b.mk}!`, '#ffe066');
     this.cameras.main.shake(80, 0.002);
     sfx.waveClear();
     this.refreshPanel();
+  }
+
+  // ---------- save / restore ----------
+
+  /** Save on every return to build phase — the wave-clear checkpoint. */
+  private onPhaseSave = (): void => {
+    if (this.ready && GameState.phase === 'build' && !GameState.gameOver) this.saveRun();
+  };
+
+  /** The run is over: clear the slot (lifetime stats/achievements persist separately). */
+  private onGameOverClear = (): void => {
+    this.saveDirty = false;
+    clearLocal();
+  };
+
+  private onBeforeUnload = (): void => {
+    if (this.ready && !GameState.gameOver && GameState.phase === 'build') this.saveRun();
+  };
+
+  private saveRun(): void {
+    saveLocal(captureRun(this.grid.buildings, this.conveyor.items, GameState));
+  }
+
+  /** Debounce build-phase edits (drag-painting belts fires many per second). */
+  private requestSave(): void {
+    this.saveDirty = true;
+    this.saveTimer = 1.0;
+  }
+
+  private applySave(save: SaveV1): void {
+    GameState.applySnapshot(save);
+    for (const sb of save.buildings) {
+      if (!this.grid.canPlace(sb.t, sb.x, sb.y)) continue; // stale save vs map change — skip
+      const b = this.placeBuilding(sb.t, sb.x, sb.y, sb.d);
+      b.mk = sb.mk ?? 1;
+      b.path = sb.path ?? null;
+      if (sb.ammo !== undefined) b.ammo = sb.ammo;
+      b.timer = sb.timer ?? 0;
+      b.crafting = sb.crafting ?? false;
+      b.inputOre = sb.inOre ?? 0;
+      b.outputBuf = sb.outBuf ?? 0;
+      b.outIdx = sb.outIdx ?? 0;
+      b.invested = sb.inv;
+      for (let mk = 2; mk <= b.mk; mk++) this.addMkPip(b, mk);
+    }
+    for (const si of save.items) {
+      this.conveyor.restoreItem(si.t, si.cx, si.cy, si.px, si.py, si.a ?? 1);
+    }
   }
 
   // ---------- input & placement ----------
@@ -326,32 +397,20 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private tryPlace(type: BuildingType, tx: number, ty: number, silent: boolean): void {
-    if (GameState.gameOver) return;
-    if (!this.grid.canPlace(type, tx, ty)) {
-      if (!silent) sfx.error();
-      return;
-    }
-    if (!GameState.spend(costOf(type))) {
-      if (!silent) {
-        sfx.error();
-        this.floatText(tx * TILE + 16, ty * TILE + 8, 'Need $' + costOf(type), '#ff5555');
-      }
-      return;
-    }
-
+  /** Construction half of placement (sprite, barrel, ammo bar, grid entry) — no cost/validity checks or juice. Restore reuses it. */
+  private placeBuilding(type: BuildingType, tx: number, ty: number, dir: Dir): Building {
     const cx = tx * TILE + TILE / 2;
     const cy = ty * TILE + TILE / 2;
     const tower = isTower(type);
     const depth = type === 'belt' || type === 'splitter' ? 1 : 3;
     const sprite = this.add.image(cx, cy, type).setDepth(depth);
-    if (!tower) sprite.setRotation((this.buildDir * Math.PI) / 2);
+    if (!tower) sprite.setRotation((dir * Math.PI) / 2);
 
     const b: Building = {
       type,
       x: tx,
       y: ty,
-      dir: this.buildDir,
+      dir,
       sprite,
       item: null,
       outIdx: 0,
@@ -374,11 +433,39 @@ export class GameScene extends Phaser.Scene {
       b.ammoBar = this.add.rectangle(cx - 12, cy + 15, 24, 3, barColor).setOrigin(0, 0.5).setDepth(6);
     }
     this.grid.place(b);
+    return b;
+  }
 
-    sprite.setScale(0.5);
-    this.tweens.add({ targets: sprite, scale: 1, duration: 130, ease: 'Back.out' });
+  private addMkPip(b: Building, mkLevel: number): void {
+    const cx = b.x * TILE + TILE / 2;
+    const cy = b.y * TILE + TILE / 2;
+    const color = mkLevel >= 3 && b.path ? PATH_COLORS[b.path] : 0xffe066;
+    b.mkPips = b.mkPips ?? [];
+    b.mkPips.push(
+      this.add.rectangle(cx - 12 + (mkLevel - 2) * 8, cy - 15, 5, 5, color).setDepth(6).setStrokeStyle(1, 0xb8962e),
+    );
+  }
+
+  private tryPlace(type: BuildingType, tx: number, ty: number, silent: boolean): void {
+    if (GameState.gameOver) return;
+    if (!this.grid.canPlace(type, tx, ty)) {
+      if (!silent) sfx.error();
+      return;
+    }
+    if (!GameState.spend(costOf(type))) {
+      if (!silent) {
+        sfx.error();
+        this.floatText(tx * TILE + 16, ty * TILE + 8, 'Need $' + costOf(type), '#ff5555');
+      }
+      return;
+    }
+
+    const b = this.placeBuilding(type, tx, ty, this.buildDir);
+    b.sprite.setScale(0.5);
+    this.tweens.add({ targets: b.sprite, scale: 1, duration: 130, ease: 'Back.out' });
     sfx.place();
     if (type === 'tunnel') progress.record('tunnelsBuilt');
+    this.requestSave();
   }
 
   private sell(b: Building): void {
@@ -394,6 +481,7 @@ export class GameScene extends Phaser.Scene {
     this.floatText(b.x * TILE + 16, b.y * TILE + 8, `+$${refund}`, '#9aa7bd');
     this.burst(b.x * TILE + 16, b.y * TILE + 16, 0x9aa7bd, 8);
     sfx.sell();
+    this.requestSave();
   }
 
   private updateGhost(): void {

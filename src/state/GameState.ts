@@ -63,6 +63,23 @@ class GameStateClass {
     this.events.emit('wave', this.wave);
   }
 
+  /** Restore a loaded run's counters (always lands in build phase). Mirrors reset()'s event burst. */
+  applySnapshot(s: { money: number; lives: number; wave: number; speed: 1 | 2 | 3; auto: boolean }): void {
+    this.money = s.money;
+    this.lives = s.lives;
+    this.wave = s.wave;
+    this.phase = 'build';
+    this.gameOver = false;
+    this.speed = s.speed;
+    this.auto = s.auto;
+    this.events.emit('money', this.money);
+    this.events.emit('lives', this.lives);
+    this.events.emit('wave', this.wave);
+    this.events.emit('phase', this.phase);
+    this.events.emit('speed', this.speed);
+    this.events.emit('auto', this.auto);
+  }
+
   reset(): void {
     this.money = START_MONEY;
     this.lives = START_LIVES;

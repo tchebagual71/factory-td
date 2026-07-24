@@ -126,6 +126,20 @@ export class ConveyorSystem {
     return true;
   }
 
+  /**
+   * Recreate a saved item on its host cell, mid-glide position and tunnel-transit
+   * alpha included. Returns null if the cell can't host it (corrupt/stale save).
+   */
+  restoreItem(type: ItemType, cx: number, cy: number, px: number, py: number, alpha = 1): ItemEnt | null {
+    const host = this.grid.cellAt(cx, cy)?.building;
+    if (!host || (host.type !== 'belt' && host.type !== 'splitter' && host.type !== 'tunnel') || host.item) return null;
+    const sprite = this.scene.add.image(px, py, ITEM_TEXTURE[type]).setDepth(4).setAlpha(alpha);
+    const it: ItemEnt = { type, cx, cy, sprite };
+    host.item = it;
+    this.items.push(it);
+    return it;
+  }
+
   /** Destroy an item wherever it is (belt removed, restart, etc.). */
   destroyItem(it: ItemEnt): void {
     const i = this.items.indexOf(it);
