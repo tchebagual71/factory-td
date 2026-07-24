@@ -17,13 +17,10 @@ import {
 import { fetchLeaderboard, syncOnSignIn } from '../services/cloud';
 import { clearLocal, loadLocal, setPendingLoad } from '../state/persistence';
 import { progress } from '../state/progress';
+import { anchorInput } from '../utils/htmlInput';
 import { sfx } from '../utils/sfx';
 
 const FONT = { fontFamily: 'monospace' };
-// box-sizing + explicit height keep the browser from inflating the element past
-// the layout's assumptions (the earlier source of inputs overlapping buttons)
-const INPUT_CSS =
-  'box-sizing: border-box; width: 250px; height: 38px; padding: 0 10px; font-family: monospace; font-size: 13px; background: #1e2233; color: #e8edf5; border: 2px solid #2b3040; border-radius: 0; outline: none;';
 
 /**
  * Title screen: continue/new-run, achievements, leaderboard, account.
@@ -36,7 +33,8 @@ export class MenuScene extends Phaser.Scene {
   private confirmingNewRun = false;
   private shownUserId: string | null = null;
   private unsubAuth?: () => void;
-  private modal: Phaser.GameObjects.GameObject[] = [];
+  /** everything belonging to the open modal — Phaser objects and anchored HTML inputs alike */
+  private modal: Array<{ destroy: () => void }> = [];
 
   constructor() {
     super('menu');
@@ -146,6 +144,8 @@ export class MenuScene extends Phaser.Scene {
     });
 
     this.input.keyboard?.on('keydown-ESC', () => this.closeModal());
+    // anchored HTML inputs live on document.body — never leak them past this scene
+    this.events.once('shutdown', () => this.closeModal());
   }
 
   private button(
@@ -332,14 +332,12 @@ export class MenuScene extends Phaser.Scene {
       );
     };
     const inputRow = (y: number, placeholder: string, btnText: string, onSubmit: (value: string) => void) => {
-      const input = this.add.dom(cx - 85, y, 'input', INPUT_CSS).setDepth(13);
-      const node = input.node as HTMLInputElement;
-      node.placeholder = placeholder;
-      node.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') onSubmit(node.value.trim());
+      const input = anchorInput(this, cx - 85, y, 250, 38, placeholder);
+      input.node.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') onSubmit(input.node.value.trim());
       });
       this.modal.push(input);
-      this.modalButton(cx + 130, y, 150, btnText, () => onSubmit(node.value.trim()));
+      this.modalButton(cx + 130, y, 150, btnText, () => onSubmit(input.node.value.trim()));
     };
     const withEmail = (value: string, send: () => void) => {
       if (value.includes('@')) send();
