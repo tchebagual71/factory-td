@@ -8,6 +8,6 @@ export const UI_H = GAME_H - PLAYFIELD_H; // 80
 
 export const BELT_SPEED = 70; // px/sec item travel speed
 
-export const START_MONEY = 250;
+export const START_MONEY = 450;
 export const START_LIVES = 20;
 
