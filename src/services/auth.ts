@@ -74,11 +74,12 @@ export function isAnonymous(u: User | null): boolean {
   return u?.is_anonymous === true;
 }
 
-/** Short label for the account chip. */
+/** Short label for the account chip; long emails are truncated so they never crowd the layout. */
 export function accountLabel(u: User | null): string {
   if (!u) return 'GUEST';
   if (isAnonymous(u)) return 'CLOUD GUEST';
-  return u.email ?? (u.user_metadata?.name as string | undefined) ?? 'SIGNED IN';
+  const label = u.email ?? (u.user_metadata?.name as string | undefined) ?? 'SIGNED IN';
+  return label.length > 26 ? `${label.slice(0, 24)}…` : label;
 }
 
 /** Subscribe to auth changes; returns an unsubscribe function. */

@@ -177,27 +177,28 @@ export class GameScene extends Phaser.Scene {
 
   private createUpgradePanel(): void {
     this.panel = this.add.container(GAME_W - 266, 44).setDepth(40).setVisible(false);
-    const bg = this.add.rectangle(0, 0, 258, 104, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
+    const bg = this.add.rectangle(0, 0, 258, 124, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
     this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: '13px', fontStyle: 'bold', color: '#ffe066' });
     this.panelInfo = this.add.text(10, 25, '', { fontFamily: 'monospace', fontSize: '10px', color: '#cdd6e4', lineSpacing: 2 });
     // Two fixed button slots: A alone for linear tiers, A+B at the Mk3 branch.
+    // Buttons sit below the 4-line branch info (ends ~y90).
     this.panelBtnA = this.add
-      .rectangle(10, 78, 114, 20, 0x2e7d4f)
+      .rectangle(10, 96, 114, 22, 0x2e7d4f)
       .setOrigin(0)
       .setStrokeStyle(1, 0x5ef078)
       .setInteractive({ useHandCursor: true });
     this.panelBtnA.on('pointerdown', () => this.tryUpgrade(0));
     this.panelBtnAText = this.add
-      .text(67, 88, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
+      .text(67, 107, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
     this.panelBtnB = this.add
-      .rectangle(134, 78, 114, 20, 0x2e7d4f)
+      .rectangle(134, 96, 114, 22, 0x2e7d4f)
       .setOrigin(0)
       .setStrokeStyle(1, 0x5ef078)
       .setInteractive({ useHandCursor: true });
     this.panelBtnB.on('pointerdown', () => this.tryUpgrade(1));
     this.panelBtnBText = this.add
-      .text(191, 88, '', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
+      .text(191, 107, '', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
     this.panel.add([bg, this.panelTitle, this.panelInfo, this.panelBtnA, this.panelBtnAText, this.panelBtnB, this.panelBtnBText]);
   }

@@ -137,6 +137,8 @@ export class MenuScene extends Phaser.Scene {
       this.unsubAuth?.();
       this.unsubAuth = undefined;
     });
+
+    this.input.keyboard?.on('keydown-ESC', () => this.closeModal());
   }
 
   private button(
@@ -170,15 +172,18 @@ export class MenuScene extends Phaser.Scene {
 
   // ---------- modal helpers ----------
 
-  private openModal(height = 560): { closeAll: () => void } {
+  private openModal(height = 560, width = 980): void {
     this.closeModal();
+    // dim swallows and closes on outside-clicks; the panel is interactive so
+    // clicks inside it never reach the dim (input.topOnly is true by default)
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.75).setOrigin(0).setDepth(10).setInteractive();
+    dim.on('pointerdown', () => this.closeModal());
     const panel = this.add
-      .rectangle(GAME_W / 2, GAME_H / 2, 980, height, 0x141625, 0.98)
+      .rectangle(GAME_W / 2, GAME_H / 2, width, height, 0x141625, 0.98)
       .setStrokeStyle(2, 0x2b3040)
-      .setDepth(11);
+      .setDepth(11)
+      .setInteractive();
     this.modal.push(dim, panel);
-    return { closeAll: () => this.closeModal() };
   }
 
   private closeModal(): void {
@@ -301,103 +306,98 @@ export class MenuScene extends Phaser.Scene {
   // ---------- account ----------
 
   private async showAccount(): Promise<void> {
-    const H = 460;
-    this.openModal(H);
-    const user = await currentUser();
+    const user = await currentUser(); // resolve first so the layout matches the auth state
+    const H = user ? 500 : 480;
+    this.openModal(H, 560);
     this.modalTitle(user ? 'ACCOUNT' : 'SIGN IN', H);
 
     const cx = GAME_W / 2;
+    const top = GAME_H / 2 - H / 2;
     const status = this.add
-      .text(cx, GAME_H / 2 + H / 2 - 84, '', { ...FONT, fontSize: '12px', color: '#ffd75e', align: 'center', wordWrap: { width: 760 } })
+      .text(cx, top + H - 92, '', { ...FONT, fontSize: '12px', color: '#ffd75e', align: 'center', wordWrap: { width: 480 } })
       .setOrigin(0.5)
       .setDepth(12);
     this.modal.push(status);
 
-    if (!user) {
+    const note = (y: number, text: string, color = '#8892a6', size = '11px') => {
       this.modal.push(
-        this.add
-          .text(cx, 160, 'Optional — guests keep local saves. An account adds\ncross-device saves, the leaderboard, and synced achievements.', {
-            ...FONT, fontSize: '12px', color: '#cdd6e4', align: 'center',
-          })
-          .setOrigin(0.5)
-          .setDepth(12),
+        this.add.text(cx, y, text, { ...FONT, fontSize: size, color, align: 'center' }).setOrigin(0.5).setDepth(12),
       );
-      this.modalButton(cx, 220, 380, 'SIGN IN WITH GOOGLE', () => {
+    };
+    const inputRow = (y: number, placeholder: string, btnText: string, onSubmit: (value: string) => void) => {
+      const input = this.add.dom(cx - 85, y, 'input', INPUT_CSS).setDepth(13);
+      const node = input.node as HTMLInputElement;
+      node.placeholder = placeholder;
+      node.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') onSubmit(node.value.trim());
+      });
+      this.modal.push(input);
+      this.modalButton(cx + 130, y, 150, btnText, () => onSubmit(node.value.trim()));
+    };
+    const withEmail = (value: string, send: () => void) => {
+      if (value.includes('@')) send();
+      else status.setText('Enter a valid email first');
+    };
+
+    if (!user) {
+      let y = top + 92;
+      note(y, 'Optional — guests keep local saves. An account adds\ncross-device saves, the leaderboard, and synced achievements.', '#cdd6e4', '12px');
+      y += 52;
+      this.modalButton(cx, y, 440, 'SIGN IN WITH GOOGLE', () => {
         status.setText('Redirecting to Google…');
         void signInGoogle().then((err) => err && status.setText(err));
       });
-
-      const email = this.add.dom(cx - 70, 285, 'input', INPUT_CSS).setDepth(13);
-      (email.node as HTMLInputElement).placeholder = 'you@example.com';
-      this.modal.push(email);
-      this.modalButton(cx + 155, 285, 170, 'MAGIC LINK', () => {
-        const value = (email.node as HTMLInputElement).value.trim();
-        if (!value.includes('@')) {
-          status.setText('Enter a valid email first');
-          return;
-        }
-        status.setText('Sending…');
-        void signInMagicLink(value).then((err) => status.setText(err ?? 'Check your email for the sign-in link!'));
-      });
-
-      this.modalButton(cx, 350, 380, 'CLOUD BACKUP WITHOUT EMAIL', () => {
+      y += 58;
+      inputRow(y, 'you@example.com', 'MAGIC LINK', (value) =>
+        withEmail(value, () => {
+          status.setText('Sending…');
+          void signInMagicLink(value).then((err) => status.setText(err ?? 'Check your email for the sign-in link!'));
+        }),
+      );
+      y += 58;
+      this.modalButton(cx, y, 440, 'CLOUD BACKUP WITHOUT EMAIL', () => {
         status.setText('Creating anonymous account…');
         void signInAnon().then((err) => err && status.setText(err));
       });
-      this.modal.push(
-        this.add
-          .text(cx, 382, 'device-bound; upgrade to Google/email later to keep it forever', { ...FONT, fontSize: '10px', color: '#8892a6' })
-          .setOrigin(0.5)
-          .setDepth(12),
-      );
+      y += 32;
+      note(y, 'device-bound; upgrade to Google/email later to keep it forever', '#8892a6', '10px');
     } else {
+      let y = top + 88;
       this.modal.push(
         this.add
-          .text(cx, 155, accountLabel(user), { ...FONT, fontSize: '15px', fontStyle: 'bold', color: '#5ef078' })
+          .text(cx, y, accountLabel(user), { ...FONT, fontSize: '15px', fontStyle: 'bold', color: '#5ef078' })
           .setOrigin(0.5)
           .setDepth(12),
       );
+      y += 36;
       if (isAnonymous(user)) {
-        this.modal.push(
-          this.add
-            .text(cx, 182, 'Anonymous account — link it to keep your progress\neven if you clear browser data or switch devices.', {
-              ...FONT, fontSize: '11px', color: '#ffd75e', align: 'center',
-            })
-            .setOrigin(0.5)
-            .setDepth(12),
-        );
-        this.modalButton(cx, 230, 380, 'LINK GOOGLE ACCOUNT', () => {
+        note(y + 8, 'Anonymous account — link it to keep your progress\neven if you clear browser data or switch devices.', '#ffd75e');
+        y += 48;
+        this.modalButton(cx, y, 440, 'LINK GOOGLE ACCOUNT', () => {
           status.setText('Redirecting to Google…');
           void linkGoogle().then((err) => err && status.setText(err));
         });
-        const email = this.add.dom(cx - 70, 290, 'input', INPUT_CSS).setDepth(13);
-        (email.node as HTMLInputElement).placeholder = 'you@example.com';
-        this.modal.push(email);
-        this.modalButton(cx + 155, 290, 170, 'LINK EMAIL', () => {
-          const value = (email.node as HTMLInputElement).value.trim();
-          if (!value.includes('@')) {
-            status.setText('Enter a valid email first');
-            return;
-          }
-          status.setText('Linking…');
-          void linkEmail(value).then((err) =>
-            status.setText(
-              err
-                ? `${err} — if that email already has an account, sign out and sign in with it; local progress merges automatically.`
-                : 'Confirmation email sent — click the link to finish.',
-            ),
-          );
-        });
+        y += 58;
+        inputRow(y, 'you@example.com', 'LINK EMAIL', (value) =>
+          withEmail(value, () => {
+            status.setText('Linking…');
+            void linkEmail(value).then((err) =>
+              status.setText(
+                err
+                  ? `${err} — if that email already has an account, sign out and sign in with it; local progress merges automatically.`
+                  : 'Confirmation email sent — click the link to finish.',
+              ),
+            );
+          }),
+        );
+        y += 58;
       } else {
-        const name = this.add.dom(cx - 70, 230, 'input', INPUT_CSS).setDepth(13);
-        (name.node as HTMLInputElement).placeholder = 'display name (leaderboard)';
-        this.modal.push(name);
-        this.modalButton(cx + 155, 230, 170, 'SET NAME', () => {
-          const value = (name.node as HTMLInputElement).value;
+        inputRow(y + 12, 'display name (leaderboard)', 'SET NAME', (value) => {
           void setDisplayName(value).then((err) => status.setText(err ?? 'Name updated!'));
         });
+        y += 70;
       }
-      this.modalButton(cx, isAnonymous(user) ? 350 : 310, 380, 'SIGN OUT', () => {
+      this.modalButton(cx, y, 440, 'SIGN OUT', () => {
         status.setText('Signing out…');
         void signOut();
       });
