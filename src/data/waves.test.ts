@@ -71,10 +71,15 @@ describe('resistMult', () => {
     expect(resistMult('armored', 'shell')).toBe(1);
   });
 
+  it('piercing rounds punch straight through armor — the crystal line pays off', () => {
+    expect(resistMult('armored', 'piercing')).toBe(1);
+  });
+
   it('everything else takes full damage', () => {
     for (const kind of ['normal', 'swift', 'boss'] as const) {
-      expect(resistMult(kind, 'ammo')).toBe(1);
-      expect(resistMult(kind, 'shell')).toBe(1);
+      for (const ammo of ['ammo', 'shell', 'piercing'] as const) {
+        expect(resistMult(kind, ammo)).toBe(1);
+      }
     }
   });
 });

@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_W, GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
 import { costOf, effStats, isTower, MAX_MK, nextTier, pathOf, TOWERS, UPGRADE_TREE, UpgradeTier } from '../data/buildings';
-import { computePathCells, ORE_PATCHES, PATH_WAYPOINTS } from '../data/map';
+import { computePathCells, CRYSTAL_PATCHES, ORE_PATCHES, PATH_WAYPOINTS } from '../data/map';
 import { clearSave, pushBest, pushSave } from '../services/cloud';
 import { GameState } from '../state/GameState';
 import { clearLocal, consumePendingLoad, saveLocal } from '../state/persistence';
@@ -16,7 +16,14 @@ import { Building, BuildingType, Dir, PathId } from '../types';
 import { sfx } from '../utils/sfx';
 
 /** Mk-pip / float-text tint per specialization path. */
-const PATH_COLORS: Record<PathId, number> = { sniper: 0x6bd4ff, gatling: 0xffe066, siege: 0xff9f43, flak: 0xb18cff };
+const PATH_COLORS: Record<PathId, number> = {
+  sniper: 0x6bd4ff,
+  gatling: 0xffe066,
+  siege: 0xff9f43,
+  flak: 0xb18cff,
+  railgun: 0x7cf7c4,
+  volley: 0xff7ad9,
+};
 
 export class GameScene extends Phaser.Scene {
   private grid!: GridSystem;
@@ -105,7 +112,7 @@ export class GameScene extends Phaser.Scene {
       .text(
         640,
         90,
-        'MINERS on ore → belt ore into a PRESS (ammo for GUNS) or FORGE (shells for CANNONS)\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!  [SPACE] sends the wave.',
+        'MINERS on ore → belt ore into a PRESS (ammo for GUNS) or FORGE (shells for CANNONS)\nBlue crystal patches feed the ASSEMBLER (2 ore + 1 crystal → piercing rounds for LANCERS)\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!  [SPACE] sends the wave.',
         { fontFamily: 'monospace', fontSize: '14px', color: '#cdd6e4', align: 'center', stroke: '#000', strokeThickness: 4 },
       )
       .setOrigin(0.5)
@@ -229,7 +236,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     const cur = effStats(b.type, b.mk, b.path);
-    const label = b.type === 'cannon' ? 'CANNON' : 'GUN TOWER';
+    const label = b.type === 'cannon' ? 'CANNON' : b.type === 'lancer' ? 'LANCER' : 'GUN TOWER';
     const pathName = b.path ? ` · ${pathOf(b.type, b.path).name}` : '';
     this.panel.setVisible(true);
     this.panelTitle.setText(`${label} Mk${b.mk}${pathName}`);
@@ -369,6 +376,7 @@ export class GameScene extends Phaser.Scene {
       b.timer = sb.timer ?? 0;
       b.crafting = sb.crafting ?? false;
       b.inputOre = sb.inOre ?? 0;
+      b.inputCrystal = sb.inCry ?? 0;
       b.outputBuf = sb.outBuf ?? 0;
       b.outIdx = sb.outIdx ?? 0;
       b.invested = sb.inv;
@@ -391,8 +399,10 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-FOUR', () => this.select('miner'));
     kb.on('keydown-FIVE', () => this.select('press'));
     kb.on('keydown-SIX', () => this.select('forge'));
-    kb.on('keydown-SEVEN', () => this.select('tower'));
-    kb.on('keydown-EIGHT', () => this.select('cannon'));
+    kb.on('keydown-SEVEN', () => this.select('assembler'));
+    kb.on('keydown-EIGHT', () => this.select('tower'));
+    kb.on('keydown-NINE', () => this.select('cannon'));
+    kb.on('keydown-ZERO', () => this.select('lancer'));
     kb.on('keydown-U', () => this.tryUpgrade(0));
     kb.on('keydown-I', () => this.tryUpgrade(1));
     kb.on('keydown-R', () => {
@@ -458,6 +468,7 @@ export class GameScene extends Phaser.Scene {
       timer: 0,
       crafting: false,
       inputOre: 0,
+      inputCrystal: 0,
       outputBuf: 0,
       ammo: tower ? TOWERS[type].startAmmo : 0,
       cooldown: 0,
@@ -466,11 +477,9 @@ export class GameScene extends Phaser.Scene {
       invested: costOf(type),
     };
     if (tower) {
-      const barColor = type === 'cannon' ? 0xff9f43 : 0xffe066;
-      b.barrel = this.add
-        .image(cx, cy, type === 'cannon' ? 'barrel-cannon' : 'barrel')
-        .setOrigin(0.15, 0.5)
-        .setDepth(4);
+      const barColor = type === 'cannon' ? 0xff9f43 : type === 'lancer' ? 0x6bd4ff : 0xffe066;
+      const barrelTexture = type === 'cannon' ? 'barrel-cannon' : type === 'lancer' ? 'barrel-lancer' : 'barrel';
+      b.barrel = this.add.image(cx, cy, barrelTexture).setOrigin(0.15, 0.5).setDepth(4);
       b.ammoBar = this.add.rectangle(cx - 12, cy + 15, 24, 3, barColor).setOrigin(0, 0.5).setDepth(6);
     }
     this.grid.place(b);
@@ -546,14 +555,15 @@ export class GameScene extends Phaser.Scene {
     }
     const cx = tx * TILE + TILE / 2;
     const cy = ty * TILE + TILE / 2;
-    const ok = this.grid.canPlace(this.selected, tx, ty) && GameState.money >= costOf(this.selected);
-    const towerSel = isTower(this.selected);
+    const sel = this.selected;
+    const ok = this.grid.canPlace(sel, tx, ty) && GameState.money >= costOf(sel);
+    const towerSel = isTower(sel);
     this.ghost
       .setAlpha(0.6)
       .setPosition(cx, cy)
       .setRotation(towerSel ? 0 : (this.buildDir * Math.PI) / 2)
       .setTint(ok ? 0x88ff88 : 0xff6666);
-    if (towerSel) this.rangeCircle.setRadius(TOWERS[this.selected as 'tower' | 'cannon'].range);
+    if (towerSel) this.rangeCircle.setRadius(TOWERS[sel].range);
     this.rangeCircle.setVisible(towerSel).setPosition(cx, cy);
   }
 
@@ -591,6 +601,25 @@ export class GameScene extends Phaser.Scene {
           g.fillStyle(0xff9f43);
           g.fillCircle(px + 9, py + 11, 2);
           g.fillCircle(px + 22, py + 20, 2.5);
+        }
+      }
+    }
+    // crystal: cool blue shards on darker rock, unmistakable against the warm ore
+    for (const patch of CRYSTAL_PATCHES) {
+      for (let y = patch.y; y < patch.y + patch.h; y++) {
+        for (let x = patch.x; x < patch.x + patch.w; x++) {
+          const px = x * TILE;
+          const py = y * TILE;
+          g.fillStyle(0x1f2c3a);
+          g.fillRect(px, py, TILE, TILE);
+          g.fillStyle(0x2f7f9e);
+          g.fillTriangle(px + 10, py + 24, px + 15, py + 6, px + 20, py + 24);
+          g.fillTriangle(px + 20, py + 26, px + 24, py + 13, px + 28, py + 26);
+          g.fillStyle(0x6bd4ff);
+          g.fillTriangle(px + 13, py + 23, px + 15, py + 9, px + 17, py + 23);
+          g.fillTriangle(px + 22, py + 25, px + 24, py + 16, px + 26, py + 25);
+          g.fillStyle(0xc9f0ff);
+          g.fillCircle(px + 15, py + 13, 1.5);
         }
       }
     }

@@ -47,6 +47,29 @@ describe('captureRun → validateSave round trip', () => {
     expect(back!.items[0]).toMatchObject({ t: 'ammo', cx: 5, cy: 5 });
   });
 
+  it('preserves both assembler input buffers and a lancer specialization', () => {
+    const asm = makeBuilding('assembler', 9, 9);
+    asm.inputOre = 4;
+    asm.inputCrystal = 2;
+    const lancer = makeBuilding('lancer', 9, 10);
+    lancer.mk = 4;
+    lancer.path = 'volley';
+    lancer.ammo = 6;
+
+    const save = captureRun([asm, lancer], [], SNAPSHOT);
+    const back = validateSave(JSON.parse(JSON.stringify(save)))!;
+    expect(back).not.toBeNull();
+    expect(back.buildings[0]).toMatchObject({ t: 'assembler', inOre: 4, inCry: 2 });
+    expect(back.buildings[1]).toMatchObject({ t: 'lancer', mk: 4, path: 'volley', ammo: 6 });
+  });
+
+  it('accepts pre-crystal saves — the missing buffer just restores as empty', () => {
+    const legacy = { ...captureRun([], [], SNAPSHOT), buildings: [{ t: 'press', x: 4, y: 4, d: 0, inv: 60, inOre: 2 }] };
+    const back = validateSave(JSON.parse(JSON.stringify(legacy)))!;
+    expect(back).not.toBeNull();
+    expect(back.buildings[0].inCry).toBeUndefined();
+  });
+
   it('preserves tower mk and specialization path', () => {
     const save = captureRun([towerAt(3, 3)], [], SNAPSHOT);
     const back = validateSave(JSON.parse(JSON.stringify(save)))!;
@@ -81,6 +104,7 @@ describe('validateSave rejects corrupt input', () => {
     ['unknown building type', { ...base(), buildings: [{ t: 'nuke', x: 1, y: 1, d: 0, inv: 5 }] }],
     ['mk past MAX_MK', { ...base(), buildings: [{ t: 'tower', x: 1, y: 1, d: 0, inv: 90, mk: 9 }] }],
     ['invalid path id', { ...base(), buildings: [{ t: 'tower', x: 1, y: 1, d: 0, inv: 90, mk: 3, path: 'laser' }] }],
+    ['negative crystal buffer', { ...base(), buildings: [{ t: 'assembler', x: 1, y: 1, d: 0, inv: 170, inCry: -1 }] }],
     ['two buildings on one tile', { ...base(), buildings: [{ t: 'belt', x: 1, y: 1, d: 0, inv: 5 }, { t: 'belt', x: 1, y: 1, d: 2, inv: 5 }] }],
     ['unknown item type', { ...base(), items: [{ t: 'gold', cx: 1, cy: 1, px: 0, py: 0 }] }],
     ['item cell out of bounds', { ...base(), items: [{ t: 'ore', cx: -1, cy: 1, px: 0, py: 0 }] }],

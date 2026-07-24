@@ -1,3 +1,5 @@
+import { ItemType } from '../types';
+
 export type WaveKind = 'normal' | 'swift' | 'armored' | 'boss';
 
 export interface WaveDef {
@@ -69,8 +71,11 @@ export const WAVE_KIND_LABEL: Record<WaveKind, string> = {
   boss: 'BOSS',
 };
 
-/** Damage multiplier for a hit of `source` type against an enemy kind. */
-export function resistMult(kind: WaveKind, source: 'ore' | 'ammo' | 'shell'): number {
+/**
+ * Damage multiplier for a hit of `source` ammo against an enemy kind.
+ * Armor stops bullets; shells and piercing rounds go through it.
+ */
+export function resistMult(kind: WaveKind, source: ItemType): number {
   if (kind === 'armored' && source === 'ammo') return 0.25;
   return 1;
 }

@@ -24,6 +24,8 @@ export interface SavedBuilding {
   timer?: number;
   crafting?: boolean;
   inOre?: number;
+  /** buffered crystal (assembler); absent in saves written before crystal existed */
+  inCry?: number;
   outBuf?: number;
   outIdx?: number;
 }
@@ -77,6 +79,7 @@ export function captureRun(buildings: readonly Building[], items: readonly ItemE
       if (b.timer > 0) sb.timer = b.timer;
       if (b.crafting) sb.crafting = true;
       if (b.inputOre > 0) sb.inOre = b.inputOre;
+      if (b.inputCrystal > 0) sb.inCry = b.inputCrystal;
       if (b.outputBuf > 0) sb.outBuf = b.outputBuf;
       if (b.outIdx > 0) sb.outIdx = b.outIdx;
       return sb;
@@ -89,9 +92,20 @@ export function captureRun(buildings: readonly Building[], items: readonly ItemE
   };
 }
 
-const BUILDING_TYPES: readonly BuildingType[] = ['belt', 'splitter', 'tunnel', 'miner', 'press', 'forge', 'tower', 'cannon'];
-const ITEM_TYPES: readonly ItemType[] = ['ore', 'ammo', 'shell'];
-const PATH_IDS: readonly PathId[] = ['sniper', 'gatling', 'siege', 'flak'];
+const BUILDING_TYPES: readonly BuildingType[] = [
+  'belt',
+  'splitter',
+  'tunnel',
+  'miner',
+  'press',
+  'forge',
+  'assembler',
+  'tower',
+  'cannon',
+  'lancer',
+];
+const ITEM_TYPES: readonly ItemType[] = ['ore', 'crystal', 'ammo', 'shell', 'piercing'];
+const PATH_IDS: readonly PathId[] = ['sniper', 'gatling', 'siege', 'flak', 'railgun', 'volley'];
 
 function isFiniteNum(n: unknown): n is number {
   return typeof n === 'number' && Number.isFinite(n);
@@ -126,7 +140,7 @@ export function validateSave(raw: unknown): SaveV1 | null {
     if (!isFiniteNum(b.inv) || b.inv < 0) return null;
     if (b.mk !== undefined && (!isFiniteNum(b.mk) || b.mk < 1 || b.mk > MAX_MK)) return null;
     if (b.path !== undefined && b.path !== null && !PATH_IDS.includes(b.path as PathId)) return null;
-    for (const key of ['ammo', 'timer', 'inOre', 'outBuf', 'outIdx'] as const) {
+    for (const key of ['ammo', 'timer', 'inOre', 'inCry', 'outBuf', 'outIdx'] as const) {
       if (b[key] !== undefined && (!isFiniteNum(b[key]) || (b[key] as number) < 0)) return null;
     }
     if (b.crafting !== undefined && typeof b.crafting !== 'boolean') return null;

@@ -1,8 +1,13 @@
 import { GRID_H, GRID_W } from '../config';
-import { computePathCells, ORE_PATCHES } from '../data/map';
+import { computePathCells, CRYSTAL_PATCHES, inPatch, ORE_PATCHES } from '../data/map';
 import { Building, BuildingType } from '../types';
 
-export type CellKind = 'grass' | 'path' | 'ore';
+export type CellKind = 'grass' | 'path' | 'ore' | 'crystal';
+
+/** Raw resource a miner on this cell extracts, or null if it can't mine here. */
+export function minedResource(kind: CellKind): 'ore' | 'crystal' | null {
+  return kind === 'ore' || kind === 'crystal' ? kind : null;
+}
 
 export interface Cell {
   kind: CellKind;
@@ -21,9 +26,8 @@ export class GridSystem {
       for (let x = 0; x < GRID_W; x++) {
         let kind: CellKind = 'grass';
         if (pathCells.has(`${x},${y}`)) kind = 'path';
-        else if (ORE_PATCHES.some((p) => x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h)) {
-          kind = 'ore';
-        }
+        else if (inPatch(ORE_PATCHES, x, y)) kind = 'ore';
+        else if (inPatch(CRYSTAL_PATCHES, x, y)) kind = 'crystal';
         row.push({ kind, building: null });
       }
       this.cells.push(row);
@@ -41,7 +45,7 @@ export class GridSystem {
   canPlace(type: BuildingType, x: number, y: number): boolean {
     const cell = this.cellAt(x, y);
     if (!cell || cell.building || cell.kind === 'path') return false;
-    if (type === 'miner') return cell.kind === 'ore';
+    if (type === 'miner') return minedResource(cell.kind) !== null;
     return true;
   }
 

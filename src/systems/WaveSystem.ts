@@ -2,7 +2,7 @@ import { PATH_PX } from '../data/map';
 import { resistMult, waveClearBonus, waveDef, WaveDef } from '../data/waves';
 import { GameState } from '../state/GameState';
 import { progress } from '../state/progress';
-import { Enemy } from '../types';
+import { Enemy, ItemType } from '../types';
 import { sfx } from '../utils/sfx';
 import type { GameScene } from '../scenes/GameScene';
 
@@ -54,7 +54,7 @@ export class WaveSystem {
   }
 
   /** Apply damage (scaled by kind resistances); handles death, bounty, and juice. Returns true on kill. */
-  hit(e: Enemy, dmg: number, source: 'ore' | 'ammo' | 'shell' = 'ammo'): boolean {
+  hit(e: Enemy, dmg: number, source: ItemType = 'ammo'): boolean {
     if (e.dead) return false;
     const mult = resistMult(e.kind, source);
     e.hp -= Math.max(1, Math.round(dmg * mult));

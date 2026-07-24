@@ -63,8 +63,9 @@ export class UIScene extends Phaser.Scene {
     this.add.rectangle(0, PLAYFIELD_H, GAME_W, GAME_H - PLAYFIELD_H, 0x141625).setOrigin(0);
     this.add.rectangle(0, PLAYFIELD_H, GAME_W, 2, 0x2b3040).setOrigin(0);
 
+    // Ten slots have to fit left of the MENU button at x=862: 10×(80+4) = 836.
     let bx = 10;
-    const BW = 100;
+    const BW = 80;
     for (const info of BUILD_INFO) {
       const container = this.add.container(bx, PLAYFIELD_H + 8);
       const frame = this.add
@@ -90,7 +91,7 @@ export class UIScene extends Phaser.Scene {
       ]);
       this.paletteFrames.set(info.type, frame);
       this.paletteButtons.set(info.type, container);
-      bx += BW + 6;
+      bx += BW + 4;
     }
     this.descText = this.add.text(12, PLAYFIELD_H - 22, 'R rotate · drag paints belts · right-click sells 50% · click a tower to upgrade', {
       ...FONT,
@@ -200,7 +201,7 @@ export class UIScene extends Phaser.Scene {
     const KIND_HINT: Record<string, string> = {
       normal: '',
       swift: '\nfast & many — splash shines',
-      armored: '\nresists bullets — bring shells',
+      armored: '\nresists bullets — shells or lances',
       boss: '\ntanky · a leak costs 5♥',
     };
     this.previewText

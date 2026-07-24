@@ -60,6 +60,7 @@ export function makeBuilding(type: BuildingType, x: number, y: number, dir: Dir 
     timer: 0,
     crafting: false,
     inputOre: 0,
+    inputCrystal: 0,
     outputBuf: 0,
     ammo: 0,
     cooldown: 0,

@@ -58,7 +58,7 @@ src/
     auth.ts             # Google OAuth / magic link / anonymous + linking, profile upsert
     cloud.ts            # fire-and-forget save/score/achievement sync, leaderboard fetch, syncOnSignIn
   data/
-    map.ts              # fixed path waypoints + ore patch rectangles
+    map.ts              # fixed path waypoints + ore/crystal patch rectangles
     buildings.ts        # building stats & costs; UPGRADE_TREE (branching Mk paths) + effStats
     waves.ts            # wave scaling formulas (hp/count/speed/bounty, boss every 5th)
     achievements.ts     # achievement defs + pure unlock logic (ids match the DB CHECK regex)
@@ -79,7 +79,7 @@ src/
 ### Tile grid
 - 32px tiles, 40×20 grid (1280×640 playfield + 80px UI bar = 720p canvas)
 - `GridSystem` is the single source of truth for cell contents; all placement checks go through `canPlace()`
-- Cell kinds: `grass` (buildable), `path` (never buildable), `ore` (miners only)
+- Cell kinds: `grass` (buildable), `path` (never buildable), `ore` / `crystal` (the two miner-only resource kinds — `minedResource()` maps a cell kind to the item a miner on it digs)
 
 ### Conveyor & machine I/O
 - Each belt cell holds at most **one item**; items glide smoothly to their cell center, then hop to the next cell if free
@@ -91,16 +91,19 @@ src/
 ### Ammo economy (the genre bridge)
 - Towers have finite magazines (`ammoCap`), consume 1 ammo per shot, and are placed pre-loaded (`startAmmo`) so wave 1 flows before a factory exists
 - Production tree (stats in `data/buildings.ts`):
-  - Miner (ore patches only) → ore
+  - Miner (resource patches only) → ore, or crystal on crystal tiles — **one building, two resources**: the tile decides the item and the cycle (`minerCycle`, crystal is ~1.7× slower)
   - Press: 1 ore → 1 ammo → **Gun Tower** (fast, single-target)
   - Forge: 2 ore → 1 shell → **Cannon** (slow, splash damage, multi-kill money bonus at 3+ kills)
+  - Assembler: 2 ore + **1 crystal** → 1 piercing round → **Lancer** (tier-2; see below)
+- **Two raw resources**: crystal patches are small, few, and deliberately placed away from ore (`CRYSTAL_PATCHES` in `data/map.ts`), so a piercing line has to belt two inputs in from different pockets. Machines declare their recipe as `oreIn`/`crystalIn` and buffer each input separately (`Building.inputOre`/`inputCrystal`, capped per type); `recipeNeeds(machine, item)` is the single answer to "does this machine accept this item", used by both belt intake and the tests
+- **Lancer / piercing rounds** (tier-2): the lance locks its heading at fire time and keeps flying, skewering up to `pierce` enemies before dissipating — devastating aimed down a straight leg of a single-file path, and it ignores armor. `CombatSystem` splits projectiles into `HomingBullet` (guns/cannons) and `LanceBullet`; the lance uses a **swept segment test** (not an endpoint check) because at ×3 speed it covers >100px per tick, and resolves hits nearest-first so a limited pierce budget is spent on the front of the column. 3+ kills in one lance pays a SKEWER bonus
 - **Splitter**: belt node that round-robins items between straight/left/right outputs (skipping blocked ones); merging needs no special building — any belts pointing into the same cell merge
 - **Tunnel**: items dive underground and surface at the next tunnel with the same facing within 4 tiles (rendered at low alpha in transit); crosses the enemy path, other belts, anything. An unpaired tunnel degrades to plain-belt behavior
-- **Tower upgrades (branching tree)**: click a tower → upgrade panel. Mk1→Mk2 is shared; at Mk3 the tower picks a specialization path (guns: **Sniper** dmg/range vs **Gatling** fire rate; cannons: **Siege** splash/dmg vs **Flak** rate) with a Mk4 tier each (`UPGRADE_TREE`/`effStats(type, mk, path)` in `data/buildings.ts`, `MAX_MK = 4`). Each tier costs money + the tower's *full loaded magazine* — the factory arms the upgrade. Combat always reads `effStats`, never `TOWERS` directly; `Building.path` holds the choice; pips are path-colored
-- **Achievements & meta progression**: lifetime stats tracked in `state/progress.ts` (hooks in WaveSystem/CombatSystem/GameScene), defs + pure unlock logic in `data/achievements.ts`. Unlocks grant capped perks (≤ $100 total starting-money bonus, test-enforced) applied to fresh runs; toasts slide in top-right (UIScene)
-- **Resistances**: armored enemies take 25% damage from bullets, 100% from shells (`resistMult`) — the wave preview + tower mix read is the core strategic decision
-- Strategic intent: guns are cheap sustained DPS for bosses/normals; cannons counter swift swarms at choke points but their shells cost 2× ore — ore allocation between press and forge lines is the mid-game decision
-- Balance intent: one miner+press line sustains roughly *half* a continuously-firing gun tower — players must parallelize production, and between-wave downtime refills magazines
+- **Tower upgrades (branching tree)**: click a tower → upgrade panel. Mk1→Mk2 is shared; at Mk3 the tower picks a specialization path (guns: **Sniper** dmg/range vs **Gatling** fire rate; cannons: **Siege** splash/dmg vs **Flak** rate; lancers: **Railgun** dmg/range vs **Volley** rate/pierce) with a Mk4 tier each (`UPGRADE_TREE`/`effStats(type, mk, path)` in `data/buildings.ts`, `MAX_MK = 4`). Each tier costs money + the tower's *full loaded magazine* — the factory arms the upgrade. Combat always reads `effStats`, never `TOWERS` directly; `Building.path` holds the choice; pips are path-colored
+- **Achievements & meta progression**: lifetime stats tracked in `state/progress.ts` (hooks in WaveSystem/CombatSystem/GameScene), defs + pure unlock logic in `data/achievements.ts` (15 defs). Unlocks grant capped perks (≤ $100 total starting-money bonus, test-enforced) applied to fresh runs; toasts slide in top-right (UIScene)
+- **Resistances**: armored enemies take 25% damage from bullets, 100% from shells and piercing rounds (`resistMult`) — the wave preview + tower mix read is the core strategic decision
+- Strategic intent: guns are cheap sustained DPS for bosses/normals; cannons counter swift swarms at choke points but their shells cost 2× ore; lancers answer armored columns but consume the scarce crystal — ore/crystal allocation between press, forge, and assembler lines is the mid-game decision
+- Balance intent: one miner+press line sustains roughly *half* a continuously-firing gun tower, and one assembler line (1 ore miner + 1 crystal miner) sustains roughly *half* a lancer — the same pressure at both tiers. Players must parallelize production, and between-wave downtime refills magazines
 
 ### Systems tick order (per `GameScene.update`)
 1. `WaveSystem` — spawn/move enemies, resolve leaks & wave completion
@@ -116,6 +119,7 @@ src/
 
 ### Save/resume & cloud sync
 - `state/serialize.ts` is the contract: pure `captureRun`/`validateSave`, versioned (`v: 1`); saves happen only in build phase so enemies/bullets never serialize. Never trust stored/cloud JSON — everything re-validates through `validateSave`
+- New state is added as *optional* fields (`mk`, `path`, `inCry`, …) so older saves keep validating and restore with sensible defaults; bump `v` only for a change that would make an old save restore *wrong* rather than incomplete
 - Autosave: on every return to build phase (wave-clear checkpoint), debounced 1s on build edits, `beforeunload` flush; run slot cleared on game over. `GameScene.ready` guards against saving during `create()` event bursts
 - localStorage (`ftd:run`) is ALWAYS the primary store; cloud (`services/cloud.ts`) is a best-effort mirror for signed-in players — every cloud call is fire-and-forget and a paused/blocked Supabase degrades to the guest experience
 - Purity rule for tests: `serialize.ts`/`mergeProgress.ts`/`data/achievements.ts` must never import services or Phaser-dependent modules; services import pure modules, never the reverse
@@ -130,7 +134,7 @@ src/
 
 ## Balancing
 
-Numbers live in `data/buildings.ts` and `data/waves.ts` — tune there, not inline. Current curve: enemy HP ×1.22/wave, count 4+2n; boss waves (every 5th) are few/slow/tanky with 5-life leaks. When changing tower fire rate or press cycle time, keep the "one supply line ≈ half a tower" pressure — `npm test` enforces that invariant plus the wave rhythm, resistances, and conveyor rules (`*.test.ts` next to each module), so run it after tuning. A PostToolUse hook (`.claude/settings.json` → `scripts/typecheck-hook.mjs`) typechecks after every TS edit.
+Numbers live in `data/buildings.ts` and `data/waves.ts` — tune there, not inline. Current curve: enemy HP ×1.22/wave, count 4+2n; boss waves (every 5th) are few/slow/tanky with 5-life leaks. When changing tower fire rate or press/assembler cycle time, keep the "one supply line ≈ half a tower" pressure at *both* tiers — `npm test` enforces that invariant plus the wave rhythm, resistances, crystal scarcity, recipe intake, and conveyor rules (`*.test.ts` next to each module), so run it after tuning. A PostToolUse hook (`.claude/settings.json` → `scripts/typecheck-hook.mjs`) typechecks after every TS edit.
 
 ## Release Roadmap (tracked — update status here as each lands)
 
@@ -139,7 +143,7 @@ Ranked for fun/strategy impact. Mark `[x]` with a one-line note when shipped.
 1. `[x]` **Tower upgrades paid in manufactured goods** — shipped, then extended to a branching tree: shared Mk2, path choice at Mk3 (sniper/gatling, siege/flak), Mk4 caps (`UPGRADE_TREE`/`effStats` in `data/buildings.ts`); sell refunds half of total invested
 2. `[x]` **Armor/resistance enemy types** — shipped: armored waves (even waves from 6 that aren't swift/boss) take 25% bullet damage, full shell damage (`resistMult` in `data/waves.ts`); resisted hits flash steel-gray
 3. `[x]` **Underground belts** — shipped: Tunnel building; items dive to the next tunnel with the same facing within 4 tiles (crosses path/buildings), falls back to belt behavior if unpaired
-4. `[ ]` **Second raw resource + tier-2 recipes** — crystal patches; ore+crystal recipes (piercing rounds etc.) for mid-game ratio planning
+4. `[x]` **Second raw resource + tier-2 recipes** — shipped: crystal patches mined by the same miner (slower cycle), Assembler (2 ore + 1 crystal → piercing round), Lancer tower whose lance skewers a column and ignores armor, with railgun/volley upgrade paths
 5. `[ ]` **Early-send bonus + wave summary** — cash bonus scaling with how fast the next wave is sent; wave-clear card showing kills, income, ammo fired vs produced
 6. `[ ]` **Logistics overlay** — toggleable view: per-tower ammo uptime %, starved machines flashing, belt throughput legibility
 7. `[ ]` **Slow/coolant tower** — area slow consuming a cheap coolant item; multiplies other towers at choke points

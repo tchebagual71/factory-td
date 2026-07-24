@@ -16,6 +16,7 @@ export type StatKey =
   | 'maxedTowers'
   | 'moneyEarned'
   | 'multiKills'
+  | 'skewers'
   | 'tunnelsBuilt';
 
 export type Stats = Record<StatKey, number>;
@@ -32,6 +33,7 @@ export function emptyStats(): Stats {
     maxedTowers: 0,
     moneyEarned: 0,
     multiKills: 0,
+    skewers: 0,
     tunnelsBuilt: 0,
   };
 }
@@ -80,6 +82,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     unlock: { kind: 'badge', label: 'Specialist badge' },
   },
   { id: 'multi_master', name: 'Cluster Bomber', desc: 'Land 25 multi-kills (3+ with one shell)', stat: 'multiKills', goal: 25 },
+  { id: 'shish_kebab', name: 'Shish Kebab', desc: 'Skewer 3+ enemies with a single lance, 15 times', stat: 'skewers', goal: 15 },
   { id: 'tunnel_rat', name: 'Tunnel Rat', desc: 'Build 10 tunnels', stat: 'tunnelsBuilt', goal: 10 },
   { id: 'tycoon', name: 'Tycoon', desc: 'Earn $10,000 across all runs', stat: 'moneyEarned', goal: 10000 },
 ];

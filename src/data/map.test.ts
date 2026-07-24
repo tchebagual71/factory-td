@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GRID_H, GRID_W } from '../config';
-import { computePathCells, ORE_PATCHES, PATH_WAYPOINTS } from './map';
+import { computePathCells, CRYSTAL_PATCHES, inPatch, ORE_PATCHES, PATH_WAYPOINTS } from './map';
 
 describe('path waypoints', () => {
   it('are axis-aligned (each leg changes x or y, never both)', () => {
@@ -46,19 +46,38 @@ describe('computePathCells', () => {
   });
 });
 
-describe('ore patches', () => {
-  it('sit fully on the grid and never overlap the enemy path', () => {
+describe('resource patches', () => {
+  it.each([
+    ['ore', ORE_PATCHES],
+    ['crystal', CRYSTAL_PATCHES],
+  ])('%s patches sit fully on the grid and never overlap the enemy path', (label, patches) => {
     const path = computePathCells();
-    for (const p of ORE_PATCHES) {
+    for (const p of patches) {
       expect(p.x).toBeGreaterThanOrEqual(0);
       expect(p.y).toBeGreaterThanOrEqual(0);
       expect(p.x + p.w).toBeLessThanOrEqual(GRID_W);
       expect(p.y + p.h).toBeLessThanOrEqual(GRID_H);
       for (let y = p.y; y < p.y + p.h; y++) {
         for (let x = p.x; x < p.x + p.w; x++) {
-          expect(path.has(`${x},${y}`), `ore tile ${x},${y} is on the path`).toBe(false);
+          expect(path.has(`${x},${y}`), `${label} tile ${x},${y} is on the path`).toBe(false);
         }
       }
     }
+  });
+
+  it('never puts crystal on an ore tile — a miner mines exactly one resource', () => {
+    for (const p of CRYSTAL_PATCHES) {
+      for (let y = p.y; y < p.y + p.h; y++) {
+        for (let x = p.x; x < p.x + p.w; x++) {
+          expect(inPatch(ORE_PATCHES, x, y), `tile ${x},${y} is both ore and crystal`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('keeps crystal genuinely scarce next to ore', () => {
+    const area = (ps: typeof ORE_PATCHES) => ps.reduce((n, p) => n + p.w * p.h, 0);
+    expect(area(CRYSTAL_PATCHES)).toBeGreaterThan(0);
+    expect(area(CRYSTAL_PATCHES)).toBeLessThan(area(ORE_PATCHES) / 2);
   });
 });

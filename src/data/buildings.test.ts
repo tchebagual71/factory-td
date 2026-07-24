@@ -6,16 +6,18 @@ import {
   MACHINES,
   MAX_MK,
   MINER,
+  minerCycle,
   nextTier,
+  recipeNeeds,
+  TOWER_TYPES,
   TOWERS,
+  TowerType,
   UPGRADE_TREE,
   UpgradeTier,
 } from './buildings';
 
-const TOWER_TYPES = ['tower', 'cannon'] as const;
-
 /** All purchasable tiers for a type, in buy order along each path: [mk2, path tier1, path tier2]. */
-function pathTiers(type: 'tower' | 'cannon'): { pathId: string; tiers: UpgradeTier[] }[] {
+function pathTiers(type: TowerType): { pathId: string; tiers: UpgradeTier[] }[] {
   return UPGRADE_TREE[type].paths.map((p) => ({
     pathId: p.id,
     tiers: [UPGRADE_TREE[type].mk2, ...p.tiers],
@@ -53,6 +55,7 @@ describe('effStats', () => {
           expect(cur.fireRate).toBeGreaterThanOrEqual(prev.fireRate);
           expect(cur.splash).toBeGreaterThanOrEqual(prev.splash);
           expect(cur.bulletSpeed).toBeGreaterThanOrEqual(prev.bulletSpeed);
+          expect(cur.pierce).toBeGreaterThanOrEqual(prev.pierce);
           prev = cur;
         }
       }
@@ -73,6 +76,26 @@ describe('effStats', () => {
     expect(siege.splash).toBeGreaterThan(flak.splash);
     expect(siege.damage).toBeGreaterThan(flak.damage);
     expect(flak.fireRate).toBeGreaterThan(siege.fireRate);
+  });
+
+  it('paths are differentiated: railgun out-ranges volley, volley skewers deeper', () => {
+    const railgun = effStats('lancer', MAX_MK, 'railgun');
+    const volley = effStats('lancer', MAX_MK, 'volley');
+    expect(railgun.range).toBeGreaterThan(volley.range);
+    expect(railgun.damage).toBeGreaterThan(volley.damage);
+    expect(volley.fireRate).toBeGreaterThan(railgun.fireRate);
+    expect(volley.pierce).toBeGreaterThan(railgun.pierce);
+  });
+
+  it('only the lancer pierces; guns and cannons fire single-hit rounds at every mark', () => {
+    expect(TOWERS.lancer.pierce).toBeGreaterThan(1);
+    for (const type of ['tower', 'cannon'] as const) {
+      for (const p of UPGRADE_TREE[type].paths) {
+        for (let mk = 1; mk <= MAX_MK; mk++) {
+          expect(effStats(type, mk, p.id).pierce, `${type}/${p.id} mk${mk}`).toBe(0);
+        }
+      }
+    }
   });
 
   it('ignores path below the Mk3 branch', () => {
@@ -168,5 +191,37 @@ describe('economy invariants (CLAUDE.md balance intent)', () => {
 
   it('shells cost twice the ore of bullets', () => {
     expect(MACHINES.forge.oreIn).toBe(2 * MACHINES.press.oreIn);
+  });
+
+  it('an assembler line sustains roughly half a lancer, same pressure as press→gun', () => {
+    // Two miners feed one assembler; the scarcer input caps the line.
+    const oreRate = Math.min(1 / MINER.cycle / MACHINES.assembler.oreIn, 1 / MACHINES.assembler.cycle);
+    const crystalRate = Math.min(1 / minerCycle('crystal') / MACHINES.assembler.crystalIn, 1 / MACHINES.assembler.cycle);
+    const roundRate = Math.min(oreRate, crystalRate);
+    const ratio = roundRate / effStats('lancer', 1).fireRate;
+    expect(ratio).toBeGreaterThan(0.3);
+    expect(ratio).toBeLessThan(0.7);
+  });
+
+  it('crystal is the scarce input: slower to mine and needed by exactly one recipe', () => {
+    expect(minerCycle('crystal')).toBeGreaterThan(minerCycle('ore'));
+    const crystalEaters = (['press', 'forge', 'assembler'] as const).filter((m) => recipeNeeds(m, 'crystal') > 0);
+    expect(crystalEaters).toEqual(['assembler']);
+  });
+
+  it('machines only ever accept raw resources, never finished goods', () => {
+    for (const m of ['press', 'forge', 'assembler'] as const) {
+      for (const finished of ['ammo', 'shell', 'piercing'] as const) {
+        expect(recipeNeeds(m, finished), `${m} must reject ${finished}`).toBe(0);
+      }
+      expect(recipeNeeds(m, 'ore') + recipeNeeds(m, 'crystal')).toBeGreaterThan(0);
+    }
+  });
+
+  it('every tower type has an ammo item some machine actually produces', () => {
+    const outputs = new Set(Object.values(MACHINES).map((m) => m.output));
+    for (const type of TOWER_TYPES) {
+      expect(outputs.has(TOWERS[type].ammoType), `nothing makes ${TOWERS[type].ammoType}`).toBe(true);
+    }
   });
 });

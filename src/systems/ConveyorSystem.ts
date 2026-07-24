@@ -1,13 +1,15 @@
 import Phaser from 'phaser';
 import { BELT_SPEED, TILE } from '../config';
-import { isMachine, isTower, MACHINES, TOWERS, TUNNEL } from '../data/buildings';
+import { isMachine, isTower, MACHINES, recipeNeeds, TOWERS, TUNNEL } from '../data/buildings';
 import { Building, Dir, DX, DY, ItemEnt, ItemType } from '../types';
 import { GridSystem } from './GridSystem';
 
 const ITEM_TEXTURE: Record<ItemType, string> = {
   ore: 'item-ore',
+  crystal: 'item-crystal',
   ammo: 'item-ammo',
   shell: 'item-shell',
+  piercing: 'item-piercing',
 };
 
 /**
@@ -96,11 +98,21 @@ export class ConveyorSystem {
       it.cy = ny;
       return true;
     }
-    if (isMachine(nb.type) && it.type === 'ore' && nb.inputOre < MACHINES[nb.type].inputCap) {
-      nb.inputOre += 1;
-      this.consume(index);
-      this.pop(nb.sprite);
-      return true;
+    // Machines accept only the raw inputs their recipe calls for, each with its own buffer
+    if (isMachine(nb.type) && recipeNeeds(nb.type, it.type) > 0) {
+      const cap = MACHINES[nb.type].inputCap;
+      if (it.type === 'ore' && nb.inputOre < cap) {
+        nb.inputOre += 1;
+        this.consume(index);
+        this.pop(nb.sprite);
+        return true;
+      }
+      if (it.type === 'crystal' && nb.inputCrystal < cap) {
+        nb.inputCrystal += 1;
+        this.consume(index);
+        this.pop(nb.sprite);
+        return true;
+      }
     }
     if (isTower(nb.type) && it.type === TOWERS[nb.type].ammoType && nb.ammo < TOWERS[nb.type].ammoCap) {
       nb.ammo += 1;

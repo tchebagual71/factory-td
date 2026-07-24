@@ -147,6 +147,49 @@ describe('machine and tower intake', () => {
     expect(belt.item).toBe(ammo);
   });
 
+  it('feeds an assembler both raw inputs into separate buffers', () => {
+    const belt = placeBuilding(grid, 'belt', 7, 18, 0);
+    const asm = placeBuilding(grid, 'assembler', 8, 18, 0);
+    addItem(conv, belt, 'ore');
+    conv.update(DT);
+    addItem(conv, belt, 'crystal');
+    conv.update(DT);
+    expect(asm.inputOre).toBe(1);
+    expect(asm.inputCrystal).toBe(1);
+    expect(conv.items).toHaveLength(0);
+
+    asm.inputCrystal = MACHINES.assembler.inputCap;
+    const stuck = addItem(conv, belt, 'crystal');
+    conv.update(DT);
+    expect(belt.item).toBe(stuck); // crystal buffer full — the ore buffer must not absorb it
+    expect(asm.inputOre).toBe(1);
+  });
+
+  it('refuses crystal at machines whose recipe does not call for it', () => {
+    const belt = placeBuilding(grid, 'belt', 7, 18, 0);
+    const press = placeBuilding(grid, 'press', 8, 18, 0);
+    const crystal = addItem(conv, belt, 'crystal');
+    conv.update(DT);
+    expect(belt.item).toBe(crystal);
+    expect(press.inputOre).toBe(0);
+    expect(press.inputCrystal).toBe(0);
+  });
+
+  it('loads lancers with piercing rounds only', () => {
+    const belt = placeBuilding(grid, 'belt', 7, 18, 0);
+    const lancer = placeBuilding(grid, 'lancer', 8, 18, 0);
+    const shell = addItem(conv, belt, 'shell'); // wrong caliber
+    conv.update(DT);
+    expect(belt.item).toBe(shell);
+    expect(lancer.ammo).toBe(0);
+    conv.destroyItem(shell);
+    belt.item = null;
+
+    addItem(conv, belt, 'piercing');
+    conv.update(DT);
+    expect(lancer.ammo).toBe(1);
+  });
+
   it('loads towers with their own ammo type only, up to the magazine cap', () => {
     const belt = placeBuilding(grid, 'belt', 7, 18, 0);
     const tower = placeBuilding(grid, 'tower', 8, 18, 0);

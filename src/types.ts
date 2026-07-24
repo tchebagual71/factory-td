@@ -5,11 +5,25 @@ export type Dir = 0 | 1 | 2 | 3;
 export const DX = [1, 0, -1, 0];
 export const DY = [0, 1, 0, -1];
 
-export type ItemType = 'ore' | 'ammo' | 'shell';
-export type BuildingType = 'belt' | 'splitter' | 'tunnel' | 'miner' | 'press' | 'forge' | 'tower' | 'cannon';
+/** Raw resources ('ore', 'crystal') and manufactured goods. */
+export type ItemType = 'ore' | 'crystal' | 'ammo' | 'shell' | 'piercing';
+export type BuildingType =
+  | 'belt'
+  | 'splitter'
+  | 'tunnel'
+  | 'miner'
+  | 'press'
+  | 'forge'
+  | 'assembler'
+  | 'tower'
+  | 'cannon'
+  | 'lancer';
 
-/** Tower specialization path, chosen at the Mk2→Mk3 upgrade. Guns branch sniper/gatling, cannons siege/flak. */
-export type PathId = 'sniper' | 'gatling' | 'siege' | 'flak';
+/**
+ * Tower specialization path, chosen at the Mk2→Mk3 upgrade. Guns branch
+ * sniper/gatling, cannons siege/flak, lancers railgun/volley.
+ */
+export type PathId = 'sniper' | 'gatling' | 'siege' | 'flak' | 'railgun' | 'volley';
 
 export interface ItemEnt {
   type: ItemType;
@@ -33,9 +47,11 @@ export interface Building {
   timer: number;
   /** press: currently mid-craft */
   crafting: boolean;
-  /** press: raw ore waiting to be pressed */
+  /** crafting machines: raw ore waiting to be consumed */
   inputOre: number;
-  /** press: finished ammo waiting for belt space */
+  /** crafting machines: raw crystal waiting to be consumed (assembler only) */
+  inputCrystal: number;
+  /** crafting machines: finished goods waiting for belt space */
   outputBuf: number;
   /** tower: loaded ammo */
   ammo: number;
