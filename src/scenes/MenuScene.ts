@@ -50,9 +50,10 @@ export class MenuScene extends Phaser.Scene {
         .setAlpha(0.12)
         .setScale(1.4);
     }
-    this.add
+    const title = this.add
       .text(GAME_W / 2, 130, 'FACTORY TD', { ...FONT, fontSize: '64px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 10 })
       .setOrigin(0.5);
+    this.tweens.add({ targets: title, scale: 1.03, yoyo: true, repeat: -1, duration: 1600, ease: 'Sine.inOut' });
     this.add
       .text(GAME_W / 2, 185, 'Build the factory. Feed the guns. Hold the line.', { ...FONT, fontSize: '15px', color: '#cdd6e4' })
       .setOrigin(0.5);
@@ -119,7 +120,7 @@ export class MenuScene extends Phaser.Scene {
         .setOrigin(0.5);
     }
     this.add
-      .text(GAME_W / 2, 586, 'R rotate · drag paints belts · right-click sells · SPACE sends the wave · F game speed · ESC closes panels', {
+      .text(GAME_W / 2, 586, 'R rotate · drag paints belts · right-click sells · SPACE sends the wave · F speed · P pause · M mute · ESC closes panels', {
         ...FONT, fontSize: '11px', color: '#8892a6',
       })
       .setOrigin(0.5);

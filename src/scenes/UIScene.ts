@@ -7,7 +7,7 @@ import { pushAchievements } from '../services/cloud';
 import { GameState } from '../state/GameState';
 import { progress } from '../state/progress';
 import { BuildingType } from '../types';
-import { sfx } from '../utils/sfx';
+import { isMuted, sfx, toggleMute } from '../utils/sfx';
 
 const FONT = { fontFamily: 'monospace' };
 
@@ -36,10 +36,28 @@ export class UIScene extends Phaser.Scene {
 
   create(): void {
     // ----- top-left stat chips -----
-    this.add.rectangle(8, 8, 320, 30, 0x000000, 0.55).setOrigin(0).setDepth(0);
+    this.add.rectangle(8, 8, 356, 30, 0x000000, 0.55).setOrigin(0).setDepth(0);
     this.moneyText = this.add.text(18, 14, '', { ...FONT, fontSize: '16px', fontStyle: 'bold', color: '#ffe066' });
     this.livesText = this.add.text(130, 14, '', { ...FONT, fontSize: '16px', fontStyle: 'bold', color: '#ff6b6b' });
     this.waveText = this.add.text(230, 14, '', { ...FONT, fontSize: '16px', fontStyle: 'bold', color: '#cdd6e4' });
+    const muteBtn = this.add
+      .text(338, 14, isMuted() ? '✕' : '♪', { ...FONT, fontSize: '16px', fontStyle: 'bold', color: isMuted() ? '#8892a6' : '#5ef078' })
+      .setInteractive({ useHandCursor: true });
+    const applyMute = (m: boolean) => muteBtn.setText(m ? '✕' : '♪').setColor(m ? '#8892a6' : '#5ef078');
+    muteBtn.on('pointerdown', () => applyMute(toggleMute()));
+    this.input.keyboard?.on('keydown-M', () => applyMute(toggleMute()));
+
+    // ----- pause overlay -----
+    const pauseDim = this.add.rectangle(0, 0, GAME_W, PLAYFIELD_H, 0x000000, 0.45).setOrigin(0).setDepth(40).setVisible(false);
+    const pauseText = this.add
+      .text(GAME_W / 2, PLAYFIELD_H / 2, 'PAUSED\n[P] to resume', { ...FONT, fontSize: '36px', fontStyle: 'bold', color: '#ffe066', align: 'center', stroke: '#000', strokeThickness: 6 })
+      .setOrigin(0.5)
+      .setDepth(41)
+      .setVisible(false);
+    GameState.events.on('paused', (p: boolean) => {
+      pauseDim.setVisible(p);
+      pauseText.setVisible(p);
+    });
 
     // ----- bottom bar -----
     this.add.rectangle(0, PLAYFIELD_H, GAME_W, GAME_H - PLAYFIELD_H, 0x141625).setOrigin(0);
@@ -84,7 +102,7 @@ export class UIScene extends Phaser.Scene {
 
     // ----- wave control (bottom right) -----
     this.previewText = this.add
-      .text(GAME_W - 105, PLAYFIELD_H + 18, '', { ...FONT, fontSize: '12px', color: '#cdd6e4' })
+      .text(GAME_W - 105, PLAYFIELD_H + 16, '', { ...FONT, fontSize: '10px', color: '#cdd6e4', align: 'center' })
       .setOrigin(0.5);
     this.waveBtn = this.add
       .rectangle(GAME_W - 190, PLAYFIELD_H + 32, 170, 40, 0x2e7d4f)
@@ -178,7 +196,16 @@ export class UIScene extends Phaser.Scene {
       this.tweens.add({ targets: this.moneyText, scale: 1, duration: 150 });
     }
     const d = waveDef(GameState.wave);
-    this.previewText.setText(`Next: ${d.count}× ${WAVE_KIND_LABEL[d.kind]} · ${d.hp} HP`);
+    const KIND_COLOR: Record<string, string> = { normal: '#cdd6e4', swift: '#6bd4ff', armored: '#9aa7bd', boss: '#ff6b6b' };
+    const KIND_HINT: Record<string, string> = {
+      normal: '',
+      swift: '\nfast & many — splash shines',
+      armored: '\nresists bullets — bring shells',
+      boss: '\ntanky · a leak costs 5♥',
+    };
+    this.previewText
+      .setText(`Next: ${d.count}× ${WAVE_KIND_LABEL[d.kind]} · ${d.hp} HP${KIND_HINT[d.kind]}`)
+      .setColor(KIND_COLOR[d.kind]);
     for (const info of BUILD_INFO) {
       this.paletteButtons.get(info.type)?.setAlpha(GameState.money >= info.cost ? 1 : 0.45);
     }

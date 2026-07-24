@@ -23,6 +23,13 @@ class GameStateClass {
   gameOver = false;
   speed: 1 | 2 | 3 = 1;
   auto = false;
+  paused = false;
+
+  togglePause(): void {
+    if (this.gameOver) return;
+    this.paused = !this.paused;
+    this.events.emit('paused', this.paused);
+  }
 
   cycleSpeed(): void {
     this.speed = this.speed === 3 ? 1 : ((this.speed + 1) as 1 | 2 | 3);
@@ -90,6 +97,8 @@ class GameStateClass {
     this.gameOver = false;
     this.speed = 1;
     this.auto = false;
+    this.paused = false;
+    this.events.emit('paused', false);
     this.events.emit('money', this.money);
     this.events.emit('lives', this.lives);
     this.events.emit('wave', this.wave);

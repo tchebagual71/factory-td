@@ -4,6 +4,28 @@
  */
 let ctx: AudioContext | null = null;
 
+let muted = ((): boolean => {
+  try {
+    return localStorage.getItem('ftd:mute') === '1';
+  } catch {
+    return false;
+  }
+})();
+
+export function isMuted(): boolean {
+  return muted;
+}
+
+export function toggleMute(): boolean {
+  muted = !muted;
+  try {
+    localStorage.setItem('ftd:mute', muted ? '1' : '0');
+  } catch {
+    // storage unavailable — mute still applies for this session
+  }
+  return muted;
+}
+
 function ac(): AudioContext {
   if (!ctx) ctx = new AudioContext();
   if (ctx.state === 'suspended') void ctx.resume();
@@ -17,6 +39,7 @@ function blip(
   vol = 0.08,
   slideTo = 0,
 ): void {
+  if (muted) return;
   try {
     const c = ac();
     const o = c.createOscillator();

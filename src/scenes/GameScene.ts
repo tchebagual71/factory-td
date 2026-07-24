@@ -35,6 +35,7 @@ export class GameScene extends Phaser.Scene {
   private rangeCircle!: Phaser.GameObjects.Arc;
 
   private selTower: Building | null = null;
+  private selRing!: Phaser.GameObjects.Rectangle;
   private panel!: Phaser.GameObjects.Container;
   private panelTitle!: Phaser.GameObjects.Text;
   private panelInfo!: Phaser.GameObjects.Text;
@@ -66,6 +67,13 @@ export class GameScene extends Phaser.Scene {
       .setStrokeStyle(1.5, 0xffe066, 0.6)
       .setVisible(false)
       .setDepth(10);
+
+    this.selRing = this.add
+      .rectangle(0, 0, TILE + 4, TILE + 4)
+      .setStrokeStyle(2, 0xffe066)
+      .setFillStyle(0, 0)
+      .setVisible(false)
+      .setDepth(9);
 
     this.createUpgradePanel();
     this.setupInput();
@@ -107,7 +115,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_t: number, deltaMs: number): void {
-    if (GameState.gameOver) return;
+    if (GameState.gameOver || GameState.paused) return;
     if (this.saveDirty && GameState.phase === 'build') {
       this.saveTimer -= deltaMs / 1000; // real time, not game-speed scaled
       if (this.saveTimer <= 0) {
@@ -206,6 +214,11 @@ export class GameScene extends Phaser.Scene {
 
   private selectTower(b: Building | null): void {
     this.selTower = b;
+    if (b) {
+      this.selRing.setPosition(b.x * TILE + TILE / 2, b.y * TILE + TILE / 2).setVisible(true);
+    } else {
+      this.selRing.setVisible(false);
+    }
     this.refreshPanel();
   }
 
@@ -388,6 +401,7 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-ESC', () => this.select(null));
     kb.on('keydown-SPACE', () => this.waveSystem.start());
     kb.on('keydown-F', () => GameState.cycleSpeed());
+    kb.on('keydown-P', () => GameState.togglePause());
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (p.y >= PLAYFIELD_H) return;

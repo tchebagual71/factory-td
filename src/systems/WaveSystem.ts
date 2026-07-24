@@ -16,7 +16,7 @@ export class WaveSystem {
   constructor(private scene: GameScene) {}
 
   start(): void {
-    if (GameState.phase !== 'build' || GameState.gameOver) return;
+    if (GameState.phase !== 'build' || GameState.gameOver || GameState.paused) return;
     this.def = waveDef(GameState.wave);
     this.toSpawn = this.def.count;
     this.spawnTimer = 0;
