@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { GAME_W, GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
 import { costOf, effStats, isTower, MAX_MK, nextTier, pathOf, TOWERS, UPGRADE_TREE, UpgradeTier } from '../data/buildings';
 import { computePathCells, ORE_PATCHES, PATH_WAYPOINTS } from '../data/map';
+import { clearSave, pushBest, pushSave } from '../services/cloud';
 import { GameState } from '../state/GameState';
 import { clearLocal, consumePendingLoad, saveLocal } from '../state/persistence';
 import { progress } from '../state/progress';
@@ -302,6 +303,9 @@ export class GameScene extends Phaser.Scene {
   private onGameOverClear = (): void => {
     this.saveDirty = false;
     clearLocal();
+    progress.recordMax('bestWave', GameState.wave); // listener-order independent
+    void clearSave();
+    void pushBest(progress.stats.bestWave);
   };
 
   private onBeforeUnload = (): void => {
@@ -309,7 +313,11 @@ export class GameScene extends Phaser.Scene {
   };
 
   private saveRun(): void {
-    saveLocal(captureRun(this.grid.buildings, this.conveyor.items, GameState));
+    const save = captureRun(this.grid.buildings, this.conveyor.items, GameState);
+    saveLocal(save);
+    // best-effort cloud mirror for signed-in players — never blocks gameplay
+    void pushSave(save);
+    void pushBest(progress.stats.bestWave);
   }
 
   /** Debounce build-phase edits (drag-painting belts fires many per second). */

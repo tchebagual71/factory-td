@@ -64,6 +64,18 @@ class ProgressClass {
     return startMoneyBonus(this.unlocked);
   }
 
+  /** Merge in achievement ids unlocked elsewhere (cloud sync) — no toasts for these. */
+  absorb(ids: Iterable<string>): void {
+    let changed = false;
+    for (const id of ids) {
+      if (!this.unlocked.has(id)) {
+        this.unlocked.add(id);
+        changed = true;
+      }
+    }
+    if (changed) writeJSON(KEY_ACH, [...this.unlocked]);
+  }
+
   private afterChange(): void {
     const fresh = newlyUnlocked(this.unlocked, this.stats);
     for (const def of fresh) this.unlocked.add(def.id);

@@ -3,6 +3,7 @@ import { GAME_H, GAME_W, PLAYFIELD_H } from '../config';
 import { AchievementDef } from '../data/achievements';
 import { BUILD_INFO } from '../data/buildings';
 import { waveDef, WAVE_KIND_LABEL } from '../data/waves';
+import { pushAchievements } from '../services/cloud';
 import { GameState } from '../state/GameState';
 import { progress } from '../state/progress';
 import { BuildingType } from '../types';
@@ -130,6 +131,7 @@ export class UIScene extends Phaser.Scene {
     ev.on('achievement', (def: AchievementDef) => {
       this.toastQueue.push(def);
       this.pumpToasts();
+      void pushAchievements([def.id]);
     });
     ev.on('speed', (s: number) => this.speedBtnText.setText(`×${s}`).setColor(s > 1 ? '#ffe066' : '#cdd6e4'));
     ev.on('auto', (on: boolean) => {
