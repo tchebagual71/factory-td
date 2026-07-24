@@ -85,6 +85,7 @@ export class GameScene extends Phaser.Scene {
     // Scene events from the UI (off first — create() re-runs on restart)
     GameState.events.off('ui:select').on('ui:select', (t: BuildingType) => this.select(t));
     GameState.events.off('ui:startwave').on('ui:startwave', () => this.waveSystem.start());
+    GameState.events.off('ui:menu').on('ui:menu', () => this.exitToMenu());
     // Targeted off/on (other scenes listen to these events too; stable refs survive restarts)
     GameState.events.off('phase', this.onPhaseSave).on('phase', this.onPhaseSave);
     GameState.events.off('gameover', this.onGameOverClear).on('gameover', this.onGameOverClear);
@@ -334,6 +335,14 @@ export class GameScene extends Phaser.Scene {
   private requestSave(): void {
     this.saveDirty = true;
     this.saveTimer = 1.0;
+  }
+
+  /** Back to the title screen; flushes a final save first when the run is alive. UIScene sleeps so its listeners stay singular. */
+  private exitToMenu(): void {
+    if (this.ready && !GameState.gameOver && GameState.phase === 'build') this.saveRun();
+    this.saveDirty = false;
+    this.scene.sleep('ui');
+    this.scene.start('menu');
   }
 
   private applySave(save: SaveV1): void {

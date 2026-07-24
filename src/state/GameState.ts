@@ -9,7 +9,9 @@ export type Phase = 'build' | 'wave';
  *
  * Events: 'money', 'lives', 'wave', 'phase', 'gameover',
  *         'ui:select' (UI→Game building choice), 'ui:startwave' (UI→Game),
- *         'selected' (Game→UI current build selection)
+ *         'ui:menu' (UI→Game: exit to title, GameScene saves + transitions),
+ *         'selected' (Game→UI current build selection),
+ *         'achievement' (progress→UI toast)
  */
 class GameStateClass {
   events = new Phaser.Events.EventEmitter();

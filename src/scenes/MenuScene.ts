@@ -20,8 +20,10 @@ import { progress } from '../state/progress';
 import { sfx } from '../utils/sfx';
 
 const FONT = { fontFamily: 'monospace' };
+// box-sizing + explicit height keep the browser from inflating the element past
+// the layout's assumptions (the earlier source of inputs overlapping buttons)
 const INPUT_CSS =
-  'width: 250px; padding: 8px; font-family: monospace; font-size: 13px; background: #1e2233; color: #e8edf5; border: 2px solid #2b3040; outline: none;';
+  'box-sizing: border-box; width: 250px; height: 38px; padding: 0 10px; font-family: monospace; font-size: 13px; background: #1e2233; color: #e8edf5; border: 2px solid #2b3040; border-radius: 0; outline: none;';
 
 /**
  * Title screen: continue/new-run, achievements, leaderboard, account.
@@ -118,6 +120,11 @@ export class MenuScene extends Phaser.Scene {
         .text(GAME_W / 2, y + 64, `Personal best: wave ${progress.stats.bestWave}`, { ...FONT, fontSize: '14px', color: '#ffe066' })
         .setOrigin(0.5);
     }
+    this.add
+      .text(GAME_W / 2, 586, 'R rotate · drag paints belts · right-click sells · SPACE sends the wave · F game speed · ESC closes panels', {
+        ...FONT, fontSize: '11px', color: '#8892a6',
+      })
+      .setOrigin(0.5);
 
     // ----- auth subscription (re-render on real account changes) -----
     this.unsubAuth?.();
@@ -307,7 +314,7 @@ export class MenuScene extends Phaser.Scene {
 
   private async showAccount(): Promise<void> {
     const user = await currentUser(); // resolve first so the layout matches the auth state
-    const H = user ? 500 : 480;
+    const H = 520;
     this.openModal(H, 560);
     this.modalTitle(user ? 'ACCOUNT' : 'SIGN IN', H);
 
@@ -342,24 +349,24 @@ export class MenuScene extends Phaser.Scene {
     if (!user) {
       let y = top + 92;
       note(y, 'Optional — guests keep local saves. An account adds\ncross-device saves, the leaderboard, and synced achievements.', '#cdd6e4', '12px');
-      y += 52;
+      y += 54;
       this.modalButton(cx, y, 440, 'SIGN IN WITH GOOGLE', () => {
         status.setText('Redirecting to Google…');
         void signInGoogle().then((err) => err && status.setText(err));
       });
-      y += 58;
+      y += 66;
       inputRow(y, 'you@example.com', 'MAGIC LINK', (value) =>
         withEmail(value, () => {
           status.setText('Sending…');
           void signInMagicLink(value).then((err) => status.setText(err ?? 'Check your email for the sign-in link!'));
         }),
       );
-      y += 58;
+      y += 72;
       this.modalButton(cx, y, 440, 'CLOUD BACKUP WITHOUT EMAIL', () => {
         status.setText('Creating anonymous account…');
         void signInAnon().then((err) => err && status.setText(err));
       });
-      y += 32;
+      y += 34;
       note(y, 'device-bound; upgrade to Google/email later to keep it forever', '#8892a6', '10px');
     } else {
       let y = top + 88;
@@ -369,15 +376,15 @@ export class MenuScene extends Phaser.Scene {
           .setOrigin(0.5)
           .setDepth(12),
       );
-      y += 36;
       if (isAnonymous(user)) {
-        note(y + 8, 'Anonymous account — link it to keep your progress\neven if you clear browser data or switch devices.', '#ffd75e');
-        y += 48;
+        y += 34;
+        note(y, 'Anonymous account — link it to keep your progress\neven if you clear browser data or switch devices.', '#ffd75e');
+        y += 46;
         this.modalButton(cx, y, 440, 'LINK GOOGLE ACCOUNT', () => {
           status.setText('Redirecting to Google…');
           void linkGoogle().then((err) => err && status.setText(err));
         });
-        y += 58;
+        y += 66;
         inputRow(y, 'you@example.com', 'LINK EMAIL', (value) =>
           withEmail(value, () => {
             status.setText('Linking…');
@@ -390,12 +397,13 @@ export class MenuScene extends Phaser.Scene {
             );
           }),
         );
-        y += 58;
+        y += 72;
       } else {
-        inputRow(y + 12, 'display name (leaderboard)', 'SET NAME', (value) => {
+        y += 52;
+        inputRow(y, 'display name (leaderboard)', 'SET NAME', (value) => {
           void setDisplayName(value).then((err) => status.setText(err ?? 'Name updated!'));
         });
-        y += 70;
+        y += 80;
       }
       this.modalButton(cx, y, 440, 'SIGN OUT', () => {
         status.setText('Signing out…');

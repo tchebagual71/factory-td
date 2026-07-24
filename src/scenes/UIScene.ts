@@ -28,6 +28,7 @@ export class UIScene extends Phaser.Scene {
   private overlay: Phaser.GameObjects.GameObject[] = [];
   private toastQueue: AchievementDef[] = [];
   private toastActive = false;
+  private menuConfirm = false;
 
   constructor() {
     super('ui');
@@ -116,6 +117,30 @@ export class UIScene extends Phaser.Scene {
       .text(GAME_W - 302, PLAYFIELD_H + 52, 'AUTO', { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#8892a6' })
       .setOrigin(0.5);
     this.autoBtn.on('pointerdown', () => GameState.toggleAuto());
+
+    // menu button (gap between the palette and the wave controls); mid-wave asks once
+    const menuBtn = this.add
+      .rectangle(862, PLAYFIELD_H + 32, 74, 40, 0x1e2233)
+      .setOrigin(0)
+      .setStrokeStyle(2, 0x2b3040)
+      .setInteractive({ useHandCursor: true });
+    const menuBtnText = this.add
+      .text(899, PLAYFIELD_H + 52, 'MENU', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#8892a6' })
+      .setOrigin(0.5);
+    menuBtn.on('pointerdown', () => {
+      if (GameState.phase === 'wave' && !GameState.gameOver && !this.menuConfirm) {
+        this.menuConfirm = true;
+        menuBtnText.setText('SURE?').setColor('#ff5555');
+        this.time.delayedCall(2500, () => {
+          this.menuConfirm = false;
+          if (menuBtnText.active) menuBtnText.setText('MENU').setColor('#8892a6');
+        });
+        return;
+      }
+      this.menuConfirm = false;
+      menuBtnText.setText('MENU').setColor('#8892a6');
+      GameState.events.emit('ui:menu');
+    });
 
     // ----- state listeners -----
     const ev = GameState.events;
@@ -252,9 +277,7 @@ export class UIScene extends Phaser.Scene {
     });
     menuBtn.on('pointerdown', () => {
       clearOverlay();
-      this.scene.stop('game');
-      this.scene.launch('menu');
-      this.scene.sleep(); // sleep (not stop) — keeps this scene's GameState listeners singular
+      GameState.events.emit('ui:menu'); // GameScene owns the transition (and any final save)
     });
   }
 }
