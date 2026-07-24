@@ -5,6 +5,8 @@ import {
   accountLabel,
   currentUser,
   isAnonymous,
+  linkEmail,
+  linkGoogle,
   onAuth,
   setDisplayName,
   signInAnon,
@@ -247,6 +249,11 @@ export class MenuScene extends Phaser.Scene {
         this.add.text(x, y, got ? '★' : '☆', { ...FONT, fontSize: '20px', color: got ? '#ffe066' : '#3a3f52' }).setDepth(12),
         this.add.text(x + 30, y - 2, a.name, { ...FONT, fontSize: '13px', fontStyle: 'bold', color: got ? '#e8edf5' : '#8892a6' }).setDepth(12),
         this.add.text(x + 30, y + 15, `${detail}  (${cur}/${a.goal})`, { ...FONT, fontSize: '10px', color: '#8892a6' }).setDepth(12),
+        this.add.rectangle(x + 30, y + 30, 400, 3, 0x1e2233).setOrigin(0, 0.5).setDepth(12),
+        this.add
+          .rectangle(x + 30, y + 30, Math.round(400 * (cur / a.goal)), 3, got ? 0xffe066 : 0x5ef078)
+          .setOrigin(0, 0.5)
+          .setDepth(12),
       );
     });
     this.modalClose(H);
@@ -301,7 +308,7 @@ export class MenuScene extends Phaser.Scene {
 
     const cx = GAME_W / 2;
     const status = this.add
-      .text(cx, GAME_H / 2 + H / 2 - 84, '', { ...FONT, fontSize: '12px', color: '#ffd75e' })
+      .text(cx, GAME_H / 2 + H / 2 - 84, '', { ...FONT, fontSize: '12px', color: '#ffd75e', align: 'center', wordWrap: { width: 760 } })
       .setOrigin(0.5)
       .setDepth(12);
     this.modal.push(status);
@@ -353,12 +360,34 @@ export class MenuScene extends Phaser.Scene {
       if (isAnonymous(user)) {
         this.modal.push(
           this.add
-            .text(cx, 180, 'Anonymous account — link Google or email (coming soon)\nto keep progress if you clear browser data.', {
+            .text(cx, 182, 'Anonymous account — link it to keep your progress\neven if you clear browser data or switch devices.', {
               ...FONT, fontSize: '11px', color: '#ffd75e', align: 'center',
             })
             .setOrigin(0.5)
             .setDepth(12),
         );
+        this.modalButton(cx, 230, 380, 'LINK GOOGLE ACCOUNT', () => {
+          status.setText('Redirecting to Google…');
+          void linkGoogle().then((err) => err && status.setText(err));
+        });
+        const email = this.add.dom(cx - 70, 290, 'input', INPUT_CSS).setDepth(13);
+        (email.node as HTMLInputElement).placeholder = 'you@example.com';
+        this.modal.push(email);
+        this.modalButton(cx + 155, 290, 170, 'LINK EMAIL', () => {
+          const value = (email.node as HTMLInputElement).value.trim();
+          if (!value.includes('@')) {
+            status.setText('Enter a valid email first');
+            return;
+          }
+          status.setText('Linking…');
+          void linkEmail(value).then((err) =>
+            status.setText(
+              err
+                ? `${err} — if that email already has an account, sign out and sign in with it; local progress merges automatically.`
+                : 'Confirmation email sent — click the link to finish.',
+            ),
+          );
+        });
       } else {
         const name = this.add.dom(cx - 70, 230, 'input', INPUT_CSS).setDepth(13);
         (name.node as HTMLInputElement).placeholder = 'display name (leaderboard)';
@@ -368,7 +397,7 @@ export class MenuScene extends Phaser.Scene {
           void setDisplayName(value).then((err) => status.setText(err ?? 'Name updated!'));
         });
       }
-      this.modalButton(cx, 310, 380, 'SIGN OUT', () => {
+      this.modalButton(cx, isAnonymous(user) ? 350 : 310, 380, 'SIGN OUT', () => {
         status.setText('Signing out…');
         void signOut();
       });

@@ -125,8 +125,9 @@ export class UIScene extends Phaser.Scene {
     ev.on('phase', () => this.refreshWaveBtn());
     ev.on('selected', (t: BuildingType | null) => this.refreshSelection(t));
     ev.on('gameover', () => {
+      const prevBest = progress.stats.bestWave;
       progress.recordMax('bestWave', GameState.wave);
-      this.showGameOver();
+      this.showGameOver(prevBest > 0 && GameState.wave > prevBest);
     });
     ev.on('achievement', (def: AchievementDef) => {
       this.toastQueue.push(def);
@@ -199,7 +200,7 @@ export class UIScene extends Phaser.Scene {
     }
   }
 
-  private showGameOver(): void {
+  private showGameOver(newBest = false): void {
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.7).setOrigin(0).setDepth(50);
     const title = this.add
       .text(GAME_W / 2, 260, 'FACTORY DESTROYED', { ...FONT, fontSize: '48px', fontStyle: 'bold', color: '#ff5555', stroke: '#000', strokeThickness: 8 })
@@ -210,9 +211,18 @@ export class UIScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(51);
     const best = this.add
-      .text(GAME_W / 2, 348, `Personal best: wave ${Math.max(progress.stats.bestWave, GameState.wave)}`, { ...FONT, fontSize: '14px', color: '#ffe066' })
+      .text(
+        GAME_W / 2,
+        348,
+        newBest ? '★ NEW PERSONAL BEST ★' : `Personal best: wave ${Math.max(progress.stats.bestWave, GameState.wave)}`,
+        { ...FONT, fontSize: newBest ? '16px' : '14px', fontStyle: newBest ? 'bold' : 'normal', color: '#ffe066' },
+      )
       .setOrigin(0.5)
       .setDepth(51);
+    if (newBest) {
+      best.setScale(0.5);
+      this.tweens.add({ targets: best, scale: 1, duration: 300, ease: 'Back.out' });
+    }
     const btn = this.add
       .rectangle(GAME_W / 2 - 125, 400, 220, 52, 0x2e7d4f)
       .setStrokeStyle(2, 0x5ef078)

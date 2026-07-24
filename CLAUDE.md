@@ -37,21 +37,31 @@ src/
   config.ts             # tile size, grid dims, belt speed, starting money/lives
   types.ts              # Dir, ItemType, Building, ItemEnt, Enemy interfaces
   scenes/
-    BootScene.ts        # procedural texture generation, then starts game+ui
-    GameScene.ts        # gameplay orchestration, input/placement, juice helpers (floatText/burst/bigText)
-    UIScene.ts          # HUD overlay running in parallel (stat chips, build palette, wave button, game over)
+    BootScene.ts        # procedural texture generation, then starts menu
+    MenuScene.ts        # title: continue/new-run, achievements, leaderboard, account/sign-in modals
+    GameScene.ts        # gameplay orchestration, input/placement, save/restore, juice helpers (floatText/burst/bigText)
+    UIScene.ts          # HUD overlay running in parallel (stat chips, build palette, wave button, toasts, game over)
   systems/
     GridSystem.ts       # tile grid: single source of truth for cell contents & placement rules
-    ConveyorSystem.ts   # item movement on belts + machine insertion (press/tower intake)
+    ConveyorSystem.ts   # item movement on belts + machine insertion (press/tower intake), item restore
     ProductionSystem.ts # miner & press crafting timers, belt output
     WaveSystem.ts       # spawning, enemy movement along fixed path, kills/leaks/wave-clear
     CombatSystem.ts     # tower targeting (furthest-along-path), bullets, ammo drain
   state/
     GameState.ts        # shared singleton (money/lives/wave/phase) + EventEmitter for scene comms
+    serialize.ts        # SaveV1 run format: pure captureRun/validateSave (versioned, strict validation)
+    persistence.ts      # localStorage run slot (ftd:run) + pendingLoad handshake menu→game
+    progress.ts         # lifetime stats + unlocked achievements (ftd:stats/ftd:ach), emits 'achievement'
+    mergeProgress.ts    # pure local↔cloud merge rules (run LWW, achievements union, best max)
+  services/             # ALL Supabase I/O lives here — pure modules never import services
+    supabase.ts         # lazy client singleton (publishable key, PKCE); null if unavailable
+    auth.ts             # Google OAuth / magic link / anonymous + linking, profile upsert
+    cloud.ts            # fire-and-forget save/score/achievement sync, leaderboard fetch, syncOnSignIn
   data/
     map.ts              # fixed path waypoints + ore patch rectangles
-    buildings.ts        # building stats & costs (belt, miner, press, tower)
+    buildings.ts        # building stats & costs; UPGRADE_TREE (branching Mk paths) + effStats
     waves.ts            # wave scaling formulas (hp/count/speed/bounty, boss every 5th)
+    achievements.ts     # achievement defs + pure unlock logic (ids match the DB CHECK regex)
   utils/
     sfx.ts              # synthesized WebAudio blips (no audio assets)
 ```
@@ -86,7 +96,8 @@ src/
   - Forge: 2 ore → 1 shell → **Cannon** (slow, splash damage, multi-kill money bonus at 3+ kills)
 - **Splitter**: belt node that round-robins items between straight/left/right outputs (skipping blocked ones); merging needs no special building — any belts pointing into the same cell merge
 - **Tunnel**: items dive underground and surface at the next tunnel with the same facing within 4 tiles (rendered at low alpha in transit); crosses the enemy path, other belts, anything. An unpaired tunnel degrades to plain-belt behavior
-- **Tower upgrades**: click a tower → upgrade panel. Each Mk costs money + the tower's *full loaded magazine* — the factory arms the upgrade. Multipliers live in `effStats()`; combat always reads effective stats, never `TOWERS` directly
+- **Tower upgrades (branching tree)**: click a tower → upgrade panel. Mk1→Mk2 is shared; at Mk3 the tower picks a specialization path (guns: **Sniper** dmg/range vs **Gatling** fire rate; cannons: **Siege** splash/dmg vs **Flak** rate) with a Mk4 tier each (`UPGRADE_TREE`/`effStats(type, mk, path)` in `data/buildings.ts`, `MAX_MK = 4`). Each tier costs money + the tower's *full loaded magazine* — the factory arms the upgrade. Combat always reads `effStats`, never `TOWERS` directly; `Building.path` holds the choice; pips are path-colored
+- **Achievements & meta progression**: lifetime stats tracked in `state/progress.ts` (hooks in WaveSystem/CombatSystem/GameScene), defs + pure unlock logic in `data/achievements.ts`. Unlocks grant capped perks (≤ $100 total starting-money bonus, test-enforced) applied to fresh runs; toasts slide in top-right (UIScene)
 - **Resistances**: armored enemies take 25% damage from bullets, 100% from shells (`resistMult`) — the wave preview + tower mix read is the core strategic decision
 - Strategic intent: guns are cheap sustained DPS for bosses/normals; cannons counter swift swarms at choke points but their shells cost 2× ore — ore allocation between press and forge lines is the mid-game decision
 - Balance intent: one miner+press line sustains roughly *half* a continuously-firing gun tower — players must parallelize production, and between-wave downtime refills magazines
@@ -100,8 +111,22 @@ src/
 
 ### Scene communication
 - Scenes never reference each other directly; both import the `GameState` singleton (`state/GameState.ts`)
-- All cross-scene signals go through `GameState.events`: `money`/`lives`/`wave`/`phase`/`gameover` (state→UI), `ui:select`/`ui:startwave` (UI→game), `selected` (game→UI)
-- `GameScene.create()` calls `GameState.reset()` and re-registers its event listeners with `.off()` first — the scene restarts on game over while `UIScene` persists
+- All cross-scene signals go through `GameState.events`: `money`/`lives`/`wave`/`phase`/`gameover` (state→UI), `ui:select`/`ui:startwave` (UI→game), `selected` (game→UI), `achievement` (progress→UI toast)
+- Flow: Boot → Menu → (launch ui, start game). `GameScene.create()` calls `GameState.reset()` and re-registers listeners — blanket `.off()` only for events it alone consumes, targeted `.off(event, fn)` with stable arrow-property refs for shared events (`phase`, `gameover`). **UIScene sleeps, never stops** (menu button) so its plain `.on` listeners register exactly once
+
+### Save/resume & cloud sync
+- `state/serialize.ts` is the contract: pure `captureRun`/`validateSave`, versioned (`v: 1`); saves happen only in build phase so enemies/bullets never serialize. Never trust stored/cloud JSON — everything re-validates through `validateSave`
+- Autosave: on every return to build phase (wave-clear checkpoint), debounced 1s on build edits, `beforeunload` flush; run slot cleared on game over. `GameScene.ready` guards against saving during `create()` event bursts
+- localStorage (`ftd:run`) is ALWAYS the primary store; cloud (`services/cloud.ts`) is a best-effort mirror for signed-in players — every cloud call is fire-and-forget and a paused/blocked Supabase degrades to the guest experience
+- Purity rule for tests: `serialize.ts`/`mergeProgress.ts`/`data/achievements.ts` must never import services or Phaser-dependent modules; services import pure modules, never the reverse
+
+### Supabase backend (project `ksxkenxpidatyqraaffn`)
+- Tables (all RLS, own-row write): `profiles` (public-read names), `saves` (single jsonb slot, 256KB CHECK), `scores` + `leaderboard` view (public read; restrictive `is_anonymous` policy keeps anonymous accounts off the board; BEFORE UPDATE trigger makes `best_wave` monotonic), `achievements` (id CHECK mirrors the client regex `^[a-z0-9_]{1,40}$`)
+- New public tables are NOT auto-exposed to the Data API (2026-04 change) — migrations must include explicit `GRANT`s to `anon`/`authenticated`
+- Auth: Google OAuth + email magic link + anonymous (upgradeable via `linkIdentity`/`updateUser`); PKCE, `redirectTo = origin + pathname`. Sign-in only from MenuScene — OAuth navigates away
+- Merge on sign-in (`syncOnSignIn`): newest run save wins (LWW on `savedAt`), achievements set-union, best wave max — pure rules in `state/mergeProgress.ts`
+- Maintenance note: anonymous users are never auto-deleted; prune periodically with `delete from auth.users where is_anonymous is true and created_at < now() - interval '30 days';`
+- Known advisor WARN (accepted false-positive): `auth_rls_initplan` on the two restrictive scores policies — they already use the documented `(select auth.jwt()...)` form and are verified to block anonymous writes
 
 ## Balancing
 
@@ -111,7 +136,7 @@ Numbers live in `data/buildings.ts` and `data/waves.ts` — tune there, not inli
 
 Ranked for fun/strategy impact. Mark `[x]` with a one-line note when shipped.
 
-1. `[x]` **Tower upgrades paid in manufactured goods** — shipped: click a tower → panel top-right; Mk2/Mk3 cost money + the full loaded magazine (`UPGRADES`/`effStats` in `data/buildings.ts`); sell refunds half of total invested
+1. `[x]` **Tower upgrades paid in manufactured goods** — shipped, then extended to a branching tree: shared Mk2, path choice at Mk3 (sniper/gatling, siege/flak), Mk4 caps (`UPGRADE_TREE`/`effStats` in `data/buildings.ts`); sell refunds half of total invested
 2. `[x]` **Armor/resistance enemy types** — shipped: armored waves (even waves from 6 that aren't swift/boss) take 25% bullet damage, full shell damage (`resistMult` in `data/waves.ts`); resisted hits flash steel-gray
 3. `[x]` **Underground belts** — shipped: Tunnel building; items dive to the next tunnel with the same facing within 4 tiles (crosses path/buildings), falls back to belt behavior if unpaired
 4. `[ ]` **Second raw resource + tier-2 recipes** — crystal patches; ore+crystal recipes (piercing rounds etc.) for mid-game ratio planning
@@ -119,8 +144,9 @@ Ranked for fun/strategy impact. Mark `[x]` with a one-line note when shipped.
 6. `[ ]` **Logistics overlay** — toggleable view: per-tower ammo uptime %, starved machines flashing, belt throughput legibility
 7. `[ ]` **Slow/coolant tower** — area slow consuming a cheap coolant item; multiplies other towers at choke points
 8. `[ ]` **Ore patch depletion + prospecting** — patches exhaust, new ones revealed for a fee; forces periodic factory re-engineering
-9. `[ ]` **Save/load + best-wave record** — localStorage persistence and personal-best display on game over
-10. `[ ]` **Map variety + presentation pass** — additional path layouts, menu scene, audio mix with volume control
+9. `[x]` **Save/load + best-wave record** — shipped and exceeded: full mid-run save/resume (localStorage + cloud sync when signed in), personal best on game over + menu
+10. `[ ]` **Map variety + presentation pass** — additional path layouts, audio mix with volume control (menu scene shipped with accounts work)
+11. `[x]` **Accounts, leaderboard, achievements** — shipped: optional Supabase accounts (Google/magic link/anonymous-upgradeable), cross-device saves, public best-wave leaderboard, 14 achievements with capped starting-money perks
 
 ## Deployment
 

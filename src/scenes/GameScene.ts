@@ -71,7 +71,16 @@ export class GameScene extends Phaser.Scene {
     this.setupInput();
 
     const save = consumePendingLoad();
-    if (save) this.applySave(save);
+    if (save) {
+      this.applySave(save);
+    } else {
+      // achievement unlock perks apply to fresh runs only (capped ≤ $100 by test)
+      const bonus = progress.startBonus();
+      if (bonus > 0) {
+        GameState.addMoney(bonus);
+        this.floatText(640, 200, `+$${bonus} veteran bonus`, '#ffe066');
+      }
+    }
 
     // Scene events from the UI (off first — create() re-runs on restart)
     GameState.events.off('ui:select').on('ui:select', (t: BuildingType) => this.select(t));
