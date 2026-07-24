@@ -20,23 +20,13 @@ Core loop:
 - **Idle satisfaction**: belts keep running between waves; watching ammo stock accumulate is the reward for good factory design
 - **"One more wave" hook**: player-triggered waves, clear bonuses, next-wave preview, boss waves every 5th
 
-## Tech Stack
-
-| Layer | Choice | Reason |
-|-------|--------|--------|
-| Language | TypeScript (strict) | Type safety for entity/system data |
-| Framework | Phaser 3 | Mature 2D engine, scenes, tweens, particles |
-| Build | Vite | Fast HMR, zero config |
-| Assets | None | All textures generated procedurally in BootScene; SFX synthesized via WebAudio |
-
 ## Commands
 
 ```bash
-npm install          # install dependencies
 npm run dev          # dev server (localhost:5173, hot reload)
 npm run build        # production build → dist/
-npm run preview      # serve production build locally
 npm run typecheck    # tsc --noEmit
+npm test             # vitest (data/system logic tests)
 ```
 
 ## Architecture
@@ -115,7 +105,7 @@ src/
 
 ## Balancing
 
-Numbers live in `data/buildings.ts` and `data/waves.ts` — tune there, not inline. Current curve: enemy HP ×1.22/wave, count 4+2n; boss waves (every 5th) are few/slow/tanky with 5-life leaks. When changing tower fire rate or press cycle time, keep the "one supply line ≈ half a tower" pressure.
+Numbers live in `data/buildings.ts` and `data/waves.ts` — tune there, not inline. Current curve: enemy HP ×1.22/wave, count 4+2n; boss waves (every 5th) are few/slow/tanky with 5-life leaks. When changing tower fire rate or press cycle time, keep the "one supply line ≈ half a tower" pressure — `npm test` enforces that invariant plus the wave rhythm, resistances, and conveyor rules (`*.test.ts` next to each module), so run it after tuning. A PostToolUse hook (`.claude/settings.json` → `scripts/typecheck-hook.mjs`) typechecks after every TS edit.
 
 ## Release Roadmap (tracked — update status here as each lands)
 
