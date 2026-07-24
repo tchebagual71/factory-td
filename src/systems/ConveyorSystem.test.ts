@@ -175,6 +175,21 @@ describe('machine and tower intake', () => {
     expect(press.inputCrystal).toBe(0);
   });
 
+  it('loads cryo towers with coolant, and never lets coolant into a gun', () => {
+    const belt = placeBuilding(grid, 'belt', 7, 18, 0);
+    const cryo = placeBuilding(grid, 'cryo', 8, 18, 0);
+    addItem(conv, belt, 'coolant');
+    conv.update(DT);
+    expect(cryo.ammo).toBe(1);
+
+    const gunBelt = placeBuilding(grid, 'belt', 7, 17, 0);
+    const gun = placeBuilding(grid, 'tower', 8, 17, 0);
+    const coolant = addItem(conv, gunBelt, 'coolant');
+    conv.update(DT);
+    expect(gunBelt.item).toBe(coolant);
+    expect(gun.ammo).toBe(0);
+  });
+
   it('loads lancers with piercing rounds only', () => {
     const belt = placeBuilding(grid, 'belt', 7, 18, 0);
     const lancer = placeBuilding(grid, 'lancer', 8, 18, 0);

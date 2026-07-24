@@ -1,15 +1,37 @@
 import Phaser from 'phaser';
 import { GAME_W, GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
-import { costOf, effStats, isTower, MAX_MK, nextTier, pathOf, TOWERS, UPGRADE_TREE, UpgradeTier } from '../data/buildings';
-import { computePathCells, CRYSTAL_PATCHES, ORE_PATCHES, PATH_WAYPOINTS } from '../data/map';
+import {
+  costOf,
+  effStats,
+  isSupport,
+  isTower,
+  MAX_MK,
+  nextTier,
+  pathOf,
+  TOWERS,
+  TowerStats,
+  UPGRADE_TREE,
+  UpgradeTier,
+} from '../data/buildings';
+import {
+  activeMap,
+  computePathCells,
+  pathWaypoints,
+  PROSPECT_SIZE,
+  prospectCost,
+  prospectKind,
+  RESERVES,
+  setActiveMap,
+} from '../data/map';
 import { clearSave, pushBest, pushSave } from '../services/cloud';
 import { GameState } from '../state/GameState';
-import { clearLocal, consumePendingLoad, saveLocal } from '../state/persistence';
+import { clearLocal, consumePendingLoad, consumePendingMap, saveLocal } from '../state/persistence';
 import { progress } from '../state/progress';
 import { captureRun, SaveV1 } from '../state/serialize';
 import { CombatSystem } from '../systems/CombatSystem';
 import { ConveyorSystem } from '../systems/ConveyorSystem';
-import { GridSystem } from '../systems/GridSystem';
+import { GridSystem, minedResource } from '../systems/GridSystem';
+import { LogisticsSystem } from '../systems/LogisticsSystem';
 import { ProductionSystem } from '../systems/ProductionSystem';
 import { WaveSystem } from '../systems/WaveSystem';
 import { Building, BuildingType, Dir, PathId } from '../types';
@@ -23,6 +45,8 @@ const PATH_COLORS: Record<PathId, number> = {
   flak: 0xb18cff,
   railgun: 0x7cf7c4,
   volley: 0xff7ad9,
+  cryostasis: 0x9fd8ff,
+  blizzard: 0xe0f2ff,
 };
 
 export class GameScene extends Phaser.Scene {
@@ -31,15 +55,26 @@ export class GameScene extends Phaser.Scene {
   private production!: ProductionSystem;
   private waveSystem!: WaveSystem;
   private combat!: CombatSystem;
+  private logistics!: LogisticsSystem;
 
   private selected: BuildingType | null = null;
   private buildDir: Dir = 0;
+  /** touch sell mode: with no build selected, tapping a building refunds it */
+  private sellMode = false;
+  /** long-press bookkeeping — the touch stand-in for right-click-to-sell */
+  private pressAt = 0;
+  private pressX = 0;
+  private pressY = 0;
   private saveDirty = false;
   private saveTimer = 0;
   /** false while create() is mid-flight — reset()/applySnapshot() event bursts must not autosave a half-built scene */
   private ready = false;
   private ghost!: Phaser.GameObjects.Image;
   private rangeCircle!: Phaser.GameObjects.Arc;
+  /** deposits live on their own layer: they thin out, run dry, and get added by prospecting */
+  private oreLayer!: Phaser.GameObjects.Graphics;
+  private depositsDirty = false;
+  private depositsTimer = 0;
 
   private selTower: Building | null = null;
   private selRing!: Phaser.GameObjects.Rectangle;
@@ -60,13 +95,21 @@ export class GameScene extends Phaser.Scene {
     this.saveDirty = false;
     GameState.reset();
 
+    // The layout has to be chosen before anything reads the board: a resumed
+    // run brings its own map, a fresh one uses whatever the menu picked.
+    const pending = consumePendingLoad();
+    setActiveMap(pending?.map ?? consumePendingMap());
+
     this.grid = new GridSystem();
     this.conveyor = new ConveyorSystem(this, this.grid);
     this.production = new ProductionSystem(this, this.grid, this.conveyor);
     this.waveSystem = new WaveSystem(this);
     this.combat = new CombatSystem(this, this.grid, this.waveSystem);
+    this.logistics = new LogisticsSystem(this, this.grid);
 
     this.drawTerrain();
+    this.oreLayer = this.add.graphics().setDepth(0);
+    this.production.onDepleted = (x, y) => this.onTileDepleted(x, y);
 
     this.ghost = this.add.image(0, 0, 'belt').setAlpha(0).setDepth(10);
     this.rangeCircle = this.add
@@ -85,9 +128,8 @@ export class GameScene extends Phaser.Scene {
     this.createUpgradePanel();
     this.setupInput();
 
-    const save = consumePendingLoad();
-    if (save) {
-      this.applySave(save);
+    if (pending) {
+      this.applySave(pending);
     } else {
       // achievement unlock perks apply to fresh runs only (capped ≤ $100 by test)
       const bonus = progress.startBonus();
@@ -101,6 +143,9 @@ export class GameScene extends Phaser.Scene {
     GameState.events.off('ui:select').on('ui:select', (t: BuildingType) => this.select(t));
     GameState.events.off('ui:startwave').on('ui:startwave', () => this.waveSystem.start());
     GameState.events.off('ui:menu').on('ui:menu', () => this.exitToMenu());
+    GameState.events.off('ui:prospect').on('ui:prospect', () => this.prospect());
+    GameState.events.off('ui:rotate').on('ui:rotate', () => this.rotateBuildDir());
+    GameState.events.off('ui:sellmode').on('ui:sellmode', () => this.toggleSellMode());
     // Targeted off/on (other scenes listen to these events too; stable refs survive restarts)
     GameState.events.off('phase', this.onPhaseSave).on('phase', this.onPhaseSave);
     GameState.events.off('gameover', this.onGameOverClear).on('gameover', this.onGameOverClear);
@@ -112,12 +157,16 @@ export class GameScene extends Phaser.Scene {
       .text(
         640,
         90,
-        'MINERS on ore → belt ore into a PRESS (ammo for GUNS) or FORGE (shells for CANNONS)\nBlue crystal patches feed the ASSEMBLER (2 ore + 1 crystal → piercing rounds for LANCERS)\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!  [SPACE] sends the wave.',
+        'MINERS on ore → belt ore into a PRESS (ammo for GUNS) or FORGE (shells for CANNONS)\nBlue crystal patches feed the ASSEMBLER (2 ore + 1 crystal → piercing rounds for LANCERS)\nA cheap CHILLER (1 ore → 2 coolant) powers CRYO fields that slow everything at a choke point\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!  [SPACE] sends the wave  ·  [L] logistics view',
         { fontFamily: 'monospace', fontSize: '14px', color: '#cdd6e4', align: 'center', stroke: '#000', strokeThickness: 4 },
       )
       .setOrigin(0.5)
       .setDepth(30);
     this.tweens.add({ targets: hint, alpha: 0, delay: 14000, duration: 1500, onComplete: () => hint.destroy() });
+    // let the HUD's rotate button show the facing this run starts on
+    this.sellMode = false;
+    GameState.events.emit('builddir', this.buildDir);
+    GameState.events.emit('sellmode', false);
     this.ready = true;
   }
 
@@ -135,7 +184,17 @@ export class GameScene extends Phaser.Scene {
     this.conveyor.update(dt);
     this.production.update(dt);
     this.combat.update(dt);
+    this.logistics.update(dt); // observes the settled tick — must run last
     this.updateGhost();
+
+    // Deposits thin out continuously; repaint on a slow cadence (or at once
+    // when a tile dies / a survey lands) rather than every frame.
+    this.depositsTimer -= dt;
+    if (this.depositsDirty || this.depositsTimer <= 0) {
+      this.depositsDirty = false;
+      this.depositsTimer = 1;
+      this.drawDeposits();
+    }
 
     const st = this.selTower;
     if (st && this.panel.visible && isTower(st.type)) {
@@ -236,7 +295,8 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     const cur = effStats(b.type, b.mk, b.path);
-    const label = b.type === 'cannon' ? 'CANNON' : b.type === 'lancer' ? 'LANCER' : 'GUN TOWER';
+    const LABELS: Record<string, string> = { cannon: 'CANNON', lancer: 'LANCER', cryo: 'CRYO FIELD' };
+    const label = LABELS[b.type] ?? 'GUN TOWER';
     const pathName = b.path ? ` · ${pathOf(b.type, b.path).name}` : '';
     this.panel.setVisible(true);
     this.panelTitle.setText(`${label} Mk${b.mk}${pathName}`);
@@ -252,14 +312,19 @@ export class GameScene extends Phaser.Scene {
     this.panelBtnB.setVisible(false);
     this.panelBtnBText.setVisible(false);
 
+    // Support towers have no damage to quote — their headline stat is the slow
+    const support = isSupport(b.type);
+    const brief = (s: TowerStats) =>
+      support
+        ? `SLOW ${Math.round((1 - s.slowFactor) * 100)}% RNG ${s.range} ${s.slowDur.toFixed(1)}s`
+        : `DMG ${s.damage} RNG ${s.range} ROF ${s.fireRate.toFixed(1)}`;
+
     if (b.mk === 2) {
       // The branch: choose a specialization
       const [pa, pb] = UPGRADE_TREE[b.type].paths;
-      const sa = effStats(b.type, 3, pa.id);
-      const sb = effStats(b.type, 3, pb.id);
       this.panelInfo.setText(
-        `${pa.name}: DMG ${sa.damage} RNG ${sa.range} ROF ${sa.fireRate.toFixed(1)}\n  $${pa.tiers[0].money} + full mag (${pa.tiers[0].ammo})\n` +
-          `${pb.name}: DMG ${sb.damage} RNG ${sb.range} ROF ${sb.fireRate.toFixed(1)}\n  $${pb.tiers[0].money} + full mag (${pb.tiers[0].ammo})`,
+        `${pa.name}: ${brief(effStats(b.type, 3, pa.id))}\n  $${pa.tiers[0].money} + full mag (${pa.tiers[0].ammo})\n` +
+          `${pb.name}: ${brief(effStats(b.type, 3, pb.id))}\n  $${pb.tiers[0].money} + full mag (${pb.tiers[0].ammo})`,
       );
       showA(`${pa.name} [U]`);
       showB(`${pb.name} [I]`);
@@ -270,12 +335,13 @@ export class GameScene extends Phaser.Scene {
     if (tier) {
       const next = effStats(b.type, b.mk + 1, b.path ?? UPGRADE_TREE[b.type].paths[0].id);
       const nextStats = b.mk === 1 ? effStats(b.type, 2) : next;
-      this.panelInfo.setText(
-        `DMG ${cur.damage}→${nextStats.damage} · RNG ${cur.range}→${nextStats.range}\nROF ${cur.fireRate.toFixed(1)}→${nextStats.fireRate.toFixed(1)}/s\nCost: $${tier.money} + full magazine (${tier.ammo} ${cur.ammoType})`,
-      );
+      const delta = support
+        ? `SLOW ${Math.round((1 - cur.slowFactor) * 100)}%→${Math.round((1 - nextStats.slowFactor) * 100)}% · RNG ${cur.range}→${nextStats.range}\nHOLD ${cur.slowDur.toFixed(1)}→${nextStats.slowDur.toFixed(1)}s · PULSE ${cur.fireRate.toFixed(1)}→${nextStats.fireRate.toFixed(1)}/s`
+        : `DMG ${cur.damage}→${nextStats.damage} · RNG ${cur.range}→${nextStats.range}\nROF ${cur.fireRate.toFixed(1)}→${nextStats.fireRate.toFixed(1)}/s`;
+      this.panelInfo.setText(`${delta}\nCost: $${tier.money} + full magazine (${tier.ammo} ${cur.ammoType})`);
       showA('UPGRADE [U]');
     } else {
-      this.panelInfo.setText(`DMG ${cur.damage} · RNG ${cur.range} · ROF ${cur.fireRate.toFixed(1)}/s\nMAXED`);
+      this.panelInfo.setText(`${brief(cur)}\nMAXED`);
       this.panelBtnA.setVisible(false);
       this.panelBtnAText.setVisible(false);
     }
@@ -325,9 +391,13 @@ export class GameScene extends Phaser.Scene {
 
   // ---------- save / restore ----------
 
-  /** Save on every return to build phase — the wave-clear checkpoint. */
+  /** Save on every return to build phase (the wave-clear checkpoint); start a fresh logistics window on every send. */
   private onPhaseSave = (): void => {
-    if (this.ready && GameState.phase === 'build' && !GameState.gameOver) this.saveRun();
+    if (GameState.phase === 'wave') {
+      this.logistics.resetWindow();
+      return;
+    }
+    if (this.ready && !GameState.gameOver) this.saveRun();
   };
 
   /** The run is over: clear the slot (lifetime stats/achievements persist separately). */
@@ -344,7 +414,11 @@ export class GameScene extends Phaser.Scene {
   };
 
   private saveRun(): void {
-    const save = captureRun(this.grid.buildings, this.conveyor.items, GameState);
+    const save = captureRun(this.grid.buildings, this.conveyor.items, GameState, {
+      patches: this.grid.revealed.map(({ patch, kind }) => ({ ...patch, k: kind })),
+      tiles: this.grid.changedTiles(),
+      map: activeMap().id,
+    });
     saveLocal(save);
     // best-effort cloud mirror for signed-in players — never blocks gameplay
     void pushSave(save);
@@ -367,8 +441,14 @@ export class GameScene extends Phaser.Scene {
 
   private applySave(save: SaveV1): void {
     GameState.applySnapshot(save);
+    // Terrain first: buildings are validated against the restored map, and a
+    // miner on a tile that ran dry mid-run must come back as a dead miner.
+    for (const p of save.patches ?? []) this.grid.addPatch({ x: p.x, y: p.y, w: p.w, h: p.h }, p.k);
+    for (const t of save.tiles ?? []) this.grid.setReserves(t.x, t.y, t.n);
+    this.depositsDirty = true;
+
     for (const sb of save.buildings) {
-      if (!this.grid.canPlace(sb.t, sb.x, sb.y)) continue; // stale save vs map change — skip
+      if (!this.grid.canRestore(sb.x, sb.y)) continue; // stale save vs map change — skip
       const b = this.placeBuilding(sb.t, sb.x, sb.y, sb.d);
       b.mk = sb.mk ?? 1;
       b.path = sb.path ?? null;
@@ -400,27 +480,37 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-FIVE', () => this.select('press'));
     kb.on('keydown-SIX', () => this.select('forge'));
     kb.on('keydown-SEVEN', () => this.select('assembler'));
-    kb.on('keydown-EIGHT', () => this.select('tower'));
-    kb.on('keydown-NINE', () => this.select('cannon'));
-    kb.on('keydown-ZERO', () => this.select('lancer'));
+    kb.on('keydown-EIGHT', () => this.select('chiller'));
+    kb.on('keydown-NINE', () => this.select('tower'));
+    kb.on('keydown-ZERO', () => this.select('cannon'));
+    kb.on('keydown-C', () => this.select('lancer'));
+    kb.on('keydown-V', () => this.select('cryo'));
     kb.on('keydown-U', () => this.tryUpgrade(0));
     kb.on('keydown-I', () => this.tryUpgrade(1));
-    kb.on('keydown-R', () => {
-      this.buildDir = ((this.buildDir + 1) % 4) as Dir;
-    });
+    kb.on('keydown-R', () => this.rotateBuildDir());
     kb.on('keydown-ESC', () => this.select(null));
     kb.on('keydown-SPACE', () => this.waveSystem.start());
     kb.on('keydown-F', () => GameState.cycleSpeed());
     kb.on('keydown-P', () => GameState.togglePause());
+    kb.on('keydown-L', () => GameState.toggleOverlay());
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (p.y >= PLAYFIELD_H) return;
+      this.pressAt = this.time.now;
+      this.pressX = p.x;
+      this.pressY = p.y;
       const tx = Math.floor(p.x / TILE);
       const ty = Math.floor(p.y / TILE);
       if (p.rightButtonDown()) {
         const b = this.grid.cellAt(tx, ty)?.building;
         if (b) this.sell(b);
         else this.select(null);
+        return;
+      }
+      if (this.sellMode) {
+        const b = this.grid.cellAt(tx, ty)?.building;
+        if (b) this.sell(b);
+        else sfx.error();
         return;
       }
       if (this.selected) {
@@ -431,18 +521,48 @@ export class GameScene extends Phaser.Scene {
       }
     });
 
+    // Long-press is the touch stand-in for right-click-to-sell. Only while
+    // nothing is selected for building, so holding after painting a belt can
+    // never refund the belt you just laid down.
+    this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
+      if (p.y >= PLAYFIELD_H || this.selected || this.sellMode) return;
+      const held = this.time.now - this.pressAt;
+      const moved = Math.hypot(p.x - this.pressX, p.y - this.pressY);
+      if (held < 450 || moved > 12) return;
+      const b = this.grid.cellAt(Math.floor(p.x / TILE), Math.floor(p.y / TILE))?.building;
+      if (b) this.sell(b);
+    });
+
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
-      // drag-paint belts
-      if (this.selected === 'belt' && p.isDown && p.leftButtonDown() && p.y < PLAYFIELD_H) {
+      // drag-paint belts (touch drags report no button, so accept either)
+      if (this.selected === 'belt' && p.isDown && !p.rightButtonDown() && p.y < PLAYFIELD_H) {
         this.tryPlace('belt', Math.floor(p.x / TILE), Math.floor(p.y / TILE), true);
       }
     });
+  }
+
+  private rotateBuildDir(): void {
+    this.buildDir = ((this.buildDir + 1) % 4) as Dir;
+    GameState.events.emit('builddir', this.buildDir);
+    sfx.place();
+  }
+
+  /** Touch-only sell mode: no right button, so selling gets an explicit mode. */
+  private toggleSellMode(): void {
+    this.sellMode = !this.sellMode;
+    if (this.sellMode) this.select(null);
+    GameState.events.emit('sellmode', this.sellMode);
   }
 
   private select(type: BuildingType | null): void {
     this.selected = type;
     GameState.events.emit('selected', type);
     if (type) {
+      // building and selling are mutually exclusive modes
+      if (this.sellMode) {
+        this.sellMode = false;
+        GameState.events.emit('sellmode', false);
+      }
       this.ghost.setTexture(type);
       this.selectTower(null);
     }
@@ -453,7 +573,8 @@ export class GameScene extends Phaser.Scene {
     const cx = tx * TILE + TILE / 2;
     const cy = ty * TILE + TILE / 2;
     const tower = isTower(type);
-    const depth = type === 'belt' || type === 'splitter' ? 1 : 3;
+    const flat = type === 'belt' || type === 'splitter' || type === 'tunnel';
+    const depth = flat ? 1 : 3;
     const sprite = this.add.image(cx, cy, type).setDepth(depth);
     if (!tower) sprite.setRotation((dir * Math.PI) / 2);
 
@@ -475,12 +596,21 @@ export class GameScene extends Phaser.Scene {
       mk: 1,
       path: null,
       invested: costOf(type),
+      stalled: false,
+      utilBusy: 0,
+      utilBlocked: 0,
+      utilTotal: 0,
     };
+    // Machines and towers stand proud of the ground; belts stay flush with it.
+    if (!flat) b.shadow = this.add.ellipse(cx + 2, cy + 12, 26, 9, 0x000000, 0.28).setDepth(depth - 1);
     if (tower) {
-      const barColor = type === 'cannon' ? 0xff9f43 : type === 'lancer' ? 0x6bd4ff : 0xffe066;
-      const barrelTexture = type === 'cannon' ? 'barrel-cannon' : type === 'lancer' ? 'barrel-lancer' : 'barrel';
-      b.barrel = this.add.image(cx, cy, barrelTexture).setOrigin(0.15, 0.5).setDepth(4);
-      b.ammoBar = this.add.rectangle(cx - 12, cy + 15, 24, 3, barColor).setOrigin(0, 0.5).setDepth(6);
+      const BAR_COLOR: Record<string, number> = { cannon: 0xff9f43, lancer: 0x6bd4ff, cryo: 0x9fd8ff };
+      const BARREL: Record<string, string> = { cannon: 'barrel-cannon', lancer: 'barrel-lancer' };
+      // The cryo emitter has no barrel — it pulses in every direction at once
+      if (BARREL[type] || type === 'tower') {
+        b.barrel = this.add.image(cx, cy, BARREL[type] ?? 'barrel').setOrigin(0.15, 0.5).setDepth(4);
+      }
+      b.ammoBar = this.add.rectangle(cx - 12, cy + 15, 24, 3, BAR_COLOR[type] ?? 0xffe066).setOrigin(0, 0.5).setDepth(6);
     }
     this.grid.place(b);
     return b;
@@ -522,12 +652,13 @@ export class GameScene extends Phaser.Scene {
     const refund = Math.floor(b.invested / 2);
     if (b.item) this.conveyor.destroyItem(b.item);
     b.sprite.destroy();
+    b.shadow?.destroy();
     b.barrel?.destroy();
     b.ammoBar?.destroy();
     b.mkPips?.forEach((p) => p.destroy());
     if (this.selTower === b) this.selectTower(null);
     this.grid.remove(b);
-    GameState.addMoney(refund);
+    GameState.addMoney(refund, false); // recycled capital, not wave income
     this.floatText(b.x * TILE + 16, b.y * TILE + 8, `+$${refund}`, '#9aa7bd');
     this.burst(b.x * TILE + 16, b.y * TILE + 16, 0x9aa7bd, 8);
     sfx.sell();
@@ -567,73 +698,214 @@ export class GameScene extends Phaser.Scene {
     this.rangeCircle.setVisible(towerSel).setPosition(cx, cy);
   }
 
+  // ---------- deposits: depletion & prospecting ----------
+
+  /** A tile just ran dry: repaint it, and make sure the player notices. */
+  private onTileDepleted(x: number, y: number): void {
+    this.depositsDirty = true;
+    const cx = x * TILE + TILE / 2;
+    const cy = y * TILE + TILE / 2;
+    this.floatText(cx, cy - 10, 'DEPLETED', '#ff9f43');
+    this.burst(cx, cy, 0x8a6a4a, 10);
+    sfx.error();
+    this.requestSave();
+  }
+
+  /**
+   * Buy a survey: reveals a fresh patch of the next resource somewhere clear.
+   * Cost climbs with every survey, so late re-supply is a real decision.
+   */
+  private prospect(): void {
+    if (GameState.gameOver) return;
+    const kind = prospectKind(GameState.surveys);
+    const cost = prospectCost(GameState.surveys);
+    const { w, h } = PROSPECT_SIZE[kind];
+
+    const spots: { x: number; y: number }[] = [];
+    for (let y = 0; y <= GRID_H - h; y++) {
+      for (let x = 0; x <= GRID_W - w; x++) {
+        if (this.grid.isClearArea(x, y, w, h)) spots.push({ x, y });
+      }
+    }
+    if (spots.length === 0) {
+      sfx.error();
+      this.floatText(640, 300, 'No clear ground to survey', '#ff5555');
+      return;
+    }
+    if (!GameState.spend(cost)) {
+      sfx.error();
+      this.floatText(640, 300, `Survey costs $${cost}`, '#ff5555');
+      return;
+    }
+
+    const spot = Phaser.Utils.Array.GetRandom(spots);
+    this.grid.addPatch({ ...spot, w, h }, kind);
+    GameState.recordSurvey();
+    this.depositsDirty = true;
+
+    const cx = spot.x * TILE + (w * TILE) / 2;
+    const cy = spot.y * TILE + (h * TILE) / 2;
+    this.burst(cx, cy, kind === 'ore' ? 0xff9f43 : 0x6bd4ff, 26);
+    this.floatText(cx, cy - 12, `${kind.toUpperCase()} FOUND`, '#5ef078');
+    this.cameras.main.shake(120, 0.003);
+    sfx.waveClear();
+    this.requestSave();
+  }
+
   // ---------- terrain ----------
 
+  /** Ground, path and grid lines — fixed for the whole run, drawn once. */
   private drawTerrain(): void {
     const g = this.add.graphics().setDepth(0);
     const pathCells = computePathCells();
+    const onPath = (x: number, y: number) => pathCells.has(`${x},${y}`);
+
     for (let y = 0; y < GRID_H; y++) {
       for (let x = 0; x < GRID_W; x++) {
         const px = x * TILE;
         const py = y * TILE;
-        if (pathCells.has(`${x},${y}`)) {
+        if (onPath(x, y)) {
           g.fillStyle(0xc8a15a);
           g.fillRect(px, py, TILE, TILE);
           g.fillStyle(0xb08c4a);
           g.fillRect(px + 2, py + 2, TILE - 4, TILE - 4);
-        } else {
-          g.fillStyle((x + y) % 2 === 0 ? 0x2f4f43 : 0x2b4a3f);
-          g.fillRect(px, py, TILE, TILE);
+          continue;
+        }
+        g.fillStyle((x + y) % 2 === 0 ? 0x2f4f43 : 0x2b4a3f);
+        g.fillRect(px, py, TILE, TILE);
+        // deterministic speckle so the ground reads as terrain, not graph paper
+        const h = (x * 73856093) ^ (y * 19349663);
+        const n = (h >>> 3) % 7;
+        if (n < 3) {
+          g.fillStyle(n === 0 ? 0x36594c : 0x27423a, 0.55);
+          const sx = px + 4 + ((h >>> 7) % 20);
+          const sy = py + 4 + ((h >>> 11) % 20);
+          g.fillRect(sx, sy, n === 0 ? 3 : 2, 2);
         }
       }
     }
-    for (const patch of ORE_PATCHES) {
-      for (let y = patch.y; y < patch.y + patch.h; y++) {
-        for (let x = patch.x; x < patch.x + patch.w; x++) {
-          const px = x * TILE;
-          const py = y * TILE;
-          g.fillStyle(0x24382f);
-          g.fillRect(px, py, TILE, TILE);
-          g.fillStyle(0xb35c1e);
-          g.fillCircle(px + 9, py + 11, 4);
-          g.fillCircle(px + 22, py + 20, 5);
-          g.fillCircle(px + 13, py + 24, 3);
-          g.fillStyle(0xff9f43);
-          g.fillCircle(px + 9, py + 11, 2);
-          g.fillCircle(px + 22, py + 20, 2.5);
-        }
+
+    // A raised kerb wherever grass meets the road: the strongest single cue
+    // that the path is a place you cannot build.
+    g.fillStyle(0x8a6a34, 0.85);
+    for (let y = 0; y < GRID_H; y++) {
+      for (let x = 0; x < GRID_W; x++) {
+        if (!onPath(x, y)) continue;
+        const px = x * TILE;
+        const py = y * TILE;
+        if (!onPath(x, y - 1)) g.fillRect(px, py, TILE, 3);
+        if (!onPath(x, y + 1)) g.fillRect(px, py + TILE - 3, TILE, 3);
+        if (!onPath(x - 1, y)) g.fillRect(px, py, 3, TILE);
+        if (!onPath(x + 1, y)) g.fillRect(px + TILE - 3, py, 3, TILE);
       }
     }
-    // crystal: cool blue shards on darker rock, unmistakable against the warm ore
-    for (const patch of CRYSTAL_PATCHES) {
-      for (let y = patch.y; y < patch.y + patch.h; y++) {
-        for (let x = patch.x; x < patch.x + patch.w; x++) {
-          const px = x * TILE;
-          const py = y * TILE;
-          g.fillStyle(0x1f2c3a);
-          g.fillRect(px, py, TILE, TILE);
-          g.fillStyle(0x2f7f9e);
-          g.fillTriangle(px + 10, py + 24, px + 15, py + 6, px + 20, py + 24);
-          g.fillTriangle(px + 20, py + 26, px + 24, py + 13, px + 28, py + 26);
-          g.fillStyle(0x6bd4ff);
-          g.fillTriangle(px + 13, py + 23, px + 15, py + 9, px + 17, py + 23);
-          g.fillTriangle(px + 22, py + 25, px + 24, py + 16, px + 26, py + 25);
-          g.fillStyle(0xc9f0ff);
-          g.fillCircle(px + 15, py + 13, 1.5);
-        }
-      }
-    }
-    // subtle grid lines
+
+    this.drawPathArrows(g);
+
+    // subtle grid lines, grass only — they just add noise on top of the road
     g.lineStyle(1, 0xffffff, 0.035);
     for (let x = 0; x <= GRID_W; x++) g.lineBetween(x * TILE, 0, x * TILE, PLAYFIELD_H);
     for (let y = 0; y <= GRID_H; y++) g.lineBetween(0, y * TILE, GRID_W * TILE, y * TILE);
 
     // spawn & exit markers
-    const first = PATH_WAYPOINTS[0];
-    const last = PATH_WAYPOINTS[PATH_WAYPOINTS.length - 1];
+    const route = pathWaypoints();
+    const first = route[0];
+    const last = route[route.length - 1];
     g.fillStyle(0x3d1f5c, 1);
     g.fillRect(0, first.y * TILE, TILE / 2, TILE);
     g.fillStyle(0x8f1f1f, 1);
     g.fillRect(GRID_W * TILE - TILE / 2, last.y * TILE, TILE / 2, TILE);
+
+    this.drawVignette();
+  }
+
+  /**
+   * Chevrons down the middle of the road. They cost nothing to draw and answer
+   * the first question a new player has on an unfamiliar map: which way do they
+   * come from, and where are they headed?
+   */
+  private drawPathArrows(g: Phaser.GameObjects.Graphics): void {
+    const route = pathWaypoints();
+    for (let i = 0; i < route.length - 1; i++) {
+      const ax = route[i].x * TILE + TILE / 2;
+      const ay = route[i].y * TILE + TILE / 2;
+      const bx = route[i + 1].x * TILE + TILE / 2;
+      const by = route[i + 1].y * TILE + TILE / 2;
+      const len = Math.hypot(bx - ax, by - ay);
+      if (len === 0) continue;
+      const ux = (bx - ax) / len;
+      const uy = (by - ay) / len;
+      const nx = -uy; // unit normal, for the chevron's shoulders
+      const ny = ux;
+
+      for (let d = 20; d < len; d += 44) {
+        const cx = ax + ux * d;
+        const cy = ay + uy * d;
+        if (cx < -TILE || cx > GRID_W * TILE + TILE || cy < -TILE || cy > PLAYFIELD_H + TILE) continue;
+        g.fillStyle(0xdcb877, 0.5);
+        g.fillTriangle(
+          cx + ux * 7,
+          cy + uy * 7,
+          cx - ux * 3 + nx * 6,
+          cy - uy * 3 + ny * 6,
+          cx - ux * 3 - nx * 6,
+          cy - uy * 3 - ny * 6,
+        );
+      }
+    }
+  }
+
+  /**
+   * Soft darkening at the playfield edges so the board reads as lit from the
+   * centre. Sits just above the ground and below everything that moves — an
+   * enemy walking in at the left edge must not be dimmed.
+   */
+  private drawVignette(): void {
+    const g = this.add.graphics().setDepth(2);
+    const bands = 7;
+    for (let i = 0; i < bands; i++) {
+      g.lineStyle(4, 0x000000, 0.05 * (bands - i));
+      g.strokeRect(i * 4 + 2, i * 4 + 2, GAME_W - i * 8 - 4, PLAYFIELD_H - i * 8 - 4);
+    }
+  }
+
+  /**
+   * Deposits are a separate layer because they change during a run: tiles thin
+   * out as they are mined, vanish when exhausted, and prospecting adds new
+   * ones. Redrawn only when something actually changed.
+   */
+  private drawDeposits(): void {
+    const g = this.oreLayer.clear();
+    this.grid.forEachCell((cell, x, y) => {
+      const res = minedResource(cell.kind);
+      if (!res) return;
+      const px = x * TILE;
+      const py = y * TILE;
+      // Richness fades as the tile empties — a thinning patch is visible before it dies
+      const rich = Phaser.Math.Clamp(cell.reserves / RESERVES[res], 0.15, 1);
+
+      if (res === 'ore') {
+        g.fillStyle(0x24382f);
+        g.fillRect(px, py, TILE, TILE);
+        g.fillStyle(0xb35c1e, rich);
+        g.fillCircle(px + 9, py + 11, 4);
+        g.fillCircle(px + 22, py + 20, 5);
+        if (rich > 0.5) g.fillCircle(px + 13, py + 24, 3);
+        g.fillStyle(0xff9f43, rich);
+        g.fillCircle(px + 9, py + 11, 2);
+        g.fillCircle(px + 22, py + 20, 2.5);
+      } else {
+        // crystal: cool blue shards on darker rock, unmistakable against the warm ore
+        g.fillStyle(0x1f2c3a);
+        g.fillRect(px, py, TILE, TILE);
+        g.fillStyle(0x2f7f9e, rich);
+        g.fillTriangle(px + 10, py + 24, px + 15, py + 6, px + 20, py + 24);
+        if (rich > 0.5) g.fillTriangle(px + 20, py + 26, px + 24, py + 13, px + 28, py + 26);
+        g.fillStyle(0x6bd4ff, rich);
+        g.fillTriangle(px + 13, py + 23, px + 15, py + 9, px + 17, py + 23);
+        g.fillStyle(0xc9f0ff, rich);
+        g.fillCircle(px + 15, py + 13, 1.5);
+      }
+    });
   }
 }

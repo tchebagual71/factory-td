@@ -1,13 +1,15 @@
 import Phaser from 'phaser';
-import { GAME_H, GAME_W, PLAYFIELD_H } from '../config';
+import { GAME_H, GAME_W, IS_TOUCH, PLAYFIELD_H, ROOMY_UI, UI_H } from '../config';
 import { AchievementDef } from '../data/achievements';
 import { BUILD_INFO } from '../data/buildings';
-import { waveDef, WAVE_KIND_LABEL } from '../data/waves';
+import { activeMap, prospectCost, prospectKind } from '../data/map';
+import { earlySendBonus, waveDef, WAVE_KIND_LABEL } from '../data/waves';
 import { pushAchievements } from '../services/cloud';
-import { GameState } from '../state/GameState';
+import { GameState, WaveTally } from '../state/GameState';
 import { progress } from '../state/progress';
 import { BuildingType } from '../types';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
+import { HudLayout, hudLayout } from './hudLayout';
 
 const FONT = { fontFamily: 'monospace' };
 
@@ -26,9 +28,13 @@ export class UIScene extends Phaser.Scene {
   private paletteButtons = new Map<BuildingType, Phaser.GameObjects.Container>();
   private descText!: Phaser.GameObjects.Text;
   private overlay: Phaser.GameObjects.GameObject[] = [];
+  private earlyText!: Phaser.GameObjects.Text;
+  private prospectText!: Phaser.GameObjects.Text;
+  private mapText!: Phaser.GameObjects.Text;
   private toastQueue: AchievementDef[] = [];
   private toastActive = false;
   private menuConfirm = false;
+  private summaryCard: Phaser.GameObjects.Container | null = null;
 
   constructor() {
     super('ui');
@@ -47,6 +53,26 @@ export class UIScene extends Phaser.Scene {
     muteBtn.on('pointerdown', () => applyMute(toggleMute()));
     this.input.keyboard?.on('keydown-M', () => applyMute(toggleMute()));
 
+    // ----- prospecting (top strip, right of the stat chips) -----
+    const prospectBtn = this.add
+      .rectangle(372, 8, 196, 30, 0x1e2233, 0.9)
+      .setOrigin(0)
+      .setStrokeStyle(2, 0x2b3040)
+      .setInteractive({ useHandCursor: true });
+    this.prospectText = this.add
+      .text(470, 23, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(0.5);
+    prospectBtn.on('pointerover', () => prospectBtn.setFillStyle(0x272c42, 0.9));
+    prospectBtn.on('pointerout', () => prospectBtn.setFillStyle(0x1e2233, 0.9));
+    prospectBtn.on('pointerdown', () => GameState.events.emit('ui:prospect'));
+    GameState.events.on('surveys', () => this.refreshStats());
+
+    // Which layout this run is on. UIScene sleeps rather than stopping, so this
+    // is refreshed with the stats instead of being captured once at create().
+    this.mapText = this.add
+      .text(582, 23, '', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#6b7689' })
+      .setOrigin(0, 0.5);
+
     // ----- pause overlay -----
     const pauseDim = this.add.rectangle(0, 0, GAME_W, PLAYFIELD_H, 0x000000, 0.45).setOrigin(0).setDepth(40).setVisible(false);
     const pauseText = this.add
@@ -60,106 +86,32 @@ export class UIScene extends Phaser.Scene {
     });
 
     // ----- bottom bar -----
-    this.add.rectangle(0, PLAYFIELD_H, GAME_W, GAME_H - PLAYFIELD_H, 0x141625).setOrigin(0);
+    // Three zones, sized from UI_H so a 4:3 tablet spends its extra height on a
+    // bigger HUD instead of letterbox bars: palette | touch controls | wave cluster.
+    this.add.rectangle(0, PLAYFIELD_H, GAME_W, UI_H, 0x141625).setOrigin(0);
     this.add.rectangle(0, PLAYFIELD_H, GAME_W, 2, 0x2b3040).setOrigin(0);
 
-    // Ten slots have to fit left of the MENU button at x=862: 10×(80+4) = 836.
-    let bx = 10;
-    const BW = 80;
-    for (const info of BUILD_INFO) {
-      const container = this.add.container(bx, PLAYFIELD_H + 8);
-      const frame = this.add
-        .rectangle(0, 0, BW, 64, 0x1e2233)
-        .setOrigin(0)
-        .setStrokeStyle(2, 0x2b3040)
-        .setInteractive({ useHandCursor: true });
-      frame.on('pointerdown', () => GameState.events.emit('ui:select', info.type));
-      frame.on('pointerover', () => {
-        frame.setFillStyle(0x272c42);
-        this.descText.setText(info.desc);
-      });
-      frame.on('pointerout', () => {
-        frame.setFillStyle(0x1e2233);
-        this.descText.setText('R rotate · drag paints belts · right-click sells 50% · click a tower to upgrade');
-      });
-      container.add([
-        frame,
-        this.add.image(BW / 2, 20, info.type).setScale(0.95),
-        this.add.text(BW / 2, 40, info.name, { ...FONT, fontSize: '10px', fontStyle: 'bold', color: '#e8edf5' }).setOrigin(0.5, 0),
-        this.add.text(BW / 2, 52, `$${info.cost}`, { ...FONT, fontSize: '11px', color: '#ffe066' }).setOrigin(0.5, 0),
-        this.add.text(4, 3, info.hotkey, { ...FONT, fontSize: '9px', color: '#8892a6' }),
-      ]);
-      this.paletteFrames.set(info.type, frame);
-      this.paletteButtons.set(info.type, container);
-      bx += BW + 4;
-    }
-    this.descText = this.add.text(12, PLAYFIELD_H - 22, 'R rotate · drag paints belts · right-click sells 50% · click a tower to upgrade', {
-      ...FONT,
-      fontSize: '11px',
-      color: '#cdd6e4',
-      stroke: '#000000',
-      strokeThickness: 3,
+    const layout = hudLayout({
+      gameW: GAME_W,
+      barY: PLAYFIELD_H,
+      barH: UI_H,
+      roomy: ROOMY_UI,
+      touch: IS_TOUCH,
+      slotCount: BUILD_INFO.length,
     });
 
-    // ----- wave control (bottom right) -----
-    this.previewText = this.add
-      .text(GAME_W - 105, PLAYFIELD_H + 16, '', { ...FONT, fontSize: '10px', color: '#cdd6e4', align: 'center' })
-      .setOrigin(0.5);
-    this.waveBtn = this.add
-      .rectangle(GAME_W - 190, PLAYFIELD_H + 32, 170, 40, 0x2e7d4f)
-      .setOrigin(0)
-      .setStrokeStyle(2, 0x5ef078)
-      .setInteractive({ useHandCursor: true });
-    this.waveBtnText = this.add
-      .text(GAME_W - 105, PLAYFIELD_H + 52, 'SEND WAVE [SPC]', { ...FONT, fontSize: '14px', fontStyle: 'bold', color: '#ffffff' })
-      .setOrigin(0.5);
-    this.waveBtn.on('pointerdown', () => GameState.events.emit('ui:startwave'));
+    this.buildPalette(layout);
+    if (IS_TOUCH) this.buildTouchControls(layout);
+    this.buildWaveCluster(layout);
 
-    // speed + auto-send controls
-    const speedBtn = this.add
-      .rectangle(GAME_W - 258, PLAYFIELD_H + 32, 56, 40, 0x1e2233)
-      .setOrigin(0)
-      .setStrokeStyle(2, 0x2b3040)
-      .setInteractive({ useHandCursor: true });
-    this.speedBtnText = this.add
-      .text(GAME_W - 230, PLAYFIELD_H + 52, '×1', { ...FONT, fontSize: '15px', fontStyle: 'bold', color: '#cdd6e4' })
-      .setOrigin(0.5);
-    this.add.text(GAME_W - 230, PLAYFIELD_H + 18, '[F]', { ...FONT, fontSize: '10px', color: '#8892a6' }).setOrigin(0.5);
-    speedBtn.on('pointerdown', () => GameState.cycleSpeed());
-
-    this.autoBtn = this.add
-      .rectangle(GAME_W - 336, PLAYFIELD_H + 32, 68, 40, 0x1e2233)
-      .setOrigin(0)
-      .setStrokeStyle(2, 0x2b3040)
-      .setInteractive({ useHandCursor: true });
-    this.autoBtnText = this.add
-      .text(GAME_W - 302, PLAYFIELD_H + 52, 'AUTO', { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#8892a6' })
-      .setOrigin(0.5);
-    this.autoBtn.on('pointerdown', () => GameState.toggleAuto());
-
-    // menu button (gap between the palette and the wave controls); mid-wave asks once
-    const menuBtn = this.add
-      .rectangle(862, PLAYFIELD_H + 32, 74, 40, 0x1e2233)
-      .setOrigin(0)
-      .setStrokeStyle(2, 0x2b3040)
-      .setInteractive({ useHandCursor: true });
-    const menuBtnText = this.add
-      .text(899, PLAYFIELD_H + 52, 'MENU', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#8892a6' })
-      .setOrigin(0.5);
-    menuBtn.on('pointerdown', () => {
-      if (GameState.phase === 'wave' && !GameState.gameOver && !this.menuConfirm) {
-        this.menuConfirm = true;
-        menuBtnText.setText('SURE?').setColor('#ff5555');
-        this.time.delayedCall(2500, () => {
-          this.menuConfirm = false;
-          if (menuBtnText.active) menuBtnText.setText('MENU').setColor('#8892a6');
-        });
-        return;
-      }
-      this.menuConfirm = false;
-      menuBtnText.setText('MENU').setColor('#8892a6');
-      GameState.events.emit('ui:menu');
-    });
+    const legend = this.add
+      .text(GAME_W / 2, 10, 'LOGISTICS  ·  tower % = ammo uptime last wave  ·  green belts flowing, red jammed  ·  orange rings = starved or backed up', {
+        ...FONT, fontSize: '11px', color: '#cdd6e4', backgroundColor: '#000000cc', padding: { x: 8, y: 4 },
+      })
+      .setOrigin(0.5, 0)
+      .setDepth(30)
+      .setVisible(false);
+    GameState.events.on('overlay', (on: boolean) => legend.setVisible(on));
 
     // ----- state listeners -----
     const ev = GameState.events;
@@ -184,8 +136,221 @@ export class UIScene extends Phaser.Scene {
       this.autoBtn.setStrokeStyle(2, on ? 0x5ef078 : 0x2b3040);
     });
 
+    ev.on('wavesummary', (wave: number, tally: WaveTally) => this.showWaveSummary(wave, tally));
+
     this.refreshStats();
     this.refreshWaveBtn();
+  }
+
+  /** Shared HUD button: a frame plus a centered label, with hover feedback. */
+  private hudButton(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    text: string,
+    fontSize: number,
+    onClick: () => void,
+    fill = 0x1e2233,
+    stroke = 0x2b3040,
+  ): { frame: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text } {
+    const frame = this.add
+      .rectangle(x, y, w, h, fill)
+      .setOrigin(0)
+      .setStrokeStyle(2, stroke)
+      .setInteractive({ useHandCursor: true });
+    const label = this.add
+      .text(x + w / 2, y + h / 2, text, { ...FONT, fontSize: `${fontSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(0.5);
+    frame.on('pointerover', () => frame.setFillStyle(0x272c42));
+    frame.on('pointerout', () => frame.setFillStyle(fill));
+    frame.on('pointerdown', onClick);
+    return { frame, label };
+  }
+
+  /**
+   * Build palette. One row of small slots on a 16:9 desktop bar; two rows of
+   * big, finger-sized slots whenever the bar is roomy (tablets and touch).
+   */
+  private buildPalette(layout: HudLayout): void {
+    const bh = layout.slots[0].h;
+    const big = bh >= 78;
+    const iconScale = Math.min(2, Math.max(0.9, (bh * 0.42) / 32));
+
+    const HINT = IS_TOUCH
+      ? 'Tap a slot, then tap the map · ROTATE turns it · SELL then tap to refund 50% · tap a tower to upgrade'
+      : 'R rotate · drag paints belts · right-click sells 50% · click a tower to upgrade · [L] logistics view';
+
+    BUILD_INFO.forEach((info, i) => {
+      const { x, y, w: bw } = layout.slots[i];
+      const container = this.add.container(x, y);
+      const frame = this.add
+        .rectangle(0, 0, bw, bh, 0x1e2233)
+        .setOrigin(0)
+        .setStrokeStyle(2, 0x2b3040)
+        .setInteractive({ useHandCursor: true });
+      frame.on('pointerdown', () => GameState.events.emit('ui:select', info.type));
+      frame.on('pointerover', () => {
+        frame.setFillStyle(0x272c42);
+        this.descText.setText(info.desc);
+      });
+      frame.on('pointerout', () => {
+        frame.setFillStyle(0x1e2233);
+        this.descText.setText(HINT);
+      });
+      container.add([
+        frame,
+        this.add.image(bw / 2, bh * 0.34, info.type).setScale(iconScale),
+        this.add
+          .text(bw / 2, bh * 0.6, info.name, { ...FONT, fontSize: big ? '12px' : '10px', fontStyle: 'bold', color: '#e8edf5' })
+          .setOrigin(0.5, 0),
+        this.add
+          .text(bw / 2, bh * 0.78, `$${info.cost}`, { ...FONT, fontSize: big ? '13px' : '11px', color: '#ffe066' })
+          .setOrigin(0.5, 0),
+      ]);
+      // the hotkey badge is noise on a device with no keyboard
+      if (!IS_TOUCH) {
+        container.add(this.add.text(4, 3, info.hotkey, { ...FONT, fontSize: '9px', color: '#8892a6' }));
+      }
+      this.paletteFrames.set(info.type, frame);
+      this.paletteButtons.set(info.type, container);
+    });
+
+    this.descText = this.add
+      .text(layout.slots[0].x + 2, PLAYFIELD_H - 20, HINT, {
+        ...FONT, fontSize: '11px', color: '#cdd6e4', stroke: '#000000', strokeThickness: 3,
+      });
+  }
+
+  /**
+   * Touch replacements for the affordances that need a keyboard or a right
+   * mouse button. Only built on touch devices — a desktop keeps its shortcuts.
+   */
+  private buildTouchControls(layout: HudLayout): void {
+    const [r, s, p] = layout.touch;
+    const ARROWS = ['→', '↓', '←', '↑'];
+
+    const rotate = this.hudButton(r.x, r.y, r.w, r.h, `↻ ${ARROWS[0]}`, 15, () => GameState.events.emit('ui:rotate'));
+    rotate.label.setColor('#ffe066');
+    GameState.events.on('builddir', (dir: number) => rotate.label.setText(`↻ ${ARROWS[dir & 3]}`));
+
+    const sell = this.hudButton(s.x, s.y, s.w, s.h, 'SELL', 14, () => GameState.events.emit('ui:sellmode'));
+    GameState.events.on('sellmode', (on: boolean) => {
+      sell.label.setText(on ? 'SELL ✓' : 'SELL').setColor(on ? '#ff8b8b' : '#cdd6e4');
+      sell.frame.setStrokeStyle(2, on ? 0xff5555 : 0x2b3040);
+    });
+
+    const pause = this.hudButton(p.x, p.y, p.w, p.h, '❚❚', 15, () => GameState.togglePause());
+    GameState.events.on('paused', (paused: boolean) => {
+      pause.label.setText(paused ? '▶' : '❚❚').setColor(paused ? '#5ef078' : '#cdd6e4');
+    });
+  }
+
+  /** Wave button + speed/auto/logistics/menu, stacked to fill whatever bar height we have. */
+  private buildWaveCluster(layout: HudLayout): void {
+    const { preview, send, toggles } = layout;
+
+    this.previewText = this.add
+      .text(preview.x + preview.w / 2, preview.y + preview.h / 2, '', {
+        ...FONT, fontSize: ROOMY_UI ? '12px' : '10px', color: '#cdd6e4', align: 'center',
+      })
+      .setOrigin(0.5);
+
+    this.waveBtn = this.add
+      .rectangle(send.x, send.y, send.w, send.h, 0x2e7d4f)
+      .setOrigin(0)
+      .setStrokeStyle(2, 0x5ef078)
+      .setInteractive({ useHandCursor: true });
+    this.waveBtnText = this.add
+      .text(send.x + send.w / 2, send.y + send.h / 2 - 7, IS_TOUCH ? 'SEND WAVE' : 'SEND WAVE [SPC]', {
+        ...FONT, fontSize: ROOMY_UI ? '17px' : '14px', fontStyle: 'bold', color: '#ffffff',
+      })
+      .setOrigin(0.5);
+    // live early-send bonus, ticking down inside the button — the "go now" nudge
+    this.earlyText = this.add
+      .text(send.x + send.w / 2, send.y + send.h / 2 + 12, '', {
+        ...FONT, fontSize: ROOMY_UI ? '12px' : '11px', fontStyle: 'bold', color: '#c9f0ff',
+      })
+      .setOrigin(0.5);
+    this.waveBtn.on('pointerdown', () => GameState.events.emit('ui:startwave'));
+
+    const [a, s, l, m] = toggles;
+    const auto = this.hudButton(a.x, a.y, a.w, a.h, 'AUTO', 13, () => GameState.toggleAuto());
+    this.autoBtn = auto.frame;
+    this.autoBtnText = auto.label.setColor('#8892a6');
+
+    const speed = this.hudButton(s.x, s.y, s.w, s.h, '×1', 15, () => GameState.cycleSpeed());
+    this.speedBtnText = speed.label;
+
+    const logi = this.hudButton(l.x, l.y, l.w, l.h, 'LOGI', 12, () => GameState.toggleOverlay());
+    logi.label.setColor('#8892a6');
+    GameState.events.on('overlay', (on: boolean) => {
+      logi.label.setColor(on ? '#6bd4ff' : '#8892a6');
+      logi.frame.setStrokeStyle(2, on ? 0x6bd4ff : 0x2b3040);
+    });
+
+    const menu = this.hudButton(m.x, m.y, m.w, m.h, 'MENU', 12, () => {
+      if (GameState.phase === 'wave' && !GameState.gameOver && !this.menuConfirm) {
+        this.menuConfirm = true;
+        menu.label.setText('SURE?').setColor('#ff5555');
+        this.time.delayedCall(2500, () => {
+          this.menuConfirm = false;
+          if (menu.label.active) menu.label.setText('MENU').setColor('#8892a6');
+        });
+        return;
+      }
+      this.menuConfirm = false;
+      menu.label.setText('MENU').setColor('#8892a6');
+      GameState.events.emit('ui:menu');
+    });
+    menu.label.setColor('#8892a6');
+  }
+
+  update(): void {
+    const show = GameState.phase === 'build' && !GameState.gameOver;
+    const bonus = show ? earlySendBonus(GameState.wave, GameState.buildElapsed) : 0;
+    this.earlyText.setText(bonus > 0 ? `early bonus +$${bonus}` : '');
+  }
+
+  /**
+   * Wave-clear card: what the round actually cost and produced. `fired` vs
+   * `produced` is the headline — a factory that made fewer rounds than the
+   * towers spent is running down its magazines and will starve in a wave or two.
+   */
+  private showWaveSummary(wave: number, t: WaveTally): void {
+    this.summaryCard?.destroy();
+    const W = 268;
+    const H = 118;
+    const c = this.add.container(GAME_W / 2 - W / 2, 372).setDepth(45).setAlpha(0);
+    const deficit = t.produced < t.fired;
+    const bg = this.add.rectangle(0, 0, W, H, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, deficit ? 0xff9f43 : 0x2b3040);
+    const rows: Phaser.GameObjects.GameObject[] = [
+      bg,
+      this.add.text(12, 9, `WAVE ${wave} REPORT`, { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#ffe066' }),
+      this.add.text(12, 32, `Kills      ${t.kills}${t.leaked > 0 ? `        Leaked ${t.leaked}` : ''}`, {
+        ...FONT, fontSize: '11px', color: t.leaked > 0 ? '#ff8b8b' : '#cdd6e4',
+      }),
+      this.add.text(12, 50, `Income     +$${t.income}`, { ...FONT, fontSize: '11px', color: '#ffe066' }),
+      this.add.text(12, 68, `Ammo       ${t.fired} fired · ${t.produced} made`, {
+        ...FONT, fontSize: '11px', color: deficit ? '#ff9f43' : '#5ef078',
+      }),
+      this.add.text(12, 90, deficit ? '⚠ magazines draining — add production' : '✓ production kept up', {
+        ...FONT, fontSize: '10px', color: deficit ? '#ff9f43' : '#8892a6',
+      }),
+    ];
+    c.add(rows);
+    this.summaryCard = c;
+    this.tweens.add({ targets: c, alpha: 1, y: 360, duration: 220, ease: 'Back.out' });
+    this.tweens.add({
+      targets: c,
+      alpha: 0,
+      delay: 4200,
+      duration: 400,
+      onComplete: () => {
+        c.destroy();
+        if (this.summaryCard === c) this.summaryCard = null;
+      },
+    });
   }
 
   private refreshStats(pop = false): void {
@@ -210,10 +375,22 @@ export class UIScene extends Phaser.Scene {
     for (const info of BUILD_INFO) {
       this.paletteButtons.get(info.type)?.setAlpha(GameState.money >= info.cost ? 1 : 0.45);
     }
+
+    this.mapText.setText(`◈ ${activeMap().name}`);
+    const cost = prospectCost(GameState.surveys);
+    const kind = prospectKind(GameState.surveys);
+    this.prospectText
+      .setText(`⛏ SURVEY ${kind.toUpperCase()}  $${cost}`)
+      .setColor(GameState.money >= cost ? (kind === 'ore' ? '#ff9f43' : '#6bd4ff') : '#8892a6');
   }
 
   private refreshWaveBtn(): void {
     const building = GameState.phase === 'build';
+    if (!building && this.summaryCard) {
+      // the player moved on — get the card out of the playfield
+      this.summaryCard.destroy();
+      this.summaryCard = null;
+    }
     this.waveBtn.setFillStyle(building ? 0x2e7d4f : 0x5c2530);
     this.waveBtn.setStrokeStyle(2, building ? 0x5ef078 : 0xff5555);
     this.waveBtnText.setText(building ? 'SEND WAVE [SPC]' : 'DEFEND!');

@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   BUILD_INFO,
   costOf,
+  DAMAGE_TOWERS,
   effStats,
+  isSupport,
   MACHINES,
   MAX_MK,
+  MIN_SLOW_FACTOR,
   MINER,
   minerCycle,
   nextTier,
@@ -31,8 +34,8 @@ describe('effStats', () => {
     }
   });
 
-  it('DPS strictly increases at every mark along every path', () => {
-    for (const type of TOWER_TYPES) {
+  it('DPS strictly increases at every mark along every damage path', () => {
+    for (const type of DAMAGE_TOWERS) {
       for (const p of UPGRADE_TREE[type].paths) {
         let prev = effStats(type, 1);
         for (let mk = 2; mk <= MAX_MK; mk++) {
@@ -42,6 +45,42 @@ describe('effStats', () => {
         }
       }
     }
+  });
+
+  it('support towers deal no damage at any mark — they multiply other towers instead', () => {
+    for (const type of TOWER_TYPES.filter((t) => !DAMAGE_TOWERS.includes(t))) {
+      expect(isSupport(type), `${type} should be support`).toBe(true);
+      for (const p of UPGRADE_TREE[type].paths) {
+        for (let mk = 1; mk <= MAX_MK; mk++) {
+          expect(effStats(type, mk, p.id).damage).toBe(0);
+        }
+      }
+    }
+  });
+
+  it('a support tower’s slow deepens or holds at every mark, and never freezes outright', () => {
+    for (const type of TOWER_TYPES.filter((t) => isSupport(t))) {
+      for (const p of UPGRADE_TREE[type].paths) {
+        let prev = effStats(type, 1);
+        for (let mk = 2; mk <= MAX_MK; mk++) {
+          const cur = effStats(type, mk, p.id);
+          // slowFactor is the *remaining* speed, so progress means it drops
+          expect(cur.slowFactor, `${type}/${p.id} mk${mk}`).toBeLessThanOrEqual(prev.slowFactor);
+          expect(cur.slowDur).toBeGreaterThanOrEqual(prev.slowDur);
+          expect(cur.slowFactor).toBeGreaterThanOrEqual(MIN_SLOW_FACTOR);
+          prev = cur;
+        }
+      }
+    }
+  });
+
+  it('cryo paths are differentiated: cryostasis freezes harder, blizzard covers more ground faster', () => {
+    const stasis = effStats('cryo', MAX_MK, 'cryostasis');
+    const blizzard = effStats('cryo', MAX_MK, 'blizzard');
+    expect(stasis.slowFactor).toBeLessThan(blizzard.slowFactor);
+    expect(stasis.slowDur).toBeGreaterThan(blizzard.slowDur);
+    expect(blizzard.range).toBeGreaterThan(stasis.range);
+    expect(blizzard.fireRate).toBeGreaterThan(stasis.fireRate);
   });
 
   it('no stat ever drops below its previous tier along a path', () => {
@@ -216,6 +255,22 @@ describe('economy invariants (CLAUDE.md balance intent)', () => {
       }
       expect(recipeNeeds(m, 'ore') + recipeNeeds(m, 'crystal')).toBeGreaterThan(0);
     }
+  });
+
+  it('coolant is the cheapest consumable per ore — that is what makes the cryo field sustainable', () => {
+    const orePer = (m: 'press' | 'forge' | 'assembler' | 'chiller') => MACHINES[m].oreIn / MACHINES[m].outputPer;
+    expect(orePer('chiller')).toBeLessThan(orePer('press'));
+    expect(orePer('chiller')).toBeLessThan(orePer('forge'));
+    expect(MACHINES.chiller.outputPer).toBeGreaterThan(1);
+  });
+
+  it('one miner + chiller keeps several cryo towers pulsing', () => {
+    const coolantRate = Math.min(
+      (1 / MINER.cycle / MACHINES.chiller.oreIn) * MACHINES.chiller.outputPer,
+      (1 / MACHINES.chiller.cycle) * MACHINES.chiller.outputPer,
+    );
+    const towersSupported = coolantRate / effStats('cryo', 1).fireRate;
+    expect(towersSupported).toBeGreaterThan(1.5);
   });
 
   it('every tower type has an ammo item some machine actually produces', () => {

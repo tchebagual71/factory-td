@@ -1,6 +1,6 @@
-import { PATH_PX } from '../data/map';
-import { resistMult, waveClearBonus, waveDef, WaveDef } from '../data/waves';
-import { GameState } from '../state/GameState';
+import { pathPx } from '../data/map';
+import { earlySendBonus, resistMult, waveClearBonus, waveDef, WaveDef } from '../data/waves';
+import { emptyTally, GameState } from '../state/GameState';
 import { progress } from '../state/progress';
 import { Enemy, ItemType } from '../types';
 import { sfx } from '../utils/sfx';
@@ -9,6 +9,8 @@ import type { GameScene } from '../scenes/GameScene';
 /** Spawns waves, walks enemies along the fixed path, handles kills and leaks. */
 export class WaveSystem {
   enemies: Enemy[] = [];
+  /** the active map's route in pixels, snapshotted at construction (hot loop — don't rebuild per frame) */
+  private path = pathPx();
   private def: WaveDef | null = null;
   private toSpawn = 0;
   private spawnTimer = 0;
@@ -20,13 +22,25 @@ export class WaveSystem {
     this.def = waveDef(GameState.wave);
     this.toSpawn = this.def.count;
     this.spawnTimer = 0;
+    // Bank the early-send bonus before setPhase resets the build clock
+    const early = earlySendBonus(GameState.wave, GameState.buildElapsed);
+    GameState.tally = emptyTally();
     GameState.setPhase('wave');
     const suffix = this.def.kind === 'normal' ? '' : ` — ${this.def.kind.toUpperCase()}`;
     this.scene.bigText(`WAVE ${GameState.wave}${suffix}`);
+    if (early > 0) {
+      GameState.addMoney(early);
+      progress.record('moneyEarned', early);
+      this.scene.floatText(640, 300, `EARLY SEND  +$${early}`, '#5ef078');
+    }
     sfx.waveStart();
   }
 
   update(dt: number): void {
+    if (GameState.phase === 'build') {
+      GameState.buildElapsed += dt;
+      return;
+    }
     if (GameState.phase !== 'wave' || !this.def) return;
 
     if (this.toSpawn > 0) {
@@ -40,6 +54,15 @@ export class WaveSystem {
 
     for (const e of this.enemies) {
       if (e.dead) continue;
+      if (e.slow > 0) {
+        e.slow -= dt;
+        // frosted tint, reapplied each frame because hit() flashes over it
+        if (e.slow > 0) e.sprite.setTint(0x9fd8ff);
+        else {
+          e.slowFactor = 1;
+          e.sprite.clearTint();
+        }
+      }
       this.move(e, dt);
       e.sprite.setPosition(e.x, e.y);
       e.hpBar.setPosition(e.x - e.hpBarW / 2, e.y - e.hpBarY);
@@ -74,6 +97,7 @@ export class WaveSystem {
   private kill(e: Enemy): void {
     e.dead = true;
     GameState.addMoney(e.bounty);
+    GameState.tally.kills += 1;
     progress.record('kills');
     if (e.kind === 'armored') progress.record('killsArmored');
     else if (e.kind === 'swift') progress.record('killsSwift');
@@ -89,6 +113,7 @@ export class WaveSystem {
 
   private leak(e: Enemy): void {
     e.dead = true;
+    GameState.tally.leaked += 1;
     GameState.loseLives(e.leak);
     this.scene.floatText(e.x - 20, e.y, `-${e.leak}♥`, '#ff5555');
     this.scene.cameras.main.shake(180, 0.006);
@@ -98,10 +123,20 @@ export class WaveSystem {
     e.hpBar.destroy();
   }
 
+  /**
+   * Chill an enemy. A weaker slow never overwrites a stronger one; equal or
+   * deeper slows refresh the timer — overlapping cryo fields cooperate.
+   */
+  chill(e: Enemy, factor: number, duration: number): void {
+    if (e.slow > 0 && factor > e.slowFactor) return;
+    e.slowFactor = factor;
+    e.slow = Math.max(e.slow, duration);
+  }
+
   private move(e: Enemy, dt: number): void {
-    let remaining = e.speed * dt;
+    let remaining = e.speed * (e.slow > 0 ? e.slowFactor : 1) * dt;
     while (remaining > 0 && !e.dead) {
-      const target = PATH_PX[e.wp + 1];
+      const target = this.path[e.wp + 1];
       if (!target) {
         this.leak(e);
         return;
@@ -115,7 +150,7 @@ export class WaveSystem {
         e.traveled += d;
         e.wp += 1;
         remaining -= d;
-        if (e.wp >= PATH_PX.length - 1) {
+        if (e.wp >= this.path.length - 1) {
           this.leak(e);
           return;
         }
@@ -129,7 +164,7 @@ export class WaveSystem {
   }
 
   private spawn(def: WaveDef): void {
-    const p = PATH_PX[0];
+    const p = this.path[0];
     const texture =
       def.kind === 'boss' ? 'boss' : def.kind === 'swift' ? 'swift' : def.kind === 'armored' ? 'armored' : 'enemy';
     const barW = def.kind === 'boss' ? 28 : def.kind === 'swift' ? 16 : 22;
@@ -143,6 +178,8 @@ export class WaveSystem {
       hp: def.hp,
       maxHp: def.hp,
       speed: def.speed,
+      slow: 0,
+      slowFactor: 1,
       wp: 0,
       traveled: 0,
       bounty: def.bounty,
@@ -162,6 +199,8 @@ export class WaveSystem {
     sfx.waveClear();
     progress.record('wavesCleared');
     progress.record('moneyEarned', bonus);
+    // Card first, so it reports the wave that just ended, not the next one
+    GameState.events.emit('wavesummary', GameState.wave, { ...GameState.tally });
     GameState.nextWave();
     progress.recordMax('bestWave', GameState.wave);
     GameState.setPhase('build');

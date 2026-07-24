@@ -10,6 +10,7 @@ const ITEM_TEXTURE: Record<ItemType, string> = {
   ammo: 'item-ammo',
   shell: 'item-shell',
   piercing: 'item-piercing',
+  coolant: 'item-coolant',
 };
 
 /**
@@ -46,10 +47,14 @@ export class ConveyorSystem {
       const host = this.grid.cellAt(it.cx, it.cy)?.building;
       if (!host) continue;
 
+      // An item resting at the cell center that fails to move is a jam — the
+      // overlay reads `stalled` to paint backed-up belts.
+      let moved = false;
       if (host.type === 'belt') {
-        this.tryTransfer(i, it, host, host.dir);
+        moved = this.tryTransfer(i, it, host, host.dir);
       } else if (host.type === 'tunnel') {
-        if (!this.tryTunnel(it, host)) this.tryTransfer(i, it, host, host.dir);
+        const dive = this.tryTunnel(it, host);
+        moved = dive === 'moved' || (dive === 'none' && this.tryTransfer(i, it, host, host.dir));
       } else if (host.type === 'splitter') {
         // offsets relative to facing: 0=straight, 3=left, 1=right
         const offsets = [0, 3, 1];
@@ -58,30 +63,33 @@ export class ConveyorSystem {
           const dir = ((host.dir + offsets[slot]) % 4) as Dir;
           if (this.tryTransfer(i, it, host, dir)) {
             host.outIdx = (slot + 1) % 3;
+            moved = true;
             break;
           }
         }
       }
+      host.stalled = !moved;
     }
   }
 
   /**
    * Send the item underground to the next tunnel with the same facing within
-   * reach. Returns true if it dove (or is waiting on a blocked exit ahead).
+   * reach. 'waiting' means a paired exit exists but is occupied (hold, do not
+   * fall back to belt behavior); 'none' means unpaired — act like a plain belt.
    */
-  private tryTunnel(it: ItemEnt, host: Building): boolean {
+  private tryTunnel(it: ItemEnt, host: Building): 'moved' | 'waiting' | 'none' {
     for (let k = 1; k <= TUNNEL.reach; k++) {
       const exit = this.grid.cellAt(it.cx + DX[host.dir] * k, it.cy + DY[host.dir] * k)?.building;
       if (!exit || exit.type !== 'tunnel' || exit.dir !== host.dir) continue;
-      if (exit.item) return true; // paired exit exists but is occupied — wait here
+      if (exit.item) return 'waiting';
       host.item = null;
       exit.item = it;
       it.cx = exit.x;
       it.cy = exit.y;
       it.sprite.setAlpha(0.35); // "underground" while gliding to the exit
-      return true;
+      return 'moved';
     }
-    return false; // no exit ahead — behave like a plain belt
+    return 'none';
   }
 
   /** Move/insert the item one cell in `dir`. Returns true if the item left its host. */

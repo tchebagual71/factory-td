@@ -30,6 +30,35 @@ describe('miners', () => {
     expect(crystalBelt.item?.type).toBe('crystal');
   });
 
+  it('draws down the tile it stands on and stops dead when it runs out', () => {
+    const belt = placeBuilding(grid, 'belt', 3, 15, 0);
+    placeBuilding(grid, 'miner', 2, 15, 0);
+    grid.setReserves(2, 15, 1); // one unit left in the ground
+
+    let depleted: { x: number; y: number } | null = null;
+    prod.onDepleted = (x, y) => {
+      depleted = { x, y };
+    };
+
+    prod.update(MINER.cycle + 0.01);
+    expect(belt.item?.type).toBe('ore'); // the last unit still comes out
+    expect(depleted).toEqual({ x: 2, y: 15 });
+    expect(grid.cellAt(2, 15)?.kind).toBe('grass');
+
+    belt.item = null;
+    prod.update(MINER.cycle * 5);
+    expect(belt.item).toBeNull(); // nothing more, ever
+  });
+
+  it('marks a miner on an exhausted tile as stalled for the overlay', () => {
+    placeBuilding(grid, 'belt', 3, 15, 0);
+    const miner = placeBuilding(grid, 'miner', 2, 15, 0);
+    grid.setReserves(2, 15, 0);
+
+    prod.update(MINER.cycle + 0.01);
+    expect(miner.stalled).toBe(true);
+  });
+
   it('mines crystal on a slower cycle than ore', () => {
     const belt = placeBuilding(grid, 'belt', 9, 13, 0);
     placeBuilding(grid, 'miner', 8, 13, 0);
@@ -63,6 +92,19 @@ describe('assembler (tier-2 recipe)', () => {
     expect(asm.outputBuf).toBe(1);
     prod.update(0.01); // finished goods hit the belt on the following tick
     expect(out.item?.type).toBe('piercing');
+  });
+
+  it('banks a chiller’s whole batch, not one item per cycle', () => {
+    const out = placeBuilding(grid, 'belt', 8, 18, 0);
+    const chiller = placeBuilding(grid, 'chiller', 7, 18, 0);
+    chiller.inputOre = MACHINES.chiller.oreIn;
+
+    prod.update(MACHINES.chiller.cycle + 0.01);
+    expect(chiller.outputBuf).toBe(MACHINES.chiller.outputPer);
+
+    prod.update(0.01);
+    expect(out.item?.type).toBe('coolant');
+    expect(chiller.outputBuf).toBe(MACHINES.chiller.outputPer - 1); // rest waits for belt space
   });
 
   it('leaves a press unaffected by crystal it never asked for', () => {

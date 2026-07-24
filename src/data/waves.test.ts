@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resistMult, waveClearBonus, waveDef, WaveKind } from './waves';
+import { earlySendBonus, EARLY_SEND_WINDOW, resistMult, waveClearBonus, waveDef, WaveKind } from './waves';
 
 describe('waveDef rhythm', () => {
   it('follows boss > swift > armored precedence for waves 1-20', () => {
@@ -81,6 +81,39 @@ describe('resistMult', () => {
         expect(resistMult(kind, ammo)).toBe(1);
       }
     }
+  });
+});
+
+describe('earlySendBonus', () => {
+  it('pays most for an instant send and decays to nothing across the window', () => {
+    expect(earlySendBonus(5, 0)).toBeGreaterThan(0);
+    expect(earlySendBonus(5, EARLY_SEND_WINDOW / 2)).toBeLessThan(earlySendBonus(5, 0));
+    expect(earlySendBonus(5, EARLY_SEND_WINDOW)).toBe(0);
+    expect(earlySendBonus(5, EARLY_SEND_WINDOW * 10)).toBe(0);
+  });
+
+  it('never decreases as the build clock runs — the bonus only ever shrinks', () => {
+    let prev = Infinity;
+    for (let s = 0; s <= EARLY_SEND_WINDOW + 5; s += 1) {
+      const b = earlySendBonus(12, s);
+      expect(b).toBeLessThanOrEqual(prev);
+      expect(b).toBeGreaterThanOrEqual(0);
+      prev = b;
+    }
+  });
+
+  it('stays a bonus, never a substitute for clearing the wave', () => {
+    for (const n of [1, 5, 20, 50]) {
+      expect(earlySendBonus(n, 0)).toBeLessThan(waveClearBonus(n));
+    }
+  });
+
+  it('scales with wave number so late rushes stay worth it', () => {
+    expect(earlySendBonus(20, 0)).toBeGreaterThan(earlySendBonus(2, 0));
+  });
+
+  it('treats a negative clock (clock reset races) as an instant send, never as a penalty', () => {
+    expect(earlySendBonus(5, -3)).toBe(earlySendBonus(5, 0));
   });
 });
 

@@ -41,10 +41,32 @@ export function makeSprite(x = 0, y = 0): MockSprite {
   return s;
 }
 
+/**
+ * Chainable no-op stand-in for Phaser.GameObjects.Graphics / Text: every method
+ * returns the object itself, so `.setDepth(1).setVisible(false)` works.
+ */
+function makeChainable(): Record<string, unknown> {
+  const proxy: Record<string, unknown> = new Proxy(
+    {},
+    {
+      get: (target: Record<string, unknown>, prop) => {
+        if (prop in target) return target[prop as string];
+        return () => proxy;
+      },
+    },
+  );
+  return proxy;
+}
+
 export function makeScene(): Phaser.Scene {
   return {
-    add: { image: (x: number, y: number) => makeSprite(x, y) },
+    add: {
+      image: (x: number, y: number) => makeSprite(x, y),
+      graphics: () => makeChainable(),
+      text: () => makeChainable(),
+    },
     tweens: { add: () => undefined },
+    time: { now: 0, delayedCall: () => undefined },
   } as unknown as Phaser.Scene;
 }
 
@@ -67,6 +89,10 @@ export function makeBuilding(type: BuildingType, x: number, y: number, dir: Dir 
     mk: 1,
     path: null,
     invested: 0,
+    stalled: false,
+    utilBusy: 0,
+    utilBlocked: 0,
+    utilTotal: 0,
   };
 }
 

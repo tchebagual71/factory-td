@@ -63,6 +63,35 @@ describe('captureRun → validateSave round trip', () => {
     expect(back.buildings[1]).toMatchObject({ t: 'lancer', mk: 4, path: 'volley', ammo: 6 });
   });
 
+  it('carries prospected patches, spent tiles, and the survey count', () => {
+    const terrain = {
+      patches: [{ x: 6, y: 18, w: 2, h: 2, k: 'crystal' as const }],
+      tiles: [
+        { x: 2, y: 15, n: 40 },
+        { x: 3, y: 15, n: 0 },
+      ],
+    };
+    const save = captureRun([], [], { ...SNAPSHOT, surveys: 3 }, terrain);
+    const back = validateSave(JSON.parse(JSON.stringify(save)))!;
+    expect(back).not.toBeNull();
+    expect(back.surveys).toBe(3);
+    expect(back.patches).toEqual(terrain.patches);
+    expect(back.tiles).toEqual(terrain.tiles);
+  });
+
+  it('remembers which layout the run is on', () => {
+    const save = captureRun([], [], SNAPSHOT, { patches: [], tiles: [], map: 'switchback' });
+    const back = validateSave(JSON.parse(JSON.stringify(save)))!;
+    expect(back.map).toBe('switchback');
+  });
+
+  it('defaults terrain to untouched when the caller has none to report', () => {
+    const back = validateSave(JSON.parse(JSON.stringify(captureRun([], [], SNAPSHOT))))!;
+    expect(back.patches).toEqual([]);
+    expect(back.tiles).toEqual([]);
+    expect(back.surveys).toBe(0);
+  });
+
   it('accepts pre-crystal saves — the missing buffer just restores as empty', () => {
     const legacy = { ...captureRun([], [], SNAPSHOT), buildings: [{ t: 'press', x: 4, y: 4, d: 0, inv: 60, inOre: 2 }] };
     const back = validateSave(JSON.parse(JSON.stringify(legacy)))!;
@@ -105,6 +134,12 @@ describe('validateSave rejects corrupt input', () => {
     ['mk past MAX_MK', { ...base(), buildings: [{ t: 'tower', x: 1, y: 1, d: 0, inv: 90, mk: 9 }] }],
     ['invalid path id', { ...base(), buildings: [{ t: 'tower', x: 1, y: 1, d: 0, inv: 90, mk: 3, path: 'laser' }] }],
     ['negative crystal buffer', { ...base(), buildings: [{ t: 'assembler', x: 1, y: 1, d: 0, inv: 170, inCry: -1 }] }],
+    ['negative survey count', { ...base(), surveys: -1 }],
+    ['patch of an unknown resource', { ...base(), patches: [{ x: 1, y: 1, w: 2, h: 2, k: 'gold' }] }],
+    ['patch hanging off the board', { ...base(), patches: [{ x: GRID_W - 1, y: 1, w: 3, h: 2, k: 'ore' }] }],
+    ['tile reserve beyond any deposit', { ...base(), tiles: [{ x: 1, y: 1, n: 99999 }] }],
+    ['tile out of bounds', { ...base(), tiles: [{ x: -1, y: 1, n: 5 }] }],
+    ['non-string map id', { ...base(), map: 42 }],
     ['two buildings on one tile', { ...base(), buildings: [{ t: 'belt', x: 1, y: 1, d: 0, inv: 5 }, { t: 'belt', x: 1, y: 1, d: 2, inv: 5 }] }],
     ['unknown item type', { ...base(), items: [{ t: 'gold', cx: 1, cy: 1, px: 0, py: 0 }] }],
     ['item cell out of bounds', { ...base(), items: [{ t: 'ore', cx: -1, cy: 1, px: 0, py: 0 }] }],

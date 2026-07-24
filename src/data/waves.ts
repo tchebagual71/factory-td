@@ -83,3 +83,16 @@ export function resistMult(kind: WaveKind, source: ItemType): number {
 export function waveClearBonus(n: number): number {
   return 30 + 10 * n;
 }
+
+/** Build-phase seconds after which sending early pays nothing extra. */
+export const EARLY_SEND_WINDOW = 25;
+
+/**
+ * Cash for sending the next wave before the factory has idled. Full value at
+ * an instant send, decaying linearly to zero across the window — the "one more
+ * wave" lever: bank the bonus now or spend the time expanding production.
+ */
+export function earlySendBonus(n: number, secondsWaited: number): number {
+  const left = Math.max(0, 1 - Math.max(0, secondsWaited) / EARLY_SEND_WINDOW);
+  return Math.round(waveClearBonus(n) * 0.5 * left);
+}

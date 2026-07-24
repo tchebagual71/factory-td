@@ -111,6 +111,18 @@ export class BootScene extends Phaser.Scene {
     g.generateTexture('assembler', 32, 32);
     g.clear();
 
+    // Chiller: pale block with cooling fins + output notch East
+    g.fillStyle(0x2b3d46);
+    g.fillRoundedRect(2, 2, 28, 28, 5);
+    g.fillStyle(0x486a75);
+    g.fillRoundedRect(4, 4, 24, 24, 4);
+    g.fillStyle(0xc9f0ff);
+    for (let i = 0; i < 4; i++) g.fillRect(7 + i * 4, 9, 2, 14);
+    g.fillStyle(0x9fd8ff);
+    g.fillRect(26, 12, 6, 8);
+    g.generateTexture('chiller', 32, 32);
+    g.clear();
+
     // Tower base (barrel is a separate rotating sprite)
     g.fillStyle(0x232936);
     g.fillCircle(16, 16, 14);
@@ -162,6 +174,23 @@ export class BootScene extends Phaser.Scene {
     g.fillStyle(0x6bd4ff);
     g.fillRect(20, 1, 6, 7);
     g.generateTexture('barrel-lancer', 26, 9);
+    g.clear();
+
+    // Cryo emitter: no barrel — a frost ring that pulses outward
+    g.fillStyle(0x1b2f3a);
+    g.fillCircle(16, 16, 14);
+    g.fillStyle(0x3d6b7d);
+    g.fillCircle(16, 16, 11);
+    g.fillStyle(0x9fd8ff);
+    g.fillCircle(16, 16, 6);
+    g.fillStyle(0xffffff);
+    g.fillRect(15, 4, 2, 8);
+    g.fillRect(15, 20, 2, 8);
+    g.fillRect(4, 15, 8, 2);
+    g.fillRect(20, 15, 8, 2);
+    g.fillStyle(0xe0f2ff);
+    g.fillCircle(16, 16, 3);
+    g.generateTexture('cryo', 32, 32);
     g.clear();
 
     // Enemies
@@ -251,6 +280,16 @@ export class BootScene extends Phaser.Scene {
     g.fillStyle(0xc9f0ff);
     g.fillTriangle(10, 1, 15, 5, 10, 9);
     g.generateTexture('item-piercing', 15, 10);
+    g.clear();
+
+    // Coolant: a frosted canister
+    g.fillStyle(0x3d6b7d);
+    g.fillRoundedRect(0, 0, 12, 10, 3);
+    g.fillStyle(0xc9f0ff);
+    g.fillRoundedRect(1, 1, 10, 8, 2);
+    g.fillStyle(0x9fd8ff);
+    g.fillRect(3, 3, 6, 2);
+    g.generateTexture('item-coolant', 12, 10);
     g.clear();
 
     // Bullet, cannonball, particle

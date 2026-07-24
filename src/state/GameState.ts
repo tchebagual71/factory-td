@@ -3,6 +3,22 @@ import { START_LIVES, START_MONEY } from '../config';
 
 export type Phase = 'build' | 'wave';
 
+/** Per-wave counters for the wave-clear summary card. Reset when a wave starts. */
+export interface WaveTally {
+  kills: number;
+  leaked: number;
+  /** money earned during the wave — bounties and bonuses, never sell refunds */
+  income: number;
+  /** rounds towers actually fired */
+  fired: number;
+  /** rounds the factory finished in the same window — below `fired` means the magazines are draining */
+  produced: number;
+}
+
+export function emptyTally(): WaveTally {
+  return { kills: 0, leaked: 0, income: 0, fired: 0, produced: 0 };
+}
+
 /**
  * Shared game state singleton. GameScene mutates it, UIScene renders it.
  * Scenes communicate exclusively through `events` — no direct references.
@@ -11,7 +27,8 @@ export type Phase = 'build' | 'wave';
  *         'ui:select' (UI→Game building choice), 'ui:startwave' (UI→Game),
  *         'ui:menu' (UI→Game: exit to title, GameScene saves + transitions),
  *         'selected' (Game→UI current build selection),
- *         'achievement' (progress→UI toast)
+ *         'achievement' (progress→UI toast),
+ *         'wavesummary' (Game→UI wave-clear card: wave + WaveTally)
  */
 class GameStateClass {
   events = new Phaser.Events.EventEmitter();
@@ -24,6 +41,23 @@ class GameStateClass {
   speed: 1 | 2 | 3 = 1;
   auto = false;
   paused = false;
+  /** seconds of build phase elapsed — drives the decaying early-send bonus */
+  buildElapsed = 0;
+  tally: WaveTally = emptyTally();
+  /** logistics overlay visibility ([L]) — a view toggle, never part of a save */
+  overlay = false;
+  /** surveys bought this run — each one costs more than the last */
+  surveys = 0;
+
+  toggleOverlay(): void {
+    this.overlay = !this.overlay;
+    this.events.emit('overlay', this.overlay);
+  }
+
+  recordSurvey(): void {
+    this.surveys += 1;
+    this.events.emit('surveys', this.surveys);
+  }
 
   togglePause(): void {
     if (this.gameOver) return;
@@ -41,8 +75,10 @@ class GameStateClass {
     this.events.emit('auto', this.auto);
   }
 
-  addMoney(n: number): void {
+  /** `earned` false for sell refunds — recycling your own cash is not wave income. */
+  addMoney(n: number, earned = true): void {
     this.money += n;
+    if (earned) this.tally.income += n;
     this.events.emit('money', this.money);
   }
 
@@ -64,6 +100,7 @@ class GameStateClass {
 
   setPhase(p: Phase): void {
     this.phase = p;
+    if (p === 'build') this.buildElapsed = 0;
     this.events.emit('phase', p);
   }
 
@@ -73,7 +110,14 @@ class GameStateClass {
   }
 
   /** Restore a loaded run's counters (always lands in build phase). Mirrors reset()'s event burst. */
-  applySnapshot(s: { money: number; lives: number; wave: number; speed: 1 | 2 | 3; auto: boolean }): void {
+  applySnapshot(s: {
+    money: number;
+    lives: number;
+    wave: number;
+    speed: 1 | 2 | 3;
+    auto: boolean;
+    surveys?: number;
+  }): void {
     this.money = s.money;
     this.lives = s.lives;
     this.wave = s.wave;
@@ -81,6 +125,10 @@ class GameStateClass {
     this.gameOver = false;
     this.speed = s.speed;
     this.auto = s.auto;
+    this.buildElapsed = 0;
+    this.tally = emptyTally();
+    this.surveys = s.surveys ?? 0;
+    this.events.emit('surveys', this.surveys);
     this.events.emit('money', this.money);
     this.events.emit('lives', this.lives);
     this.events.emit('wave', this.wave);
@@ -98,7 +146,13 @@ class GameStateClass {
     this.speed = 1;
     this.auto = false;
     this.paused = false;
+    this.buildElapsed = 0;
+    this.tally = emptyTally();
+    this.overlay = false;
+    this.surveys = 0;
     this.events.emit('paused', false);
+    this.events.emit('overlay', false);
+    this.events.emit('surveys', 0);
     this.events.emit('money', this.money);
     this.events.emit('lives', this.lives);
     this.events.emit('wave', this.wave);

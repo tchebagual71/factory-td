@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { isMachine, MACHINES, minerCycle } from '../data/buildings';
+import { GameState } from '../state/GameState';
 import { ConveyorSystem } from './ConveyorSystem';
 import { GridSystem, minedResource } from './GridSystem';
 
@@ -9,6 +10,9 @@ import { GridSystem, minedResource } from './GridSystem';
  * assembler: 2 ore + 1 crystal→piercing).
  */
 export class ProductionSystem {
+  /** Set by the scene: a tile just ran dry (repaint the terrain, tell the player). */
+  onDepleted?: (x: number, y: number) => void;
+
   constructor(
     private scene: Phaser.Scene,
     private grid: GridSystem,
@@ -19,11 +23,19 @@ export class ProductionSystem {
     for (const b of this.grid.buildings) {
       if (b.type === 'miner') {
         const resource = minedResource(this.grid.cellAt(b.x, b.y)?.kind ?? 'grass');
-        if (!resource) continue; // stale placement (map changed under a save)
+        if (!resource) {
+          b.stalled = true; // exhausted tile (or a stale save) — nothing left to dig
+          continue;
+        }
         b.timer += dt;
-        if (b.timer >= minerCycle(resource) && this.conveyor.spawnFrom(b.x, b.y, b.dir, resource)) {
+        const ready = b.timer >= minerCycle(resource);
+        if (ready && this.conveyor.spawnFrom(b.x, b.y, b.dir, resource)) {
           b.timer = 0;
+          b.stalled = false;
+          if (this.grid.extract(b.x, b.y)) this.onDepleted?.(b.x, b.y);
           this.pop(b.sprite);
+        } else {
+          b.stalled = ready; // finished ore with nowhere to put it
         }
       } else if (isMachine(b.type)) {
         const stats = MACHINES[b.type];
@@ -31,6 +43,8 @@ export class ProductionSystem {
           b.outputBuf -= 1;
         }
         const fed = b.inputOre >= stats.oreIn && b.inputCrystal >= stats.crystalIn;
+        // starved of inputs, or backed up because nothing is taking the output
+        b.stalled = (!b.crafting && !fed) || b.outputBuf >= stats.outputCap;
         if (!b.crafting && fed && b.outputBuf < stats.outputCap) {
           b.inputOre -= stats.oreIn;
           b.inputCrystal -= stats.crystalIn;
@@ -41,7 +55,8 @@ export class ProductionSystem {
           b.timer += dt;
           if (b.timer >= stats.cycle) {
             b.crafting = false;
-            b.outputBuf += 1;
+            b.outputBuf += stats.outputPer;
+            GameState.tally.produced += stats.outputPer;
             this.pop(b.sprite);
           }
         }

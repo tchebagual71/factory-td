@@ -6,7 +6,7 @@ export const DX = [1, 0, -1, 0];
 export const DY = [0, 1, 0, -1];
 
 /** Raw resources ('ore', 'crystal') and manufactured goods. */
-export type ItemType = 'ore' | 'crystal' | 'ammo' | 'shell' | 'piercing';
+export type ItemType = 'ore' | 'crystal' | 'ammo' | 'shell' | 'piercing' | 'coolant';
 export type BuildingType =
   | 'belt'
   | 'splitter'
@@ -15,15 +15,26 @@ export type BuildingType =
   | 'press'
   | 'forge'
   | 'assembler'
+  | 'chiller'
   | 'tower'
   | 'cannon'
-  | 'lancer';
+  | 'lancer'
+  | 'cryo';
 
 /**
  * Tower specialization path, chosen at the Mk2→Mk3 upgrade. Guns branch
- * sniper/gatling, cannons siege/flak, lancers railgun/volley.
+ * sniper/gatling, cannons siege/flak, lancers railgun/volley, cryo
+ * cryostasis/blizzard.
  */
-export type PathId = 'sniper' | 'gatling' | 'siege' | 'flak' | 'railgun' | 'volley';
+export type PathId =
+  | 'sniper'
+  | 'gatling'
+  | 'siege'
+  | 'flak'
+  | 'railgun'
+  | 'volley'
+  | 'cryostasis'
+  | 'blizzard';
 
 export interface ItemEnt {
   type: ItemType;
@@ -63,6 +74,19 @@ export interface Building {
   path: PathId | null;
   /** total money sunk into this building (base cost + upgrades) — sell refunds half */
   invested: number;
+  /**
+   * Logistics telemetry, runtime only (never serialized). `stalled` is set each
+   * tick by whichever system knows why the building can't proceed — a belt whose
+   * item has nowhere to go, a machine short an input or with a blocked output, a
+   * dry tower. The util counters accumulate during the wave phase and reset when
+   * the next wave starts, so the overlay always reads "last wave".
+   */
+  stalled: boolean;
+  utilBusy: number;
+  utilBlocked: number;
+  utilTotal: number;
+  /** ground shadow for buildings that stand proud of the terrain */
+  shadow?: Phaser.GameObjects.Ellipse;
   barrel?: Phaser.GameObjects.Image;
   ammoBar?: Phaser.GameObjects.Rectangle;
   mkPips?: Phaser.GameObjects.Rectangle[];
@@ -75,6 +99,9 @@ export interface Enemy {
   hp: number;
   maxHp: number;
   speed: number;
+  /** seconds of coolant slow remaining; while > 0 the enemy moves at `slowFactor` speed */
+  slow: number;
+  slowFactor: number;
   /** index of the waypoint the enemy is walking toward */
   wp: number;
   /** total px traveled — targeting priority (furthest along path) */

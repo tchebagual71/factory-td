@@ -12,8 +12,34 @@ let muted = ((): boolean => {
   }
 })();
 
+/** Master gain, 0..1. Per-sound volumes below are mixed relative to this. */
+let volume = ((): number => {
+  try {
+    const raw = Number(localStorage.getItem('ftd:vol'));
+    return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : 0.7;
+  } catch {
+    return 0.7;
+  }
+})();
+
 export function isMuted(): boolean {
   return muted;
+}
+
+export function getVolume(): number {
+  return volume;
+}
+
+/** Set the master volume (clamped). Raising it above zero also lifts mute. */
+export function setVolume(v: number): number {
+  volume = Math.min(1, Math.max(0, v));
+  try {
+    localStorage.setItem('ftd:vol', String(volume));
+  } catch {
+    // storage unavailable — volume still applies for this session
+  }
+  if (volume > 0 && muted) toggleMute();
+  return volume;
 }
 
 export function toggleMute(): boolean {
@@ -39,7 +65,7 @@ function blip(
   vol = 0.08,
   slideTo = 0,
 ): void {
-  if (muted) return;
+  if (muted || volume <= 0) return;
   try {
     const c = ac();
     const o = c.createOscillator();
@@ -47,7 +73,7 @@ function blip(
     o.type = type;
     o.frequency.setValueAtTime(freq, c.currentTime);
     if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(30, slideTo), c.currentTime + dur);
-    g.gain.setValueAtTime(vol, c.currentTime);
+    g.gain.setValueAtTime(vol * volume, c.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur);
     o.connect(g).connect(c.destination);
     o.start();
@@ -64,6 +90,8 @@ export const sfx = {
     blip(988, 0.06, 'square', 0.05);
     setTimeout(() => blip(1319, 0.09, 'square', 0.05), 55);
   },
+  /** cryo pulse: a soft downward sine puff, distinct from the percussive weapons */
+  chill: () => blip(880, 0.22, 'sine', 0.05, 330),
   place: () => blip(523, 0.08, 'triangle', 0.09),
   sell: () => blip(392, 0.1, 'triangle', 0.08, 260),
   error: () => blip(140, 0.14, 'sawtooth', 0.07),

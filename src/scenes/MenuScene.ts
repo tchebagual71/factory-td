@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_H, GAME_W } from '../config';
+import { GAME_H, GAME_W, IS_TOUCH } from '../config';
 import { ACHIEVEMENTS } from '../data/achievements';
 import {
   accountLabel,
@@ -14,11 +14,12 @@ import {
   signInMagicLink,
   signOut,
 } from '../services/auth';
+import { DEFAULT_MAP_ID, MAPS } from '../data/map';
 import { fetchLeaderboard, syncOnSignIn } from '../services/cloud';
-import { clearLocal, loadLocal, setPendingLoad } from '../state/persistence';
+import { clearLocal, lastPickedMap, loadLocal, setPendingLoad, setPendingMap } from '../state/persistence';
 import { progress } from '../state/progress';
 import { anchorInput } from '../utils/htmlInput';
-import { sfx } from '../utils/sfx';
+import { getVolume, isMuted, setVolume, sfx, toggleMute } from '../utils/sfx';
 
 const FONT = { fontFamily: 'monospace' };
 
@@ -44,18 +45,21 @@ export class MenuScene extends Phaser.Scene {
     this.confirmingNewRun = false;
     this.modal = [];
     this.add.rectangle(0, 0, GAME_W, GAME_H, 0x0e0f1a).setOrigin(0);
+    // The canvas grows on boxier screens, so the whole title screen is laid out
+    // relative to a vertical origin rather than pinned to a 720px-tall canvas.
+    const TOP = Math.round((GAME_H - 720) / 2);
     for (let i = 0; i < 14; i++) {
       this.add
-        .image(60 + i * 90, 620 + (i % 2) * 24, i % 3 === 0 ? 'tower' : 'belt')
+        .image(60 + i * 90, GAME_H - 100 + (i % 2) * 24, i % 3 === 0 ? 'tower' : 'belt')
         .setAlpha(0.12)
         .setScale(1.4);
     }
     const title = this.add
-      .text(GAME_W / 2, 130, 'FACTORY TD', { ...FONT, fontSize: '64px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 10 })
+      .text(GAME_W / 2, TOP + 130, 'FACTORY TD', { ...FONT, fontSize: '64px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 10 })
       .setOrigin(0.5);
     this.tweens.add({ targets: title, scale: 1.03, yoyo: true, repeat: -1, duration: 1600, ease: 'Sine.inOut' });
     this.add
-      .text(GAME_W / 2, 185, 'Build the factory. Feed the guns. Hold the line.', { ...FONT, fontSize: '15px', color: '#cdd6e4' })
+      .text(GAME_W / 2, TOP + 185, 'Build the factory. Feed the guns. Hold the line.', { ...FONT, fontSize: '15px', color: '#cdd6e4' })
       .setOrigin(0.5);
 
     // ----- account chip (top-right) -----
@@ -84,9 +88,10 @@ export class MenuScene extends Phaser.Scene {
 
     // ----- main buttons -----
     const save = loadLocal();
-    let y = 265;
+    let y = TOP + 265;
     if (save) {
-      this.button(y, `CONTINUE  (Wave ${save.wave} · $${save.money})`, 0x2e7d4f, 0x5ef078, () => {
+      const savedMap = MAPS.find((m) => m.id === save.map)?.name ?? MAPS[0].name;
+      this.button(y, `CONTINUE  ${savedMap} · Wave ${save.wave} · $${save.money}`, 0x2e7d4f, 0x5ef078, () => {
         setPendingLoad(save);
         this.startGame();
       });
@@ -114,13 +119,23 @@ export class MenuScene extends Phaser.Scene {
     y += 62;
     this.button(y, 'LEADERBOARD', 0x1e2233, 0x2b3040, () => void this.showLeaderboard());
 
+    // Stack the rest sequentially so adding a row can never silently collide
+    // with the one below it (the canvas height is no longer a fixed 720).
+    y += 74;
+    this.buildMapPicker(y);
+    y += 88;
+    this.buildVolumeControl(y);
+    y += 40;
+
     if (progress.stats.bestWave > 0) {
       this.add
-        .text(GAME_W / 2, y + 64, `Personal best: wave ${progress.stats.bestWave}`, { ...FONT, fontSize: '14px', color: '#ffe066' })
+        .text(GAME_W / 2, y, `Personal best: wave ${progress.stats.bestWave}`, { ...FONT, fontSize: '14px', color: '#ffe066' })
         .setOrigin(0.5);
     }
     this.add
-      .text(GAME_W / 2, 586, 'R rotate · drag paints belts · right-click sells · SPACE sends the wave · F speed · P pause · M mute · ESC closes panels', {
+      .text(GAME_W / 2, GAME_H - 26, IS_TOUCH
+        ? 'Tap a build slot then tap the map · ROTATE turns belts · SELL refunds 50% · tap a tower to upgrade · LOGI shows supply health'
+        : 'R rotate · drag paints belts · right-click sells · SPACE sends the wave · L logistics · F speed · P pause · M mute · ESC closes panels', {
         ...FONT, fontSize: '11px', color: '#8892a6',
       })
       .setOrigin(0.5);
@@ -199,6 +214,11 @@ export class MenuScene extends Phaser.Scene {
     this.modal = [];
   }
 
+  /** Top edge of a centered modal — content must hang off this, not off a fixed y. */
+  private modalTop(height: number): number {
+    return GAME_H / 2 - height / 2;
+  }
+
   private modalTitle(text: string, height: number): void {
     this.modal.push(
       this.add
@@ -243,6 +263,98 @@ export class MenuScene extends Phaser.Scene {
     return label;
   }
 
+  // ---------- map picker & audio ----------
+
+  /**
+   * Layout choice for the next fresh run. It only applies to NEW RUN —
+   * continuing a save always returns to the map that run was started on.
+   */
+  private buildMapPicker(y: number): void {
+    const current = lastPickedMap() ?? DEFAULT_MAP_ID;
+    this.add
+      .text(GAME_W / 2, y - 16, 'MAP', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#8892a6' })
+      .setOrigin(0.5);
+    const blurb = this.add
+      .text(GAME_W / 2, y + 50, '', { ...FONT, fontSize: '11px', color: '#8892a6' })
+      .setOrigin(0.5);
+
+    const W = 176;
+    const gap = 8;
+    const total = MAPS.length * W + (MAPS.length - 1) * gap;
+    const frames = new Map<string, { frame: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text }>();
+
+    const select = (id: string) => {
+      setPendingMap(id);
+      for (const [mapId, { frame, label }] of frames) {
+        const on = mapId === id;
+        frame.setStrokeStyle(2, on ? 0xffe066 : 0x2b3040).setFillStyle(on ? 0x272c42 : 0x1e2233);
+        label.setColor(on ? '#ffe066' : '#cdd6e4');
+      }
+      blurb.setText(MAPS.find((m) => m.id === id)?.blurb ?? '');
+    };
+
+    MAPS.forEach((map, i) => {
+      const x = GAME_W / 2 - total / 2 + i * (W + gap);
+      const frame = this.add
+        .rectangle(x, y, W, 34, 0x1e2233)
+        .setOrigin(0)
+        .setStrokeStyle(2, 0x2b3040)
+        .setInteractive({ useHandCursor: true });
+      const label = this.add
+        .text(x + W / 2, y + 17, map.name, { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#cdd6e4' })
+        .setOrigin(0.5);
+      frame.on('pointerover', () => blurb.setText(map.blurb));
+      frame.on('pointerout', () => blurb.setText(MAPS.find((m) => m.id === (lastPickedMap() ?? DEFAULT_MAP_ID))?.blurb ?? ''));
+      frame.on('pointerdown', () => {
+        sfx.place();
+        select(map.id);
+      });
+      frames.set(map.id, { frame, label });
+    });
+    select(MAPS.some((m) => m.id === current) ? current : DEFAULT_MAP_ID);
+  }
+
+  /** Ten-segment master volume. Clicking a segment sets the level and previews it. */
+  private buildVolumeControl(y: number): void {
+    const SEGMENTS = 10;
+    const SW = 22;
+    const gap = 4;
+    const total = SEGMENTS * SW + (SEGMENTS - 1) * gap;
+    const x0 = GAME_W / 2 - total / 2;
+    const bars: Phaser.GameObjects.Rectangle[] = [];
+
+    this.add
+      .text(x0 - 14, y + 8, '♪', { ...FONT, fontSize: '15px', fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(1, 0.5);
+    const readout = this.add
+      .text(x0 + total + 14, y + 8, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(0, 0.5);
+
+    const paint = () => {
+      const level = isMuted() ? 0 : getVolume();
+      const lit = Math.round(level * SEGMENTS);
+      bars.forEach((bar, i) => bar.setFillStyle(i < lit ? 0x5ef078 : 0x2b3040));
+      readout.setText(lit === 0 ? 'MUTED' : `${lit * 10}%`).setColor(lit === 0 ? '#8892a6' : '#cdd6e4');
+    };
+
+    for (let i = 0; i < SEGMENTS; i++) {
+      const bar = this.add
+        .rectangle(x0 + i * (SW + gap), y, SW, 16, 0x2b3040)
+        .setOrigin(0)
+        .setInteractive({ useHandCursor: true });
+      bar.on('pointerdown', () => {
+        const level = (i + 1) / SEGMENTS;
+        // clicking the lit end again mutes: a one-click off switch
+        if (!isMuted() && Math.abs(getVolume() - level) < 0.001) toggleMute();
+        else setVolume(level);
+        paint();
+        sfx.place();
+      });
+      bars.push(bar);
+    }
+    paint();
+  }
+
   // ---------- achievements ----------
 
   private showAchievements(): void {
@@ -254,7 +366,7 @@ export class MenuScene extends Phaser.Scene {
     const x0 = GAME_W / 2 - colW + 10;
     ACHIEVEMENTS.forEach((a, i) => {
       const x = x0 + (i % 2) * colW;
-      const y = 150 + Math.floor(i / 2) * 52;
+      const y = this.modalTop(H) + 70 + Math.floor(i / 2) * 52;
       const got = progress.unlocked.has(a.id);
       const cur = Math.min(progress.stats[a.stat], a.goal);
       const detail = a.unlock ? `${a.desc} — ${a.unlock.label}` : a.desc;
@@ -299,7 +411,7 @@ export class MenuScene extends Phaser.Scene {
     }
     rows.forEach((r, i) => {
       const col = i < 10 ? 0 : 1;
-      const y = 150 + (i % 10) * 36;
+      const y = this.modalTop(H) + 70 + (i % 10) * 36;
       const x = GAME_W / 2 - 460 + col * 480;
       const mine = me !== null && r.user_id === me.id;
       const color = mine ? '#5ef078' : i === 0 ? '#ffe066' : '#e8edf5';

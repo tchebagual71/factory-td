@@ -45,3 +45,30 @@ export function consumePendingLoad(): SaveV1 | null {
   pending = null;
   return p;
 }
+
+/** Map chosen on the title screen for the *next* fresh run (same handshake as pendingLoad). */
+const KEY_MAP = 'ftd:map';
+let pendingMap: string | undefined;
+
+export function setPendingMap(id: string): void {
+  pendingMap = id;
+  try {
+    localStorage.setItem(KEY_MAP, id); // remember the last pick across sessions
+  } catch {
+    // storage unavailable — the choice just won't persist
+  }
+}
+
+export function lastPickedMap(): string | undefined {
+  try {
+    return localStorage.getItem(KEY_MAP) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function consumePendingMap(): string | undefined {
+  const m = pendingMap ?? lastPickedMap();
+  pendingMap = undefined;
+  return m;
+}

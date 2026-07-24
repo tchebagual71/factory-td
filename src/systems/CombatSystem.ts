@@ -1,9 +1,9 @@
 import Phaser from 'phaser';
 import { TILE } from '../config';
-import { effStats, isTower, TOWERS, TowerStats } from '../data/buildings';
+import { effStats, isSupport, isTower, TOWERS, TowerStats } from '../data/buildings';
 import { GameState } from '../state/GameState';
 import { progress } from '../state/progress';
-import { Enemy } from '../types';
+import { Building, Enemy } from '../types';
 import { sfx } from '../utils/sfx';
 import { GridSystem } from './GridSystem';
 import { WaveSystem } from './WaveSystem';
@@ -69,6 +69,11 @@ export class CombatSystem {
       }
       if (b.cooldown > 0 || starved) continue;
 
+      if (isSupport(b.type)) {
+        this.pulse(b, stats, cx, cy);
+        continue;
+      }
+
       // Target the enemy furthest along the path within range
       let best: Enemy | null = null;
       let bestTraveled = -1;
@@ -83,6 +88,7 @@ export class CombatSystem {
       if (!best) continue;
 
       b.ammo -= 1;
+      GameState.tally.fired += 1;
       b.cooldown = 1 / stats.fireRate;
       const angle = Math.atan2(best.y - cy, best.x - cx);
       b.barrel?.setRotation(angle);
@@ -119,6 +125,35 @@ export class CombatSystem {
         this.bullets.splice(i, 1);
       }
     }
+  }
+
+  /**
+   * Cryo pulse: chills everything in range for one coolant. It only fires when
+   * there is something to chill, so an idle field never drains the tank.
+   */
+  private pulse(b: Building, stats: TowerStats, cx: number, cy: number): void {
+    const inRange = this.wave.enemies.filter(
+      (e) => !e.dead && Phaser.Math.Distance.Between(cx, cy, e.x, e.y) <= stats.range,
+    );
+    if (inRange.length === 0) return;
+
+    b.ammo -= 1;
+    GameState.tally.fired += 1;
+    b.cooldown = 1 / stats.fireRate;
+    for (const e of inRange) this.wave.chill(e, stats.slowFactor, stats.slowDur);
+
+    const ring = this.scene.add.circle(cx, cy, stats.range * 0.35, 0x6bd4ff, 0.22).setDepth(6);
+    ring.setStrokeStyle(2, 0x9fd8ff, 0.8);
+    this.scene.tweens.add({
+      targets: ring,
+      radius: stats.range,
+      alpha: 0,
+      duration: 380,
+      ease: 'Cubic.out',
+      onComplete: () => ring.destroy(),
+    });
+    this.scene.tweens.add({ targets: b.sprite, scale: 1.08, duration: 60, yoyo: true });
+    sfx.chill();
   }
 
   /** Returns true once the round is spent and should be removed. */

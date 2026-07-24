@@ -1,6 +1,10 @@
 import { GRID_H, GRID_W } from '../config';
 import { MAX_MK } from '../data/buildings';
+import { RESERVES } from '../data/map';
 import { Building, BuildingType, Dir, ItemEnt, ItemType, PathId } from '../types';
+
+/** No tile can legitimately hold more than the richest deposit type. */
+const MAX_TILE_RESERVE = Math.max(...Object.values(RESERVES));
 
 /**
  * Run save format. Pure module: no Phaser objects cross this boundary (sprites
@@ -42,6 +46,26 @@ export interface SavedItem {
   a?: number;
 }
 
+/**
+ * A resource tile whose reserves differ from a full deposit — mined down or
+ * exhausted (`n: 0`). Only the changed tiles are stored, so an untouched map
+ * costs nothing. Prospected patches ride along in `patches`.
+ */
+export interface SavedTile {
+  x: number;
+  y: number;
+  /** units left; 0 means the tile is spent and has reverted to grass */
+  n: number;
+}
+
+export interface SavedPatch {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  k: 'ore' | 'crystal';
+}
+
 export interface SaveV1 {
   v: 1;
   savedAt: number;
@@ -52,6 +76,12 @@ export interface SaveV1 {
   auto: boolean;
   buildings: SavedBuilding[];
   items: SavedItem[];
+  /** surveys bought (drives the next survey's price); absent in pre-prospecting saves */
+  surveys?: number;
+  patches?: SavedPatch[];
+  tiles?: SavedTile[];
+  /** layout id; absent (or unknown) falls back to the default map */
+  map?: string;
 }
 
 interface Snapshot {
@@ -60,9 +90,22 @@ interface Snapshot {
   wave: number;
   speed: 1 | 2 | 3;
   auto: boolean;
+  surveys?: number;
 }
 
-export function captureRun(buildings: readonly Building[], items: readonly ItemEnt[], gs: Snapshot): SaveV1 {
+/** What the grid contributes to a save: revealed patches + every changed tile. */
+export interface TerrainSnapshot {
+  patches: SavedPatch[];
+  tiles: SavedTile[];
+  map?: string;
+}
+
+export function captureRun(
+  buildings: readonly Building[],
+  items: readonly ItemEnt[],
+  gs: Snapshot,
+  terrain: TerrainSnapshot = { patches: [], tiles: [] },
+): SaveV1 {
   return {
     v: 1,
     savedAt: Date.now(),
@@ -71,6 +114,10 @@ export function captureRun(buildings: readonly Building[], items: readonly ItemE
     wave: gs.wave,
     speed: gs.speed,
     auto: gs.auto,
+    surveys: gs.surveys ?? 0,
+    patches: terrain.patches,
+    tiles: terrain.tiles,
+    map: terrain.map,
     buildings: buildings.map((b) => {
       const sb: SavedBuilding = { t: b.type, x: b.x, y: b.y, d: b.dir, inv: b.invested };
       if (b.mk > 1) sb.mk = b.mk;
@@ -100,12 +147,23 @@ const BUILDING_TYPES: readonly BuildingType[] = [
   'press',
   'forge',
   'assembler',
+  'chiller',
   'tower',
   'cannon',
   'lancer',
+  'cryo',
 ];
-const ITEM_TYPES: readonly ItemType[] = ['ore', 'crystal', 'ammo', 'shell', 'piercing'];
-const PATH_IDS: readonly PathId[] = ['sniper', 'gatling', 'siege', 'flak', 'railgun', 'volley'];
+const ITEM_TYPES: readonly ItemType[] = ['ore', 'crystal', 'ammo', 'shell', 'piercing', 'coolant'];
+const PATH_IDS: readonly PathId[] = [
+  'sniper',
+  'gatling',
+  'siege',
+  'flak',
+  'railgun',
+  'volley',
+  'cryostasis',
+  'blizzard',
+];
 
 function isFiniteNum(n: unknown): n is number {
   return typeof n === 'number' && Number.isFinite(n);
@@ -155,6 +213,31 @@ export function validateSave(raw: unknown): SaveV1 | null {
     if (!inGrid(it.cx, it.cy)) return null;
     if (!isFiniteNum(it.px) || !isFiniteNum(it.py)) return null;
     if (it.a !== undefined && (!isFiniteNum(it.a) || it.a < 0 || it.a > 1)) return null;
+  }
+
+  if (s.surveys !== undefined && (!isFiniteNum(s.surveys) || s.surveys < 0 || s.surveys > 1000)) return null;
+  // An unknown map id is tolerated (falls back to the default) but a non-string is corruption
+  if (s.map !== undefined && typeof s.map !== 'string') return null;
+
+  if (s.patches !== undefined) {
+    if (!Array.isArray(s.patches)) return null;
+    for (const p of s.patches as Record<string, unknown>[]) {
+      if (typeof p !== 'object' || p === null) return null;
+      if (p.k !== 'ore' && p.k !== 'crystal') return null;
+      if (!inGrid(p.x, p.y)) return null;
+      if (!isFiniteNum(p.w) || !isFiniteNum(p.h) || p.w < 1 || p.h < 1) return null;
+      // must land entirely on the board
+      if (!inGrid((p.x as number) + (p.w as number) - 1, (p.y as number) + (p.h as number) - 1)) return null;
+    }
+  }
+
+  if (s.tiles !== undefined) {
+    if (!Array.isArray(s.tiles)) return null;
+    for (const t of s.tiles as Record<string, unknown>[]) {
+      if (typeof t !== 'object' || t === null) return null;
+      if (!inGrid(t.x, t.y)) return null;
+      if (!isFiniteNum(t.n) || t.n < 0 || t.n > MAX_TILE_RESERVE) return null;
+    }
   }
 
   return raw as SaveV1;

@@ -15,7 +15,7 @@ export function minerCycle(resource: 'ore' | 'crystal'): number {
   return resource === 'crystal' ? MINER.crystalCycle : MINER.cycle;
 }
 
-/** Crafting machines: oreIn ore (+ crystalIn crystal) -> 1 output item per cycle. */
+/** Crafting machines: oreIn ore (+ crystalIn crystal) -> outputPer output items per cycle. */
 export interface MachineStats {
   cost: number;
   cycle: number;
@@ -24,15 +24,20 @@ export interface MachineStats {
   /** per input type */
   inputCap: number;
   outputCap: number;
+  /** items produced per completed cycle — >1 is what makes coolant cheap */
+  outputPer: number;
   output: ItemType;
 }
 
-export type MachineType = 'press' | 'forge' | 'assembler';
+export type MachineType = 'press' | 'forge' | 'assembler' | 'chiller';
 
 export const MACHINES: Record<MachineType, MachineStats> = {
-  press: { cost: 60, cycle: 1.0, oreIn: 1, crystalIn: 0, inputCap: 5, outputCap: 3, output: 'ammo' },
-  forge: { cost: 100, cycle: 2.5, oreIn: 2, crystalIn: 0, inputCap: 8, outputCap: 2, output: 'shell' },
-  assembler: { cost: 170, cycle: 3.0, oreIn: 2, crystalIn: 1, inputCap: 6, outputCap: 2, output: 'piercing' },
+  press: { cost: 60, cycle: 1.0, oreIn: 1, crystalIn: 0, inputCap: 5, outputCap: 3, outputPer: 1, output: 'ammo' },
+  forge: { cost: 100, cycle: 2.5, oreIn: 2, crystalIn: 0, inputCap: 8, outputCap: 2, outputPer: 1, output: 'shell' },
+  assembler: { cost: 170, cycle: 3.0, oreIn: 2, crystalIn: 1, inputCap: 6, outputCap: 2, outputPer: 1, output: 'piercing' },
+  // Deliberately the cheapest line in the game: two coolant per ore, so a
+  // single miner can keep several cryo towers pulsing.
+  chiller: { cost: 70, cycle: 1.4, oreIn: 1, crystalIn: 0, inputCap: 5, outputCap: 4, outputPer: 2, output: 'coolant' },
 };
 
 /** How much of `item` this machine's recipe wants (0 = it won't accept it). */
@@ -53,11 +58,15 @@ export interface TowerStats {
   splash: number; // px radius, 0 = single target
   /** enemies one shot can skewer before it dies; 0 = homing single-hit projectile */
   pierce: number;
+  /** support towers only: fraction of normal speed applied in range (1 = no slow) */
+  slowFactor: number;
+  /** seconds a slow lasts after the pulse */
+  slowDur: number;
   ammoType: ItemType;
 }
 
-export type TowerType = 'tower' | 'cannon' | 'lancer';
-export const TOWER_TYPES: readonly TowerType[] = ['tower', 'cannon', 'lancer'];
+export type TowerType = 'tower' | 'cannon' | 'lancer' | 'cryo';
+export const TOWER_TYPES: readonly TowerType[] = ['tower', 'cannon', 'lancer', 'cryo'];
 
 export const TOWERS: Record<TowerType, TowerStats> = {
   tower: {
@@ -70,6 +79,8 @@ export const TOWERS: Record<TowerType, TowerStats> = {
     bulletSpeed: 520,
     splash: 0,
     pierce: 0,
+    slowFactor: 1,
+    slowDur: 0,
     ammoType: 'ammo',
   },
   cannon: {
@@ -82,6 +93,8 @@ export const TOWERS: Record<TowerType, TowerStats> = {
     bulletSpeed: 380,
     splash: 42,
     pierce: 0,
+    slowFactor: 1,
+    slowDur: 0,
     ammoType: 'shell',
   },
   /**
@@ -99,12 +112,41 @@ export const TOWERS: Record<TowerType, TowerStats> = {
     bulletSpeed: 900,
     splash: 0,
     pierce: 3,
+    slowFactor: 1,
+    slowDur: 0,
     ammoType: 'piercing',
+  },
+  /**
+   * Support tower: deals no damage at all. It pulses coolant over everything in
+   * range, and the slow multiplies every gun covering the same choke point —
+   * more seconds under fire is more damage without another round of ammo.
+   */
+  cryo: {
+    cost: 160,
+    range: 112,
+    damage: 0,
+    fireRate: 0.6, // pulses per second
+    ammoCap: 10,
+    startAmmo: 5,
+    bulletSpeed: 0,
+    splash: 0,
+    pierce: 0,
+    slowFactor: 0.55,
+    slowDur: 2.5,
+    ammoType: 'coolant',
   },
 };
 
 export function isTower(type: BuildingType): type is TowerType {
-  return type === 'tower' || type === 'cannon' || type === 'lancer';
+  return TOWER_TYPES.includes(type as TowerType);
+}
+
+/** Towers that shoot. Support towers (damage 0) are excluded — they multiply these instead. */
+export const DAMAGE_TOWERS: readonly TowerType[] = TOWER_TYPES.filter((t) => TOWERS[t].damage > 0);
+
+/** A support tower deals no damage and works by slowing whatever walks into range. */
+export function isSupport(type: TowerType): boolean {
+  return TOWERS[type].damage === 0 && TOWERS[type].slowFactor < 1;
 }
 
 /**
@@ -120,7 +162,13 @@ export interface StatMult {
   splash?: number;
   bulletSpeed?: number;
   pierce?: number;
+  /** multiplies the *remaining* speed, so < 1 means a deeper slow */
+  slow?: number;
+  slowDur?: number;
 }
+
+/** However deep the slow stacks, enemies never stop dead. */
+export const MIN_SLOW_FACTOR = 0.2;
 
 /** One purchasable tier. `mult` is cumulative vs BASE stats, not vs the previous tier. */
 export interface UpgradeTier {
@@ -212,6 +260,30 @@ export const UPGRADE_TREE: Record<
       },
     ],
   },
+  cryo: {
+    mk2: { money: 180, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.15, fireRate: 1.15, slow: 0.88, slowDur: 1.2 } },
+    paths: [
+      {
+        id: 'cryostasis',
+        name: 'CRYOSTASIS',
+        desc: 'Near-frozen, long lasting',
+        tiers: [
+          { money: 420, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.15, fireRate: 1.15, slow: 0.62, slowDur: 1.7 } },
+          { money: 950, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.2, fireRate: 1.15, slow: 0.45, slowDur: 2.2 } },
+        ],
+      },
+      {
+        id: 'blizzard',
+        name: 'BLIZZARD',
+        desc: 'Wide field, rapid pulses',
+        // slow mults are cumulative vs BASE, so these must stay at or below mk2's 0.88
+        tiers: [
+          { money: 400, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.5, fireRate: 1.7, slow: 0.86, slowDur: 1.3 } },
+          { money: 900, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.85, fireRate: 2.3, slow: 0.84, slowDur: 1.4 } },
+        ],
+      },
+    ],
+  },
 };
 
 export function pathOf(type: TowerType, id: PathId): UpgradePath {
@@ -239,6 +311,8 @@ function applyMult(base: TowerStats, m: StatMult): TowerStats {
     splash: m.splash ? Math.round(base.splash * m.splash) : base.splash,
     bulletSpeed: m.bulletSpeed ? Math.round(base.bulletSpeed * m.bulletSpeed) : base.bulletSpeed,
     pierce: m.pierce ? Math.round(base.pierce * m.pierce) : base.pierce,
+    slowFactor: m.slow ? Math.max(MIN_SLOW_FACTOR, base.slowFactor * m.slow) : base.slowFactor,
+    slowDur: m.slowDur ? base.slowDur * m.slowDur : base.slowDur,
   };
 }
 
@@ -256,7 +330,7 @@ export function effStats(type: TowerType, mk: number, path: PathId | null = null
 }
 
 export function isMachine(type: BuildingType): type is MachineType {
-  return type === 'press' || type === 'forge' || type === 'assembler';
+  return type in MACHINES;
 }
 
 export const BUILD_INFO: {
@@ -273,9 +347,11 @@ export const BUILD_INFO: {
   { type: 'press', name: 'Press', cost: MACHINES.press.cost, hotkey: '5', desc: '1 ore → 1 ammo. Feeds gun towers.' },
   { type: 'forge', name: 'Forge', cost: MACHINES.forge.cost, hotkey: '6', desc: '2 ore → 1 shell. Feeds cannons.' },
   { type: 'assembler', name: 'Assembler', cost: MACHINES.assembler.cost, hotkey: '7', desc: '2 ore + 1 crystal → 1 piercing round. Needs BOTH inputs belted in. Feeds lancers.' },
-  { type: 'tower', name: 'Gun', cost: TOWERS.tower.cost, hotkey: '8', desc: 'Fast single-target. Eats ammo. Click a placed tower to upgrade it.' },
-  { type: 'cannon', name: 'Cannon', cost: TOWERS.cannon.cost, hotkey: '9', desc: 'Slow splash damage. Eats shells. Armored enemies resist bullets but not shells.' },
-  { type: 'lancer', name: 'Lancer', cost: TOWERS.lancer.cost, hotkey: '0', desc: 'Fires a lance straight down the path, skewering up to 3 enemies. Ignores armor. Eats piercing rounds.' },
+  { type: 'chiller', name: 'Chiller', cost: MACHINES.chiller.cost, hotkey: '8', desc: '1 ore → 2 coolant. The cheapest line in the game. Feeds cryo towers.' },
+  { type: 'tower', name: 'Gun', cost: TOWERS.tower.cost, hotkey: '9', desc: 'Fast single-target. Eats ammo. Click a placed tower to upgrade it.' },
+  { type: 'cannon', name: 'Cannon', cost: TOWERS.cannon.cost, hotkey: '0', desc: 'Slow splash damage. Eats shells. Armored enemies resist bullets but not shells.' },
+  { type: 'lancer', name: 'Lancer', cost: TOWERS.lancer.cost, hotkey: 'C', desc: 'Fires a lance straight down the path, skewering up to 3 enemies. Ignores armor. Eats piercing rounds.' },
+  { type: 'cryo', name: 'Cryo', cost: TOWERS.cryo.cost, hotkey: 'V', desc: 'No damage — pulses coolant to slow everything in range, multiplying every gun covering the same choke point.' },
 ];
 
 export function costOf(type: BuildingType): number {
