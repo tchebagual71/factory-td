@@ -1,10 +1,17 @@
 import { pathPx } from '../data/map';
 import { earlySendBonus, resistMult, waveClearBonus, waveDef, WaveDef } from '../data/waves';
-import { emptyTally, GameState } from '../state/GameState';
+import { cloneTally, emptyTally, GameState } from '../state/GameState';
 import { progress } from '../state/progress';
 import { Enemy, ItemType } from '../types';
 import { sfx } from '../utils/sfx';
 import type { GameScene } from '../scenes/GameScene';
+
+/**
+ * Frost overlay on a chilled enemy. Deliberately near-white rather than a
+ * saturated blue — swift enemies are teal, and the two must never be confused
+ * at a glance.
+ */
+const FROST_TINT = 0xe8f6ff;
 
 /** Spawns waves, walks enemies along the fixed path, handles kills and leaks. */
 export class WaveSystem {
@@ -57,14 +64,19 @@ export class WaveSystem {
       if (e.slow > 0) {
         e.slow -= dt;
         // frosted tint, reapplied each frame because hit() flashes over it
-        if (e.slow > 0) e.sprite.setTint(0x9fd8ff);
+        if (e.slow > 0) e.sprite.setTint(FROST_TINT);
         else {
           e.slowFactor = 1;
           e.sprite.clearTint();
         }
       }
+      const fromX = e.x;
+      const fromY = e.y;
       this.move(e, dt);
       e.sprite.setPosition(e.x, e.y);
+      // Face the way it is walking. Sprites are drawn nose-East, so this is the
+      // raw heading; a stationary frame keeps the previous angle.
+      if (e.x !== fromX || e.y !== fromY) e.sprite.setRotation(Math.atan2(e.y - fromY, e.x - fromX));
       e.hpBar.setPosition(e.x - e.hpBarW / 2, e.y - e.hpBarY);
       e.hpBar.scaleX = Math.max(0, e.hp / e.maxHp);
       e.hpBar.fillColor = e.hp / e.maxHp > 0.5 ? 0x5ef078 : e.hp / e.maxHp > 0.25 ? 0xffd75e : 0xff5555;
@@ -200,7 +212,7 @@ export class WaveSystem {
     progress.record('wavesCleared');
     progress.record('moneyEarned', bonus);
     // Card first, so it reports the wave that just ended, not the next one
-    GameState.events.emit('wavesummary', GameState.wave, { ...GameState.tally });
+    GameState.events.emit('wavesummary', GameState.wave, cloneTally(GameState.tally));
     GameState.nextWave();
     progress.recordMax('bestWave', GameState.wave);
     GameState.setPhase('build');

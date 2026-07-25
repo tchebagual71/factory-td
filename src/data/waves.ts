@@ -13,21 +13,60 @@ export interface WaveDef {
 }
 
 /**
+ * HP growth. The first {@link HP_TAPER_AT} waves compound at the original
+ * 1.22 — that ramp is the whole early-game arc and is deliberately untouched —
+ * and after that the curve eases to {@link LATE_GROWTH}.
+ *
+ * The taper exists because tower damage does not compound forever: the upgrade
+ * tree stops at Mk4, so past that point the only way to add DPS is to add
+ * production, which is bounded by ore throughput and by how many tiles the map
+ * has. Against unbounded 1.22 growth that ceiling was hit around wave 20 and
+ * every wave after it was arithmetically unwinnable.
+ */
+export const HP_TAPER_AT = 18;
+export const EARLY_GROWTH = 1.22;
+export const LATE_GROWTH = 1.12;
+
+export function baseHp(n: number): number {
+  return Math.round(
+    25 * Math.pow(EARLY_GROWTH, Math.min(n - 1, HP_TAPER_AT)) * Math.pow(LATE_GROWTH, Math.max(0, n - 1 - HP_TAPER_AT)),
+  );
+}
+
+/**
+ * Kill bounty. Early waves keep the original flat `5 + n`; once enemies get
+ * meaty enough that the flat rate stops paying for the ammo spent on them
+ * (around wave 13) the bounty tracks HP instead.
+ *
+ * Without this, income was linear against exponential HP: money per point of
+ * enemy HP collapsed ~40x between wave 5 and wave 30, so the factory could
+ * never be scaled up to meet what was coming. Money is deliberately generous
+ * late — the intended late-game constraint is ore throughput and tile space,
+ * not the wallet.
+ */
+export const BOUNTY_PER_HP = 0.075;
+
+export function baseBounty(n: number): number {
+  return Math.max(5 + n, Math.round(baseHp(n) * BOUNTY_PER_HP));
+}
+
+/**
  * Wave rhythm: every 5th is a boss wave (few, slow, tanky, 5-life leaks),
  * every 3rd otherwise is a swift wave (fast, fragile, numerous), and from
  * wave 6 the remaining even waves are armored (resist bullets, not shells).
  */
 export function waveDef(n: number): WaveDef {
-  const baseHp = Math.round(25 * Math.pow(1.22, n - 1));
+  const hp = baseHp(n);
+  const bounty = baseBounty(n);
   const baseCount = 4 + 2 * n;
   if (n % 5 === 0) {
     return {
       kind: 'boss',
       count: Math.max(2, Math.floor(baseCount / 3)),
-      hp: baseHp * 5,
+      hp: hp * 5,
       speed: Math.min(90, 38 + n),
       interval: 1.8,
-      bounty: (5 + n) * 5,
+      bounty: bounty * 5,
       leak: 5,
     };
   }
@@ -35,10 +74,10 @@ export function waveDef(n: number): WaveDef {
     return {
       kind: 'swift',
       count: Math.round(baseCount * 1.4),
-      hp: Math.max(8, Math.round(baseHp * 0.55)),
+      hp: Math.max(8, Math.round(hp * 0.55)),
       speed: Math.min(175, 78 + 2.5 * n),
       interval: Math.max(0.25, 0.55 - 0.015 * n),
-      bounty: Math.max(3, Math.floor((5 + n) * 0.6)),
+      bounty: Math.max(3, Math.floor(bounty * 0.6)),
       leak: 1,
     };
   }
@@ -46,20 +85,20 @@ export function waveDef(n: number): WaveDef {
     return {
       kind: 'armored',
       count: Math.max(4, Math.round(baseCount * 0.8)),
-      hp: Math.round(baseHp * 1.35),
+      hp: Math.round(hp * 1.35),
       speed: Math.min(110, Math.round((52 + 2 * n) * 0.85)),
       interval: Math.max(0.5, 1.1 - 0.02 * n),
-      bounty: Math.round((5 + n) * 1.5),
+      bounty: Math.round(bounty * 1.5),
       leak: 2,
     };
   }
   return {
     kind: 'normal',
     count: baseCount,
-    hp: baseHp,
+    hp,
     speed: Math.min(130, 52 + 2 * n),
     interval: Math.max(0.35, 0.95 - 0.02 * n),
-    bounty: 5 + n,
+    bounty,
     leak: 1,
   };
 }
@@ -80,8 +119,14 @@ export function resistMult(kind: WaveKind, source: ItemType): number {
   return 1;
 }
 
+/**
+ * Clear bonus. The flat part matches the original curve for the first handful
+ * of waves; the HP-linked part is what keeps the reward — and the early-send
+ * bonus derived from it — meaningful once a single wave costs thousands of
+ * rounds to answer.
+ */
 export function waveClearBonus(n: number): number {
-  return 30 + 10 * n;
+  return Math.round(20 + 6 * n + baseHp(n) * 0.5);
 }
 
 /** Build-phase seconds after which sending early pays nothing extra. */

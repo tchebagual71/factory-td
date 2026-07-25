@@ -1,5 +1,11 @@
 import Phaser from 'phaser';
 
+/** Frames in the scrolling belt loop. Texture keys are `belt`, `belt1`…`belt3`. */
+export const BELT_FRAMES = 4;
+
+/** Texture keys of the belt loop, in play order. */
+export const BELT_FRAME_KEYS = Array.from({ length: BELT_FRAMES }, (_, i) => (i === 0 ? 'belt' : `belt${i}`));
+
 /** Generates every texture procedurally — zero asset files. */
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -9,18 +15,29 @@ export class BootScene extends Phaser.Scene {
   create(): void {
     const g = this.add.graphics();
 
-    // Belt: dark base + chevron pointing East (rotation 0 = East everywhere)
-    g.fillStyle(0x262b38);
-    g.fillRect(0, 0, 32, 32);
-    g.fillStyle(0x323949);
-    g.fillRect(0, 2, 32, 2);
-    g.fillRect(0, 28, 32, 2);
-    g.fillStyle(0x6b7689);
-    g.fillTriangle(10, 8, 19, 16, 10, 24);
-    g.fillStyle(0x9aa7bd);
-    g.fillTriangle(16, 9, 24, 16, 16, 23);
-    g.generateTexture('belt', 32, 32);
-    g.clear();
+    // Belt: dark base + chevrons pointing East (rotation 0 = East everywhere).
+    // Four frames with the chevrons marched 8px along the belt; played back in
+    // order they read as a running conveyor, which is the single strongest cue
+    // that the factory is alive. Frame 0 doubles as the static palette icon.
+    for (let f = 0; f < BELT_FRAMES; f++) {
+      const shift = f * (16 / BELT_FRAMES);
+      g.fillStyle(0x262b38);
+      g.fillRect(0, 0, 32, 32);
+      g.fillStyle(0x323949);
+      g.fillRect(0, 2, 32, 2);
+      g.fillRect(0, 28, 32, 2);
+      // three chevrons spaced 16px apart, drawn across a 48px span and clipped
+      // by the texture bounds, so the cycle is seamless
+      for (let c = -1; c <= 2; c++) {
+        const x = c * 16 + shift;
+        g.fillStyle(0x6b7689);
+        g.fillTriangle(x + 2, 8, x + 11, 16, x + 2, 24);
+        g.fillStyle(0x9aa7bd);
+        g.fillTriangle(x + 8, 9, x + 16, 16, x + 8, 23);
+      }
+      g.generateTexture(f === 0 ? 'belt' : `belt${f}`, 32, 32);
+      g.clear();
+    }
 
     // Splitter: belt base + three-way chevrons (straight/left/right relative to East)
     g.fillStyle(0x262b38);
@@ -193,17 +210,20 @@ export class BootScene extends Phaser.Scene {
     g.generateTexture('cryo', 32, 32);
     g.clear();
 
-    // Enemies
+    // Enemies. Each carries a bright nose on its East side: the sprites are
+    // rotated to their heading as they walk, so a column visibly points the way
+    // it is going instead of reading as a drifting bead of circles.
     g.fillStyle(0x8f1f1f);
     g.fillCircle(11, 11, 10);
     g.fillStyle(0xff5555);
     g.fillCircle(11, 11, 8);
     g.fillStyle(0xffb3b3);
-    g.fillCircle(8, 8, 2.5);
+    g.fillTriangle(15, 7, 22, 11, 15, 15); // nose (East)
+    g.fillCircle(9, 8, 2);
     g.generateTexture('enemy', 22, 22);
     g.clear();
 
-    // Armored: red core inside a steel ring
+    // Armored: red core inside a steel ring, with a plated snout
     g.fillStyle(0x59677f);
     g.fillCircle(11, 11, 10);
     g.fillStyle(0x2b313d);
@@ -211,19 +231,21 @@ export class BootScene extends Phaser.Scene {
     g.fillStyle(0xff5555);
     g.fillCircle(11, 11, 5);
     g.fillStyle(0xcdd6e4);
+    g.fillTriangle(14, 7, 22, 11, 14, 15);
     g.fillRect(9, 1, 4, 4);
     g.fillRect(9, 17, 4, 4);
     g.fillRect(1, 9, 4, 4);
-    g.fillRect(17, 9, 4, 4);
     g.generateTexture('armored', 22, 22);
     g.clear();
 
-    g.fillStyle(0x1f6f8f);
+    // Swift: deliberately teal rather than sky-blue. A chilled enemy is tinted
+    // pale frost-white, and a saturated cyan swift was easy to mistake for one.
+    g.fillStyle(0x0f7a70);
     g.fillCircle(9, 9, 8);
-    g.fillStyle(0x55d4ff);
+    g.fillStyle(0x2fe3d0);
     g.fillCircle(9, 9, 6);
-    g.fillStyle(0xc9f0ff);
-    g.fillCircle(6.5, 6.5, 2);
+    g.fillStyle(0xd7fff8);
+    g.fillTriangle(11, 5, 18, 9, 11, 13);
     g.generateTexture('swift', 18, 18);
     g.clear();
 
@@ -232,8 +254,17 @@ export class BootScene extends Phaser.Scene {
     g.fillStyle(0xb455ff);
     g.fillCircle(15, 15, 11);
     g.fillStyle(0xe6c3ff);
-    g.fillCircle(11, 11, 3);
+    g.fillTriangle(20, 9, 30, 15, 20, 21);
+    g.fillCircle(12, 11, 3);
     g.generateTexture('boss', 30, 30);
+    g.clear();
+
+    // Muzzle flash — a short bright wedge reused from a pool, never allocated per shot
+    g.fillStyle(0xfff3a0);
+    g.fillTriangle(0, 3, 14, 0, 14, 12);
+    g.fillStyle(0xffffff);
+    g.fillTriangle(2, 5, 10, 3, 10, 9);
+    g.generateTexture('muzzle', 14, 12);
     g.clear();
 
     // Items

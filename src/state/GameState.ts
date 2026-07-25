@@ -1,7 +1,15 @@
 import Phaser from 'phaser';
 import { START_LIVES, START_MONEY } from '../config';
+import type { ItemType } from '../types';
 
 export type Phase = 'build' | 'wave';
+
+/**
+ * Rounds counted per ammo type. Totals alone would lie: a chiller makes two
+ * coolant per ore, so a healthy cryo line can hide a starving gun line behind a
+ * comfortable-looking grand total.
+ */
+export type AmmoCount = Partial<Record<ItemType, number>>;
 
 /** Per-wave counters for the wave-clear summary card. Reset when a wave starts. */
 export interface WaveTally {
@@ -9,14 +17,41 @@ export interface WaveTally {
   leaked: number;
   /** money earned during the wave — bounties and bonuses, never sell refunds */
   income: number;
-  /** rounds towers actually fired */
-  fired: number;
-  /** rounds the factory finished in the same window — below `fired` means the magazines are draining */
-  produced: number;
+  /** rounds towers actually fired, per ammo type */
+  fired: AmmoCount;
+  /** rounds the factory finished in the same window — below `fired` means those magazines are draining */
+  produced: AmmoCount;
 }
 
 export function emptyTally(): WaveTally {
-  return { kills: 0, leaked: 0, income: 0, fired: 0, produced: 0 };
+  return { kills: 0, leaked: 0, income: 0, fired: {}, produced: {} };
+}
+
+export function bumpAmmo(c: AmmoCount, type: ItemType, n = 1): void {
+  c[type] = (c[type] ?? 0) + n;
+}
+
+export function ammoTotal(c: AmmoCount): number {
+  let sum = 0;
+  for (const n of Object.values(c)) sum += n ?? 0;
+  return sum;
+}
+
+/**
+ * Ammo types the towers burned faster than the factory replaced them, worst
+ * shortfall first. This — not the grand total — is what tells a player which
+ * supply line to widen.
+ */
+export function ammoDeficits(t: WaveTally): { type: ItemType; short: number }[] {
+  return (Object.keys(t.fired) as ItemType[])
+    .map((type) => ({ type, short: (t.fired[type] ?? 0) - (t.produced[type] ?? 0) }))
+    .filter((d) => d.short > 0)
+    .sort((a, b) => b.short - a.short);
+}
+
+/** Deep copy — the live tally is mutated in place all wave, so the card needs its own. */
+export function cloneTally(t: WaveTally): WaveTally {
+  return { ...t, fired: { ...t.fired }, produced: { ...t.produced } };
 }
 
 /**

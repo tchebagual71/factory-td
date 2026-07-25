@@ -35,7 +35,15 @@ import { LogisticsSystem } from '../systems/LogisticsSystem';
 import { ProductionSystem } from '../systems/ProductionSystem';
 import { WaveSystem } from '../systems/WaveSystem';
 import { Building, BuildingType, Dir, PathId } from '../types';
+import { beltRun } from '../systems/beltPaint';
+import { BELT_FRAME_KEYS } from './BootScene';
 import { sfx } from '../utils/sfx';
+
+/** Concurrent floating-text objects allowed before new ones are dropped. */
+const MAX_FLOATERS = 24;
+
+/** Shared scrolling-chevron animation played by every belt. */
+const BELT_ANIM = 'belt-run';
 
 /** Mk-pip / float-text tint per specialization path. */
 const PATH_COLORS: Record<PathId, number> = {
@@ -61,6 +69,12 @@ export class GameScene extends Phaser.Scene {
   private buildDir: Dir = 0;
   /** touch sell mode: with no build selected, tapping a building refunds it */
   private sellMode = false;
+  /** survey mode: the next click on clear ground buys a prospected patch there */
+  private surveyMode = false;
+  private surveyGhost!: Phaser.GameObjects.Graphics;
+  /** a costly building right-clicked once, awaiting the confirming second click */
+  private sellArmed: Building | null = null;
+  private sellArmedAt = 0;
   /** long-press bookkeeping — the touch stand-in for right-click-to-sell */
   private pressAt = 0;
   private pressX = 0;
@@ -75,16 +89,27 @@ export class GameScene extends Phaser.Scene {
   private oreLayer!: Phaser.GameObjects.Graphics;
   private depositsDirty = false;
   private depositsTimer = 0;
+  /** live floating-text objects, so a 100-kill wave can't flood the frame */
+  private floaters = 0;
+
+  /** last cell painted in the current belt drag — fast drags interpolate from here */
+  private paintCell: { x: number; y: number } | null = null;
+  /** cells laid down in this stroke; only these may be re-aimed as the drag turns a corner */
+  private paintStroke = new Set<string>();
 
   private selTower: Building | null = null;
   private selRing!: Phaser.GameObjects.Rectangle;
   private panel!: Phaser.GameObjects.Container;
+  private panelBg!: Phaser.GameObjects.Rectangle;
   private panelTitle!: Phaser.GameObjects.Text;
   private panelInfo!: Phaser.GameObjects.Text;
   private panelBtnA!: Phaser.GameObjects.Rectangle;
   private panelBtnAText!: Phaser.GameObjects.Text;
   private panelBtnB!: Phaser.GameObjects.Rectangle;
   private panelBtnBText!: Phaser.GameObjects.Text;
+  /** live magazine readout; -1 forces the first paint */
+  private panelMag!: Phaser.GameObjects.Text;
+  private panelMagShown = -1;
 
   constructor() {
     super('game');
@@ -93,6 +118,7 @@ export class GameScene extends Phaser.Scene {
   create(): void {
     this.ready = false;
     this.saveDirty = false;
+    this.floaters = 0; // restart wipes the tweens, so their onComplete never decrements
     GameState.reset();
 
     // The layout has to be chosen before anything reads the board: a resumed
@@ -107,6 +133,17 @@ export class GameScene extends Phaser.Scene {
     this.combat = new CombatSystem(this, this.grid, this.waveSystem);
     this.logistics = new LogisticsSystem(this, this.grid);
 
+    // Animations live on the game-wide manager, so this survives scene restarts
+    // and must only ever be registered once.
+    if (!this.anims.exists(BELT_ANIM)) {
+      this.anims.create({
+        key: BELT_ANIM,
+        frames: BELT_FRAME_KEYS.map((key) => ({ key })),
+        frameRate: 8,
+        repeat: -1,
+      });
+    }
+
     this.drawTerrain();
     this.oreLayer = this.add.graphics().setDepth(0);
     this.production.onDepleted = (x, y) => this.onTileDepleted(x, y);
@@ -118,6 +155,7 @@ export class GameScene extends Phaser.Scene {
       .setVisible(false)
       .setDepth(10);
 
+    this.surveyGhost = this.add.graphics().setDepth(11);
     this.selRing = this.add
       .rectangle(0, 0, TILE + 4, TILE + 4)
       .setStrokeStyle(2, 0xffe066)
@@ -143,7 +181,7 @@ export class GameScene extends Phaser.Scene {
     GameState.events.off('ui:select').on('ui:select', (t: BuildingType) => this.select(t));
     GameState.events.off('ui:startwave').on('ui:startwave', () => this.waveSystem.start());
     GameState.events.off('ui:menu').on('ui:menu', () => this.exitToMenu());
-    GameState.events.off('ui:prospect').on('ui:prospect', () => this.prospect());
+    GameState.events.off('ui:prospect').on('ui:prospect', () => this.toggleSurveyMode());
     GameState.events.off('ui:rotate').on('ui:rotate', () => this.rotateBuildDir());
     GameState.events.off('ui:sellmode').on('ui:sellmode', () => this.toggleSellMode());
     // Targeted off/on (other scenes listen to these events too; stable refs survive restarts)
@@ -157,7 +195,7 @@ export class GameScene extends Phaser.Scene {
       .text(
         640,
         90,
-        'MINERS on ore → belt ore into a PRESS (ammo for GUNS) or FORGE (shells for CANNONS)\nBlue crystal patches feed the ASSEMBLER (2 ore + 1 crystal → piercing rounds for LANCERS)\nA cheap CHILLER (1 ore → 2 coolant) powers CRYO fields that slow everything at a choke point\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!  [SPACE] sends the wave  ·  [L] logistics view',
+        'MINERS on ore → belt ore into a PRESS (ammo for GUNS) or FORGE (shells for CANNONS)\nBlue crystal patches feed the ASSEMBLER (2 ore + 1 crystal → piercing rounds for LANCERS)\nA cheap CHILLER (1 ore → 2 coolant) powers CRYO fields that slow everything at a choke point\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!  [SPACE] sends the wave  ·  [L] logistics view\nFull guide on the title screen under HOW TO PLAY',
         { fontFamily: 'monospace', fontSize: '14px', color: '#cdd6e4', align: 'center', stroke: '#000', strokeThickness: 4 },
       )
       .setOrigin(0.5)
@@ -165,13 +203,22 @@ export class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: hint, alpha: 0, delay: 14000, duration: 1500, onComplete: () => hint.destroy() });
     // let the HUD's rotate button show the facing this run starts on
     this.sellMode = false;
+    this.surveyMode = false;
+    this.sellArmed = null;
     GameState.events.emit('builddir', this.buildDir);
     GameState.events.emit('sellmode', false);
+    GameState.events.emit('surveymode', false);
     this.ready = true;
   }
 
   update(_t: number, deltaMs: number): void {
-    if (GameState.gameOver || GameState.paused) return;
+    if (GameState.gameOver) return;
+    if (GameState.paused) {
+      // Pause still lets you plan and build; a frozen ghost would just lie
+      // about where the next click lands.
+      this.updateGhost();
+      return;
+    }
     if (this.saveDirty && GameState.phase === 'build') {
       this.saveTimer -= deltaMs / 1000; // real time, not game-speed scaled
       if (this.saveTimer <= 0) {
@@ -198,6 +245,11 @@ export class GameScene extends Phaser.Scene {
 
     const st = this.selTower;
     if (st && this.panel.visible && isTower(st.type)) {
+      if (st.ammo !== this.panelMagShown) {
+        this.panelMagShown = st.ammo;
+        const cap = TOWERS[st.type].ammoCap;
+        this.panelMag.setText(`MAG ${st.ammo}/${cap}`).setColor(st.ammo >= cap ? '#5ef078' : '#ffd75e');
+      }
       if (st.mk === 2) {
         const [pa, pb] = UPGRADE_TREE[st.type].paths;
         this.tintAfford(this.panelBtnA, this.panelBtnAText, st, pa.tiers[0]);
@@ -217,12 +269,30 @@ export class GameScene extends Phaser.Scene {
 
   // ---------- juice helpers (used by systems) ----------
 
+  /**
+   * Floating bounty/status text. Capped: a late swift wave is 100+ kills in
+   * forty seconds, and every one of these is a fresh canvas texture. Past the
+   * cap the numbers are an unreadable pile anyway, so dropping them costs the
+   * player nothing and keeps the frame rate honest.
+   */
   floatText(x: number, y: number, msg: string, color: string): void {
+    if (this.floaters >= MAX_FLOATERS) return;
+    this.floaters += 1;
     const t = this.add
       .text(x, y, msg, { fontFamily: 'monospace', fontSize: '14px', fontStyle: 'bold', color, stroke: '#000', strokeThickness: 3 })
       .setOrigin(0.5)
       .setDepth(30);
-    this.tweens.add({ targets: t, y: y - 30, alpha: 0, duration: 850, ease: 'Cubic.out', onComplete: () => t.destroy() });
+    this.tweens.add({
+      targets: t,
+      y: y - 30,
+      alpha: 0,
+      duration: 850,
+      ease: 'Cubic.out',
+      onComplete: () => {
+        this.floaters -= 1;
+        t.destroy();
+      },
+    });
   }
 
   bigText(msg: string): void {
@@ -253,6 +323,7 @@ export class GameScene extends Phaser.Scene {
   private createUpgradePanel(): void {
     this.panel = this.add.container(GAME_W - 266, 44).setDepth(40).setVisible(false);
     const bg = this.add.rectangle(0, 0, 258, 124, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
+    this.panelBg = bg;
     this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: '13px', fontStyle: 'bold', color: '#ffe066' });
     this.panelInfo = this.add.text(10, 25, '', { fontFamily: 'monospace', fontSize: '10px', color: '#cdd6e4', lineSpacing: 2 });
     // Two fixed button slots: A alone for linear tiers, A+B at the Mk3 branch.
@@ -275,11 +346,27 @@ export class GameScene extends Phaser.Scene {
     this.panelBtnBText = this.add
       .text(191, 107, '', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
-    this.panel.add([bg, this.panelTitle, this.panelInfo, this.panelBtnA, this.panelBtnAText, this.panelBtnB, this.panelBtnBText]);
+    // Every tier is paid partly in a *full* magazine, so "how full am I?" is the
+    // question the panel has to answer — without it the greyed-out button is a
+    // mystery. Sits on the title row, right-aligned.
+    this.panelMag = this.add
+      .text(248, 8, '', { fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(1, 0);
+    this.panel.add([
+      bg,
+      this.panelTitle,
+      this.panelMag,
+      this.panelInfo,
+      this.panelBtnA,
+      this.panelBtnAText,
+      this.panelBtnB,
+      this.panelBtnBText,
+    ]);
   }
 
   private selectTower(b: Building | null): void {
     this.selTower = b;
+    this.panelMagShown = -1; // a different tower may share an ammo count but not a cap
     if (b) {
       this.selRing.setPosition(b.x * TILE + TILE / 2, b.y * TILE + TILE / 2).setVisible(true);
     } else {
@@ -487,15 +574,28 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-V', () => this.select('cryo'));
     kb.on('keydown-U', () => this.tryUpgrade(0));
     kb.on('keydown-I', () => this.tryUpgrade(1));
-    kb.on('keydown-R', () => this.rotateBuildDir());
-    kb.on('keydown-ESC', () => this.select(null));
+    // Factorio's rule: R turns whatever is under the cursor, or the thing you
+    // are about to build when the cursor is over bare ground.
+    kb.on('keydown-R', () => {
+      const p = this.input.activePointer;
+      const b = p.y < PLAYFIELD_H ? this.grid.cellAt(Math.floor(p.x / TILE), Math.floor(p.y / TILE))?.building : null;
+      if (b && !isTower(b.type) && !this.selected) this.rotateBuilding(b);
+      else this.rotateBuildDir();
+    });
+    kb.on('keydown-ESC', () => {
+      if (this.surveyMode) this.toggleSurveyMode();
+      else this.select(null);
+    });
     kb.on('keydown-SPACE', () => this.waveSystem.start());
     kb.on('keydown-F', () => GameState.cycleSpeed());
     kb.on('keydown-P', () => GameState.togglePause());
     kb.on('keydown-L', () => GameState.toggleOverlay());
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (p.y >= PLAYFIELD_H) return;
+      // Phaser fires GameObject handlers first and then this scene-level one
+      // regardless, so without this guard clicking UPGRADE would immediately
+      // deselect the tower underneath and shut the panel it lives in.
+      if (p.y >= PLAYFIELD_H || this.overPanel(p.x, p.y)) return;
       this.pressAt = this.time.now;
       this.pressX = p.x;
       this.pressY = p.y;
@@ -503,21 +603,29 @@ export class GameScene extends Phaser.Scene {
       const ty = Math.floor(p.y / TILE);
       if (p.rightButtonDown()) {
         const b = this.grid.cellAt(tx, ty)?.building;
-        if (b) this.sell(b);
+        if (b) this.requestSell(b);
         else this.select(null);
+        return;
+      }
+      if (this.surveyMode) {
+        this.placeSurvey(tx, ty);
         return;
       }
       if (this.sellMode) {
         const b = this.grid.cellAt(tx, ty)?.building;
-        if (b) this.sell(b);
+        if (b) this.requestSell(b);
         else sfx.error();
         return;
       }
       if (this.selected) {
-        this.tryPlace(this.selected, tx, ty, false);
+        if (this.selected === 'belt') this.startStroke(tx, ty);
+        else this.tryPlace(this.selected, tx, ty, false);
       } else {
         const b = this.grid.cellAt(tx, ty)?.building;
-        this.selectTower(b && isTower(b.type) ? b : null);
+        // Towers open their upgrade panel; everything else turns. Re-aiming a
+        // belt or a machine used to mean selling it and building it again.
+        if (b && !isTower(b.type)) this.rotateBuilding(b);
+        else this.selectTower(b ?? null);
       }
     });
 
@@ -525,20 +633,76 @@ export class GameScene extends Phaser.Scene {
     // nothing is selected for building, so holding after painting a belt can
     // never refund the belt you just laid down.
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
-      if (p.y >= PLAYFIELD_H || this.selected || this.sellMode) return;
+      this.endStroke();
+      if (p.y >= PLAYFIELD_H || this.selected || this.sellMode || this.overPanel(p.x, p.y)) return;
       const held = this.time.now - this.pressAt;
       const moved = Math.hypot(p.x - this.pressX, p.y - this.pressY);
       if (held < 450 || moved > 12) return;
       const b = this.grid.cellAt(Math.floor(p.x / TILE), Math.floor(p.y / TILE))?.building;
-      if (b) this.sell(b);
+      if (b) this.requestSell(b);
     });
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       // drag-paint belts (touch drags report no button, so accept either)
       if (this.selected === 'belt' && p.isDown && !p.rightButtonDown() && p.y < PLAYFIELD_H) {
-        this.tryPlace('belt', Math.floor(p.x / TILE), Math.floor(p.y / TILE), true);
+        this.paintBeltTo(Math.floor(p.x / TILE), Math.floor(p.y / TILE));
       }
     });
+  }
+
+  /** Is this canvas point over the open upgrade panel? */
+  private overPanel(x: number, y: number): boolean {
+    return this.panel.visible && Phaser.Geom.Rectangle.Contains(this.panelBg.getBounds(), x, y);
+  }
+
+  // ---------- belt drag-painting ----------
+
+  private startStroke(tx: number, ty: number): void {
+    this.paintStroke.clear();
+    this.paintCell = null;
+    this.paintBeltTo(tx, ty);
+  }
+
+  private endStroke(): void {
+    this.paintCell = null;
+    this.paintStroke.clear();
+  }
+
+  /**
+   * Lay belt from the last painted cell to this one. Two things make a drag
+   * feel like a conveyor rather than a stamp:
+   *  - every cell in between is filled, so a fast flick never leaves a hole;
+   *  - each belt points at the next cell, and the cell being left is re-aimed
+   *    to match, so a stroke that turns a corner lays a working corner instead
+   *    of a row of belts all facing the direction you started in.
+   * Only belts from this stroke are re-aimed — dragging across the factory can
+   * never silently re-plumb an existing line.
+   */
+  private paintBeltTo(tx: number, ty: number): void {
+    if (!this.grid.inBounds(tx, ty)) return;
+    if (!this.paintCell) {
+      if (this.tryPlace('belt', tx, ty, true, this.buildDir)) this.paintStroke.add(`${tx},${ty}`);
+      this.paintCell = { x: tx, y: ty };
+      return;
+    }
+    let prev = this.paintCell;
+    for (const step of beltRun(prev, { x: tx, y: ty }, this.buildDir)) {
+      this.aimBelt(prev.x, prev.y, step.dir); // the cell we're leaving must feed the one we're entering
+      if (this.tryPlace('belt', step.x, step.y, true, step.dir)) this.paintStroke.add(`${step.x},${step.y}`);
+      prev = step;
+      this.paintCell = step;
+      this.buildDir = step.dir;
+    }
+    GameState.events.emit('builddir', this.buildDir);
+  }
+
+  /** Re-aim a belt this stroke laid down. Anything else is left alone. */
+  private aimBelt(x: number, y: number, dir: Dir): void {
+    const b = this.grid.cellAt(x, y)?.building;
+    if (!b || b.type !== 'belt' || b.dir === dir || !this.paintStroke.has(`${x},${y}`)) return;
+    b.dir = dir;
+    b.sprite.setRotation((dir * Math.PI) / 2);
+    this.requestSave();
   }
 
   private rotateBuildDir(): void {
@@ -550,13 +714,25 @@ export class GameScene extends Phaser.Scene {
   /** Touch-only sell mode: no right button, so selling gets an explicit mode. */
   private toggleSellMode(): void {
     this.sellMode = !this.sellMode;
-    if (this.sellMode) this.select(null);
+    if (this.sellMode) {
+      this.select(null);
+      if (this.surveyMode) {
+        this.surveyMode = false;
+        this.surveyGhost.clear();
+        GameState.events.emit('surveymode', false);
+      }
+    }
     GameState.events.emit('sellmode', this.sellMode);
   }
 
   private select(type: BuildingType | null): void {
     this.selected = type;
     GameState.events.emit('selected', type);
+    if (type && this.surveyMode) {
+      this.surveyMode = false;
+      this.surveyGhost.clear();
+      GameState.events.emit('surveymode', false);
+    }
     if (type) {
       // building and selling are mutually exclusive modes
       if (this.sellMode) {
@@ -575,7 +751,13 @@ export class GameScene extends Phaser.Scene {
     const tower = isTower(type);
     const flat = type === 'belt' || type === 'splitter' || type === 'tunnel';
     const depth = flat ? 1 : 3;
-    const sprite = this.add.image(cx, cy, type).setDepth(depth);
+    // Belts are Sprites so they can run the scrolling chevron loop; everything
+    // else stays a plain Image. All belts share one animation, and starting them
+    // at a random frame keeps a long run from looking like a marching band.
+    const sprite =
+      type === 'belt'
+        ? this.add.sprite(cx, cy, 'belt').setDepth(depth).play({ key: BELT_ANIM, startFrame: Phaser.Math.Between(0, BELT_FRAME_KEYS.length - 1) })
+        : this.add.image(cx, cy, type).setDepth(depth);
     if (!tower) sprite.setRotation((dir * Math.PI) / 2);
 
     const b: Building = {
@@ -626,31 +808,73 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
-  private tryPlace(type: BuildingType, tx: number, ty: number, silent: boolean): void {
-    if (GameState.gameOver) return;
+  /** Returns the new building, or null if the spot or the wallet said no. */
+  private tryPlace(type: BuildingType, tx: number, ty: number, silent: boolean, dir: Dir = this.buildDir): Building | null {
+    if (GameState.gameOver) return null;
     if (!this.grid.canPlace(type, tx, ty)) {
       if (!silent) sfx.error();
-      return;
+      return null;
     }
     if (!GameState.spend(costOf(type))) {
       if (!silent) {
         sfx.error();
         this.floatText(tx * TILE + 16, ty * TILE + 8, 'Need $' + costOf(type), '#ff5555');
       }
-      return;
+      return null;
     }
 
-    const b = this.placeBuilding(type, tx, ty, this.buildDir);
+    const b = this.placeBuilding(type, tx, ty, dir);
     b.sprite.setScale(0.5);
     this.tweens.add({ targets: b.sprite, scale: 1, duration: 130, ease: 'Back.out' });
     sfx.place();
     if (type === 'tunnel') progress.record('tunnelsBuilt');
     this.requestSave();
+    return b;
+  }
+
+  /** Turn a placed belt/machine 90°. Free and reversible — four clicks is a full circle. */
+  private rotateBuilding(b: Building): void {
+    b.dir = ((b.dir + 1) % 4) as Dir;
+    b.sprite.setRotation((b.dir * Math.PI) / 2);
+    this.tweens.add({ targets: b.sprite, scale: 1.12, duration: 70, yoyo: true });
+    sfx.place();
+    this.requestSave();
+  }
+
+  /** Above this, selling asks twice — a stray right-click should not vaporise a Mk4 tower. */
+  private static readonly SELL_CONFIRM_OVER = 150;
+  private static readonly SELL_CONFIRM_MS = 2500;
+
+  /**
+   * Cheap things (belts, tunnels) sell on the first click so clearing a bad run
+   * stays fast; anything expensive has to be clicked twice, because the refund
+   * is only half and there is no undo.
+   */
+  private requestSell(b: Building): void {
+    if (b.invested <= GameScene.SELL_CONFIRM_OVER) {
+      this.sell(b);
+      return;
+    }
+    const armed = this.sellArmed === b && this.time.now - this.sellArmedAt < GameScene.SELL_CONFIRM_MS;
+    if (armed) {
+      this.sellArmed = null;
+      this.sell(b);
+      return;
+    }
+    this.sellArmed = b;
+    this.sellArmedAt = this.time.now;
+    sfx.error();
+    this.floatText(b.x * TILE + 16, b.y * TILE + 4, `Again to sell · +$${Math.floor(b.invested / 2)}`, '#ff9f43');
   }
 
   private sell(b: Building): void {
+    if (this.sellArmed === b) this.sellArmed = null;
     const refund = Math.floor(b.invested / 2);
     if (b.item) this.conveyor.destroyItem(b.item);
+    // A recoil or pulse tween outliving its target would keep writing to a dead
+    // object every frame.
+    this.tweens.killTweensOf(b.sprite);
+    if (b.barrel) this.tweens.killTweensOf(b.barrel);
     b.sprite.destroy();
     b.shadow?.destroy();
     b.barrel?.destroy();
@@ -669,6 +893,22 @@ export class GameScene extends Phaser.Scene {
     const p = this.input.activePointer;
     const tx = Math.floor(p.x / TILE);
     const ty = Math.floor(p.y / TILE);
+
+    // Survey mode owns the cursor: show the footprint you are about to buy.
+    if (this.surveyMode) {
+      this.ghost.setAlpha(0);
+      this.rangeCircle.setVisible(false);
+      const g = this.surveyGhost.clear();
+      if (p.y >= PLAYFIELD_H) return;
+      const s = this.surveyOrigin(tx, ty);
+      const ok = this.grid.isClearArea(s.x, s.y, s.w, s.h);
+      g.fillStyle(ok ? 0x5ef078 : 0xff5555, 0.18);
+      g.fillRect(s.x * TILE, s.y * TILE, s.w * TILE, s.h * TILE);
+      g.lineStyle(2, ok ? 0x5ef078 : 0xff5555, 0.9);
+      g.strokeRect(s.x * TILE, s.y * TILE, s.w * TILE, s.h * TILE);
+      return;
+    }
+
     if (!this.selected || p.y >= PLAYFIELD_H) {
       this.ghost.setAlpha(0);
       // show range of an existing tower under the cursor
@@ -712,34 +952,62 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Buy a survey: reveals a fresh patch of the next resource somewhere clear.
-   * Cost climbs with every survey, so late re-supply is a real decision.
+   * Arm/disarm survey mode. Prospecting used to drop the patch on a random
+   * clear tile, which meant paying a four-figure sum for ground you might not
+   * be able to reach — so the player picks the site now, and the cost is only
+   * taken when they commit to one.
    */
-  private prospect(): void {
+  private toggleSurveyMode(): void {
+    if (GameState.gameOver) return;
+    this.surveyMode = !this.surveyMode;
+    if (this.surveyMode) {
+      this.select(null);
+      if (this.sellMode) this.toggleSellMode();
+      const cost = prospectCost(GameState.surveys);
+      if (GameState.money < cost) {
+        this.surveyMode = false;
+        sfx.error();
+        this.floatText(640, 300, `Survey costs $${cost}`, '#ff5555');
+      }
+    }
+    this.surveyGhost.clear();
+    GameState.events.emit('surveymode', this.surveyMode);
+  }
+
+  /** Top-left of the survey footprint for a cursor tile — centered and clamped on-board. */
+  private surveyOrigin(tx: number, ty: number): { x: number; y: number; w: number; h: number } {
+    const { w, h } = PROSPECT_SIZE[prospectKind(GameState.surveys)];
+    return {
+      x: Phaser.Math.Clamp(tx - Math.floor((w - 1) / 2), 0, GRID_W - w),
+      y: Phaser.Math.Clamp(ty - Math.floor((h - 1) / 2), 0, GRID_H - h),
+      w,
+      h,
+    };
+  }
+
+  /** Commit a survey at the cursor. Reveals a fresh patch of the next resource. */
+  private placeSurvey(tx: number, ty: number): void {
     if (GameState.gameOver) return;
     const kind = prospectKind(GameState.surveys);
     const cost = prospectCost(GameState.surveys);
-    const { w, h } = PROSPECT_SIZE[kind];
+    const spot = this.surveyOrigin(tx, ty);
+    const { w, h } = spot;
 
-    const spots: { x: number; y: number }[] = [];
-    for (let y = 0; y <= GRID_H - h; y++) {
-      for (let x = 0; x <= GRID_W - w; x++) {
-        if (this.grid.isClearArea(x, y, w, h)) spots.push({ x, y });
-      }
-    }
-    if (spots.length === 0) {
+    if (!this.grid.isClearArea(spot.x, spot.y, w, h)) {
       sfx.error();
-      this.floatText(640, 300, 'No clear ground to survey', '#ff5555');
+      this.floatText(tx * TILE + 16, ty * TILE, 'Needs clear ground', '#ff5555');
       return;
     }
     if (!GameState.spend(cost)) {
       sfx.error();
-      this.floatText(640, 300, `Survey costs $${cost}`, '#ff5555');
+      this.floatText(tx * TILE + 16, ty * TILE, `Survey costs $${cost}`, '#ff5555');
       return;
     }
 
-    const spot = Phaser.Utils.Array.GetRandom(spots);
-    this.grid.addPatch({ ...spot, w, h }, kind);
+    this.surveyMode = false;
+    this.surveyGhost.clear();
+    GameState.events.emit('surveymode', false);
+    this.grid.addPatch({ x: spot.x, y: spot.y, w, h }, kind);
     GameState.recordSurvey();
     this.depositsDirty = true;
 

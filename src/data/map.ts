@@ -167,10 +167,15 @@ export function inPatch(patches: readonly Patch[], x: number, y: number): boolea
 /**
  * Units in a single tile. Tuned so an ore tile and a crystal tile last about
  * the same wall-clock time under one miner (ore mines faster but holds more),
- * roughly three minutes each — long enough to forget about, short enough that
+ * roughly nine minutes each — long enough to forget about, short enough that
  * a maxed-out factory has to be re-engineered rather than left alone.
+ *
+ * At the original three minutes a tile lasted barely three waves, so a deep run
+ * spent the whole late game replacing miners and buying surveys instead of
+ * building anything; nine minutes keeps the depletion decision without making
+ * it the only decision.
  */
-export const RESERVES: Record<'ore' | 'crystal', number> = { ore: 120, crystal: 70 };
+export const RESERVES: Record<'ore' | 'crystal', number> = { ore: 360, crystal: 210 };
 
 /** Prospecting reveals one new patch at a time, alternating the resource. */
 export const PROSPECT_SIZE: Record<'ore' | 'crystal', { w: number; h: number }> = {
@@ -182,9 +187,17 @@ export function prospectKind(surveys: number): 'ore' | 'crystal' {
   return surveys % 2 === 0 ? 'ore' : 'crystal';
 }
 
-/** Each survey costs half again as much as the last — late patches are a real investment. */
+/**
+ * Each survey costs about a third again as much as the last — late patches are
+ * a real investment, but the curve has to stay inside what a deep run actually
+ * earns. At 1.5x the tenth survey cost $14k against a lifetime income of $13k,
+ * which meant prospecting quietly stopped being an option exactly when the map
+ * started running dry.
+ */
+export const PROSPECT_GROWTH = 1.3;
+
 export function prospectCost(surveys: number): number {
-  return Math.round(250 * Math.pow(1.5, surveys));
+  return Math.round(250 * Math.pow(PROSPECT_GROWTH, surveys));
 }
 
 /** Set of "x,y" keys for every tile the given route crosses (unbuildable). */

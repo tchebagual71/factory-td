@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { isMachine, MACHINES, minerCycle } from '../data/buildings';
-import { GameState } from '../state/GameState';
+import { bumpAmmo, GameState } from '../state/GameState';
 import { ConveyorSystem } from './ConveyorSystem';
 import { GridSystem, minedResource } from './GridSystem';
 
@@ -56,7 +56,7 @@ export class ProductionSystem {
           if (b.timer >= stats.cycle) {
             b.crafting = false;
             b.outputBuf += stats.outputPer;
-            GameState.tally.produced += stats.outputPer;
+            bumpAmmo(GameState.tally.produced, stats.output, stats.outputPer);
             this.pop(b.sprite);
           }
         }

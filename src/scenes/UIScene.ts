@@ -5,7 +5,7 @@ import { BUILD_INFO } from '../data/buildings';
 import { activeMap, prospectCost, prospectKind } from '../data/map';
 import { earlySendBonus, waveDef, WAVE_KIND_LABEL } from '../data/waves';
 import { pushAchievements } from '../services/cloud';
-import { GameState, WaveTally } from '../state/GameState';
+import { ammoDeficits, ammoTotal, GameState, WaveTally } from '../state/GameState';
 import { progress } from '../state/progress';
 import { BuildingType } from '../types';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
@@ -34,6 +34,7 @@ export class UIScene extends Phaser.Scene {
   private toastQueue: AchievementDef[] = [];
   private toastActive = false;
   private menuConfirm = false;
+  private surveyArmed = false;
   private summaryCard: Phaser.GameObjects.Container | null = null;
 
   constructor() {
@@ -66,6 +67,12 @@ export class UIScene extends Phaser.Scene {
     prospectBtn.on('pointerout', () => prospectBtn.setFillStyle(0x1e2233, 0.9));
     prospectBtn.on('pointerdown', () => GameState.events.emit('ui:prospect'));
     GameState.events.on('surveys', () => this.refreshStats());
+    // Armed survey mode: the button stays lit until a site is picked or cancelled
+    GameState.events.on('surveymode', (on: boolean) => {
+      this.surveyArmed = on;
+      prospectBtn.setStrokeStyle(2, on ? 0x5ef078 : 0x2b3040);
+      this.refreshStats();
+    });
 
     // Which layout this run is on. UIScene sleeps rather than stopping, so this
     // is refreshed with the stats instead of being captured once at create().
@@ -178,8 +185,8 @@ export class UIScene extends Phaser.Scene {
     const iconScale = Math.min(2, Math.max(0.9, (bh * 0.42) / 32));
 
     const HINT = IS_TOUCH
-      ? 'Tap a slot, then tap the map · ROTATE turns it · SELL then tap to refund 50% · tap a tower to upgrade'
-      : 'R rotate · drag paints belts · right-click sells 50% · click a tower to upgrade · [L] logistics view';
+      ? 'Tap a slot then tap the map · ROTATE turns it · tap a placed belt to turn it · SELL then tap to refund 50% · tap a tower to upgrade'
+      : 'Drag paints belts round corners · R turns what is under the cursor · click a placed belt to turn it · right-click sells · click a tower to upgrade · [L] logistics';
 
     BUILD_INFO.forEach((info, i) => {
       const { x, y, w: bw } = layout.slots[i];
@@ -313,16 +320,19 @@ export class UIScene extends Phaser.Scene {
   }
 
   /**
-   * Wave-clear card: what the round actually cost and produced. `fired` vs
-   * `produced` is the headline — a factory that made fewer rounds than the
-   * towers spent is running down its magazines and will starve in a wave or two.
+   * Wave-clear card: what the round actually cost and produced. Fired vs made
+   * is the headline, but it is judged *per ammo type* — a chiller turning one
+   * ore into two coolant would otherwise flatter a gun line that is starving.
    */
   private showWaveSummary(wave: number, t: WaveTally): void {
     this.summaryCard?.destroy();
     const W = 268;
     const H = 118;
     const c = this.add.container(GAME_W / 2 - W / 2, 372).setDepth(45).setAlpha(0);
-    const deficit = t.produced < t.fired;
+    const short = ammoDeficits(t);
+    const deficit = short.length > 0;
+    const fired = ammoTotal(t.fired);
+    const made = ammoTotal(t.produced);
     const bg = this.add.rectangle(0, 0, W, H, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, deficit ? 0xff9f43 : 0x2b3040);
     const rows: Phaser.GameObjects.GameObject[] = [
       bg,
@@ -331,12 +341,17 @@ export class UIScene extends Phaser.Scene {
         ...FONT, fontSize: '11px', color: t.leaked > 0 ? '#ff8b8b' : '#cdd6e4',
       }),
       this.add.text(12, 50, `Income     +$${t.income}`, { ...FONT, fontSize: '11px', color: '#ffe066' }),
-      this.add.text(12, 68, `Ammo       ${t.fired} fired · ${t.produced} made`, {
+      this.add.text(12, 68, `Ammo       ${fired} fired · ${made} made`, {
         ...FONT, fontSize: '11px', color: deficit ? '#ff9f43' : '#5ef078',
       }),
-      this.add.text(12, 90, deficit ? '⚠ magazines draining — add production' : '✓ production kept up', {
-        ...FONT, fontSize: '10px', color: deficit ? '#ff9f43' : '#8892a6',
-      }),
+      this.add.text(
+        12,
+        90,
+        deficit
+          ? `⚠ ${short.map((d) => `${d.type} −${d.short}`).join('  ')} — add production`
+          : '✓ production kept up',
+        { ...FONT, fontSize: '10px', color: deficit ? '#ff9f43' : '#8892a6' },
+      ),
     ];
     c.add(rows);
     this.summaryCard = c;
@@ -362,7 +377,8 @@ export class UIScene extends Phaser.Scene {
       this.tweens.add({ targets: this.moneyText, scale: 1, duration: 150 });
     }
     const d = waveDef(GameState.wave);
-    const KIND_COLOR: Record<string, string> = { normal: '#cdd6e4', swift: '#6bd4ff', armored: '#9aa7bd', boss: '#ff6b6b' };
+    // matches the enemy textures, so the preview colour names the thing you'll see
+    const KIND_COLOR: Record<string, string> = { normal: '#cdd6e4', swift: '#2fe3d0', armored: '#9aa7bd', boss: '#ff6b6b' };
     const KIND_HINT: Record<string, string> = {
       normal: '',
       swift: '\nfast & many — splash shines',
@@ -380,8 +396,8 @@ export class UIScene extends Phaser.Scene {
     const cost = prospectCost(GameState.surveys);
     const kind = prospectKind(GameState.surveys);
     this.prospectText
-      .setText(`⛏ SURVEY ${kind.toUpperCase()}  $${cost}`)
-      .setColor(GameState.money >= cost ? (kind === 'ore' ? '#ff9f43' : '#6bd4ff') : '#8892a6');
+      .setText(this.surveyArmed ? `⛏ PICK A SITE  (ESC)` : `⛏ SURVEY ${kind.toUpperCase()}  $${cost}`)
+      .setColor(this.surveyArmed ? '#5ef078' : GameState.money >= cost ? (kind === 'ore' ? '#ff9f43' : '#6bd4ff') : '#8892a6');
   }
 
   private refreshWaveBtn(): void {

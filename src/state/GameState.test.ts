@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { START_MONEY } from '../config';
-import { emptyTally, GameState } from './GameState';
+import { ammoDeficits, ammoTotal, bumpAmmo, cloneTally, emptyTally, GameState } from './GameState';
 
 beforeEach(() => {
   GameState.reset();
@@ -19,9 +19,47 @@ describe('wave tally', () => {
     GameState.reset();
     expect(GameState.tally).toEqual(emptyTally());
 
-    GameState.tally.fired = 12;
+    bumpAmmo(GameState.tally.fired, 'ammo', 12);
     GameState.applySnapshot({ money: 10, lives: 3, wave: 4, speed: 2, auto: false });
     expect(GameState.tally).toEqual(emptyTally());
+  });
+});
+
+describe('ammo accounting', () => {
+  it('judges supply per ammo type, so a fat coolant line cannot mask a starving gun line', () => {
+    const t = emptyTally();
+    bumpAmmo(t.fired, 'ammo', 40);
+    bumpAmmo(t.produced, 'ammo', 10);
+    // one chiller turns 1 ore into 2 coolant, so this line looks generous
+    bumpAmmo(t.fired, 'coolant', 8);
+    bumpAmmo(t.produced, 'coolant', 60);
+
+    // the grand total says the factory kept up — it did not
+    expect(ammoTotal(t.produced)).toBeGreaterThan(ammoTotal(t.fired));
+    expect(ammoDeficits(t)).toEqual([{ type: 'ammo', short: 30 }]);
+  });
+
+  it('reports the worst shortfall first so the player knows which line to widen', () => {
+    const t = emptyTally();
+    bumpAmmo(t.fired, 'ammo', 20);
+    bumpAmmo(t.fired, 'shell', 30);
+    bumpAmmo(t.produced, 'shell', 5);
+    expect(ammoDeficits(t).map((d) => d.type)).toEqual(['shell', 'ammo']);
+  });
+
+  it('reports nothing when every line kept up', () => {
+    const t = emptyTally();
+    bumpAmmo(t.fired, 'piercing', 6);
+    bumpAmmo(t.produced, 'piercing', 6);
+    expect(ammoDeficits(t)).toEqual([]);
+  });
+
+  it('cloneTally deep-copies, so the card cannot keep counting after the wave ends', () => {
+    const t = emptyTally();
+    bumpAmmo(t.fired, 'ammo', 3);
+    const snap = cloneTally(t);
+    bumpAmmo(t.fired, 'ammo', 99);
+    expect(snap.fired.ammo).toBe(3);
   });
 });
 

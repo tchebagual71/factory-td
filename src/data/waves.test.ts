@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { earlySendBonus, EARLY_SEND_WINDOW, resistMult, waveClearBonus, waveDef, WaveKind } from './waves';
+import {
+  baseBounty,
+  baseHp,
+  earlySendBonus,
+  EARLY_GROWTH,
+  EARLY_SEND_WINDOW,
+  HP_TAPER_AT,
+  LATE_GROWTH,
+  resistMult,
+  waveClearBonus,
+  waveDef,
+  WaveKind,
+} from './waves';
 
 describe('waveDef rhythm', () => {
   it('follows boss > swift > armored precedence for waves 1-20', () => {
@@ -18,9 +30,45 @@ describe('waveDef rhythm', () => {
 });
 
 describe('waveDef scaling', () => {
-  it('normal hp follows 25 * 1.22^(n-1)', () => {
+  it('normal hp follows 25 * 1.22^(n-1) up to the taper', () => {
     expect(waveDef(1).hp).toBe(25);
     expect(waveDef(7).hp).toBe(Math.round(25 * Math.pow(1.22, 6)));
+    // the early ramp is the whole first act — it must not have moved
+    for (const n of [1, 2, 4, 7, 11, 13, 17]) {
+      expect(baseHp(n), `wave ${n}`).toBe(Math.round(25 * Math.pow(EARLY_GROWTH, n - 1)));
+    }
+  });
+
+  it('eases to the late growth rate past the taper, and never faster', () => {
+    // the ratio *into* wave T+1 is still the early rate; T+2 is the first tapered step
+    expect(baseHp(HP_TAPER_AT + 1) / baseHp(HP_TAPER_AT)).toBeCloseTo(EARLY_GROWTH, 2);
+    expect(baseHp(HP_TAPER_AT + 2) / baseHp(HP_TAPER_AT + 1)).toBeCloseTo(LATE_GROWTH, 2);
+    for (let n = HP_TAPER_AT + 1; n < 45; n++) {
+      const g = baseHp(n + 1) / baseHp(n);
+      expect(g, `growth at wave ${n}`).toBeLessThan(EARLY_GROWTH);
+      expect(g).toBeGreaterThan(1); // still always harder than the wave before
+    }
+  });
+
+  it('keeps the mid-game where it was — the taper is a late-game fix', () => {
+    // wave 20 must stay within a whisker of the original 25 * 1.22^19 curve
+    expect(baseHp(20) / (25 * Math.pow(1.22, 19))).toBeGreaterThan(0.85);
+  });
+
+  it('pays a bounty that tracks HP once the flat rate stops covering the ammo', () => {
+    // early waves keep the original flat rate...
+    for (const n of [1, 5, 10]) expect(baseBounty(n)).toBe(5 + n);
+    // ...and past that, money per point of enemy HP stops collapsing
+    const perHp = (n: number) => baseBounty(n) / baseHp(n);
+    expect(perHp(30)).toBeGreaterThan(perHp(20) * 0.9);
+    expect(perHp(40)).toBeGreaterThan(perHp(30) * 0.9);
+  });
+
+  it('scales income fast enough to keep buying against the HP curve', () => {
+    // the failure this replaces: threat grew ~12x per 10 waves, income ~3x
+    const income = (n: number) => waveDef(n).count * waveDef(n).bounty + waveClearBonus(n);
+    const threat = (n: number) => waveDef(n).count * waveDef(n).hp;
+    expect(income(30) / income(20)).toBeGreaterThan((threat(30) / threat(20)) * 0.7);
   });
 
   it('normal count is 4 + 2n', () => {
@@ -36,8 +84,7 @@ describe('waveDef scaling', () => {
 
   it('boss waves are few, tanky, and cost 5 lives per leak', () => {
     const boss = waveDef(5);
-    const baseHp = Math.round(25 * Math.pow(1.22, 4));
-    expect(boss.hp).toBe(baseHp * 5);
+    expect(boss.hp).toBe(baseHp(5) * 5);
     expect(boss.count).toBe(Math.max(2, Math.floor((4 + 2 * 5) / 3)));
     expect(boss.leak).toBe(5);
   });
@@ -118,8 +165,18 @@ describe('earlySendBonus', () => {
 });
 
 describe('waveClearBonus', () => {
-  it('scales linearly with wave number', () => {
-    expect(waveClearBonus(1)).toBe(40);
-    expect(waveClearBonus(10)).toBe(130);
+  it('stays near the original flat curve for the opening waves', () => {
+    expect(waveClearBonus(1)).toBeGreaterThanOrEqual(35);
+    expect(waveClearBonus(1)).toBeLessThanOrEqual(45);
+    expect(waveClearBonus(5)).toBeGreaterThanOrEqual(70);
+    expect(waveClearBonus(5)).toBeLessThanOrEqual(95);
+  });
+
+  it('grows with the wave it rewards, so a late clear is still worth something', () => {
+    for (let n = 1; n < 40; n++) {
+      expect(waveClearBonus(n + 1), `wave ${n}`).toBeGreaterThan(waveClearBonus(n));
+    }
+    // by the late game the bonus has to be a real fraction of a wave's cost
+    expect(waveClearBonus(30)).toBeGreaterThan(waveClearBonus(10) * 5);
   });
 });

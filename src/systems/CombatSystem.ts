@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { TILE } from '../config';
 import { effStats, isSupport, isTower, TOWERS, TowerStats } from '../data/buildings';
-import { GameState } from '../state/GameState';
+import { bumpAmmo, GameState } from '../state/GameState';
 import { progress } from '../state/progress';
 import { Building, Enemy } from '../types';
 import { sfx } from '../utils/sfx';
@@ -40,15 +40,52 @@ type Bullet = HomingBullet | LanceBullet;
 /** How close a lance must pass to an enemy to skewer it. */
 const LANCE_HIT_RADIUS = 14;
 
+/** Muzzle flashes are recycled round-robin — a gatling firing three times a second must not allocate. */
+const FLASH_POOL = 14;
+
 /** Tower targeting + projectiles. Towers only fire while they have ammo. */
 export class CombatSystem {
   private bullets: Bullet[] = [];
+  private flashes: Phaser.GameObjects.Image[] = [];
+  private flashIdx = 0;
 
   constructor(
     private scene: GameScene,
     private grid: GridSystem,
     private wave: WaveSystem,
   ) {}
+
+  /**
+   * Bright wedge at the barrel tip. Pooled and reused in order, so the number
+   * of live objects is bounded no matter how fast the guns are running.
+   */
+  private muzzleFlash(x: number, y: number, angle: number, scale: number): void {
+    if (this.flashes.length < FLASH_POOL) {
+      this.flashes.push(this.scene.add.image(0, 0, 'muzzle').setOrigin(0, 0.5).setDepth(8).setVisible(false));
+    }
+    const f = this.flashes[this.flashIdx];
+    this.flashIdx = (this.flashIdx + 1) % FLASH_POOL;
+    this.scene.tweens.killTweensOf(f);
+    f.setPosition(x, y).setRotation(angle).setScale(scale, scale).setAlpha(0.95).setVisible(true);
+    this.scene.tweens.add({
+      targets: f,
+      alpha: 0,
+      scaleX: scale * 0.4,
+      duration: 70,
+      onComplete: () => f.setVisible(false),
+    });
+  }
+
+  /** Kick the barrel back along its own axis and let it spring home. */
+  private recoil(b: Building, angle: number, px: number): void {
+    const barrel = b.barrel;
+    if (!barrel) return;
+    const cx = b.x * TILE + TILE / 2;
+    const cy = b.y * TILE + TILE / 2;
+    this.scene.tweens.killTweensOf(barrel);
+    barrel.setPosition(cx - Math.cos(angle) * px, cy - Math.sin(angle) * px);
+    this.scene.tweens.add({ targets: barrel, x: cx, y: cy, duration: 110, ease: 'Quad.out' });
+  }
 
   update(dt: number): void {
     for (const b of this.grid.buildings) {
@@ -88,10 +125,15 @@ export class CombatSystem {
       if (!best) continue;
 
       b.ammo -= 1;
-      GameState.tally.fired += 1;
+      bumpAmmo(GameState.tally.fired, stats.ammoType);
       b.cooldown = 1 / stats.fireRate;
       const angle = Math.atan2(best.y - cy, best.x - cx);
       b.barrel?.setRotation(angle);
+      // Heavier rounds kick harder and flash bigger — the recoil is most of the
+      // reason a cannon reads as a cannon rather than a fast gun with big numbers.
+      const heavy = stats.splash > 0 || stats.pierce > 0;
+      this.recoil(b, angle, heavy ? 5 : 2.5);
+      this.muzzleFlash(cx + Math.cos(angle) * 12, cy + Math.sin(angle) * 12, angle, heavy ? 1.5 : 1);
       const texture = stats.pierce > 0 ? 'lance' : stats.splash > 0 ? 'cannonball' : 'bullet';
       const sprite = this.scene.add
         .image(cx + Math.cos(angle) * 14, cy + Math.sin(angle) * 14, texture)
@@ -112,6 +154,10 @@ export class CombatSystem {
       } else {
         this.bullets.push({ kind: 'homing', sprite, target: best, stats });
       }
+      // Kill first: a yoyo returns to whatever the scale was when it started, so
+      // overlapping pulses on a fast gun would leave the sprite permanently big.
+      this.scene.tweens.killTweensOf(b.sprite);
+      b.sprite.setScale(1);
       this.scene.tweens.add({ targets: b.sprite, scale: 1.08, duration: 50, yoyo: true });
       sfx.shoot();
     }
@@ -138,7 +184,7 @@ export class CombatSystem {
     if (inRange.length === 0) return;
 
     b.ammo -= 1;
-    GameState.tally.fired += 1;
+    bumpAmmo(GameState.tally.fired, stats.ammoType);
     b.cooldown = 1 / stats.fireRate;
     for (const e of inRange) this.wave.chill(e, stats.slowFactor, stats.slowDur);
 

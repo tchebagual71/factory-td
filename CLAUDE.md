@@ -1,4 +1,4 @@
-u# CLAUDE.md
+# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -48,6 +48,7 @@ src/
     WaveSystem.ts       # spawning, enemy movement along fixed path, kills/leaks/wave-clear
     CombatSystem.ts     # tower targeting (furthest-along-path), bullets, ammo drain
     LogisticsSystem.ts  # [L] overlay: measures ammo uptime / belt load / stalls, draws the view
+    beltPaint.ts        # pure: resolves a belt drag into the run of cells it lays (fills gaps, turns corners)
   state/
     GameState.ts        # shared singleton (money/lives/wave/phase) + EventEmitter for scene comms
     serialize.ts        # SaveV1 run format: pure captureRun/validateSave (versioned, strict validation)
@@ -84,7 +85,7 @@ src/
 - 32px tiles, 40×20 grid (1280×640 playfield + 80px UI bar = 720p canvas)
 - `GridSystem` is the single source of truth for cell contents; all placement checks go through `canPlace()`
 - Cell kinds: `grass` (buildable), `path` (never buildable), `ore` / `crystal` (the two miner-only resource kinds — `minedResource()` maps a cell kind to the item a miner on it digs)
-- **Deposits are finite and mutable**: every resource cell carries `reserves`; `extract()` spends one unit and flips the cell back to `grass` when it hits zero, `addPatch()` reveals prospected ground. The terrain is therefore drawn in two layers — a static ground/path layer and `oreLayer`, repainted on a 1s cadence (or immediately on depletion/survey) with tile richness fading as reserves drop
+- **Deposits are finite and mutable**: every resource cell carries `reserves` (~9 minutes of mining per tile); `extract()` spends one unit and flips the cell back to `grass` when it hits zero, `addPatch()` reveals prospected ground at a site the player picks in survey mode. The terrain is therefore drawn in two layers — a static ground/path layer and `oreLayer`, repainted on a 1s cadence (or immediately on depletion/survey) with tile richness fading as reserves drop
 - `canRestore()` is the deliberately looser rule used when loading a save: a miner whose tile ran dry mid-run comes back as a visible dead miner rather than being silently deleted
 
 ### Conveyor & machine I/O
@@ -92,7 +93,7 @@ src/
 - Machines have a facing direction (`R` rotates before placement; art points East at rotation 0):
   - **Output**: miners/presses push finished items onto the belt cell they face (blocked = they hold and retry)
   - **Input**: a belt whose direction points into a machine inserts its item (ore → press intake, ammo → tower magazine)
-- Belt drag-painting places runs of belts in the current direction
+- Belt drag-painting follows the drag: `beltPaint.beltRun` fills every cell between pointer samples and aims each belt at the next, so a stroke that turns a corner lays a working corner. Clicking a placed belt/machine (or `R` over it) turns it in place
 
 ### Ammo economy (the genre bridge)
 - Towers have finite magazines (`ammoCap`), consume 1 ammo per shot, and are placed pre-loaded (`startAmmo`) so wave 1 flows before a factory exists
@@ -146,7 +147,19 @@ src/
 
 ## Balancing
 
-Numbers live in `data/buildings.ts` and `data/waves.ts` — tune there, not inline. Current curve: enemy HP ×1.22/wave, count 4+2n; boss waves (every 5th) are few/slow/tanky with 5-life leaks. When changing tower fire rate or press/assembler cycle time, keep the "one supply line ≈ half a tower" pressure at *both* tiers — `npm test` enforces that invariant plus the wave rhythm, resistances, crystal scarcity, recipe intake, and conveyor rules (`*.test.ts` next to each module), so run it after tuning. A PostToolUse hook (`.claude/settings.json` → `scripts/typecheck-hook.mjs`) typechecks after every TS edit.
+Numbers live in `data/buildings.ts`, `data/waves.ts` and `data/map.ts` — tune there, not inline. When changing tower fire rate or press/assembler cycle time, keep the "one supply line ≈ half a tower" pressure at *both* tiers — `npm test` enforces that invariant plus the wave rhythm, resistances, crystal scarcity, recipe intake, and conveyor rules (`*.test.ts` next to each module), so run it after tuning. A PostToolUse hook (`.claude/settings.json` → `scripts/typecheck-hook.mjs`) typechecks after every TS edit.
+
+### The difficulty curve, and why it is shaped this way
+
+Tower damage does **not** compound forever — the upgrade tree stops at Mk4, so past that the only way to add DPS is to add production, which is bounded by ore throughput and by how many tiles the map has. Against unbounded exponential HP that ceiling gets hit and every wave after it is arithmetically unwinnable. Three knobs keep the run inside its own ceiling:
+
+- **HP tapers** (`HP_TAPER_AT = 18`): waves 1–18 compound at the original `EARLY_GROWTH` 1.22 — that ramp *is* the early-game arc and must not move — then ease to `LATE_GROWTH` 1.12. Wave 20 is ~92% of the old curve (mid-game preserved); wave 30 is ~39%.
+- **Bounty tracks HP** (`BOUNTY_PER_HP`): `baseBounty` keeps the flat `5 + n` for the opening waves and switches to an HP-linked rate around wave 13. Previously income was linear against exponential HP, so money per point of enemy HP collapsed ~40× between wave 5 and 30 and the factory could never be scaled to match. **Money is deliberately generous late — the intended late-game constraint is ore throughput and tile space, not the wallet.**
+- **The ore economy has to last**: `RESERVES` is 9 minutes of mining per tile (was 3, which meant a tile died every three waves and the late game was nothing but replacing miners), and `PROSPECT_GROWTH` is 1.3 (was 1.5, where the tenth survey cost more than a whole run earned).
+
+Result, verified by modelling the shipped modules against a maximal factory: the throughput wall lands at **wave ~33**, and the squeeze is gradual (supply-vs-demand ratio drifts 4.0 → 1.0 across waves 13–33) rather than a cliff. An average factory stalls around 15–20. The wave 10/20/30 achievement ladder is reachable again.
+
+If you retune, the load-bearing tests are in `waves.test.ts`: the early ramp must stay on the original curve, growth must never exceed `EARLY_GROWTH` past the taper, wave 20 must stay ≥85% of the old curve, and income growth must keep pace with threat growth.
 
 ## Release Roadmap (tracked — update status here as each lands)
 
@@ -165,6 +178,17 @@ Ranked for fun/strategy impact. Mark `[x]` with a one-line note when shipped.
 11. `[x]` **Accounts, leaderboard, achievements** — shipped: optional Supabase accounts (Google/magic link/anonymous-upgradeable), cross-device saves, public best-wave leaderboard, 15 achievements with capped starting-money perks
 
 **The ranked roadmap above is complete.** Future work starts from playtest feedback, not this list — when adding to it, keep the same format (rank by fun/strategy impact, mark `[x]` with a one-line note on what actually shipped).
+
+## Post-roadmap batch: playability audit
+
+12. `[x]` **Difficulty/economy rebalance** — shipped: see "The difficulty curve" above. The wall moved from ~wave 20 (where it was unwinnable *arithmetically*, not by skill) to ~33
+13. `[x]` **Belt drag that behaves like a conveyor** — shipped: `systems/beltPaint.ts` resolves a drag into an L-shaped run, filling cells a fast flick skipped and aiming each belt at the next. Only belts laid in the current stroke are re-aimed, so dragging across the factory can never re-plumb an existing line
+14. `[x]` **Targeted prospecting** — shipped: `⛏ SURVEY` arms a mode and the player clicks the site (footprint ghost, green/red validity); money is only taken on commit. It used to drop the patch on a random clear tile
+15. `[x]` **Rotate in place** — shipped: clicking a placed belt/machine turns it, and `R` turns whatever is under the cursor (Factorio's rule). Re-aiming used to mean selling and rebuilding
+16. `[x]` **How to play** — shipped: a five-step modal on the title screen. Onboarding was a four-line hint that faded after 14s
+17. `[x]` **Per-ammo-type wave report** — shipped: the report card judges supply per ammo type and names the starved line. Grand totals let a chiller's 2-coolant-per-ore hide a starving gun line behind a healthy-looking sum
+18. `[x]` **Presentation** — shipped: belts run a scrolling chevron loop (all belts share one animation, started on a random frame), enemies rotate to their heading and carry a nose, guns recoil and flash from a fixed pool, swift enemies went teal so they can't be mistaken for the near-white frost tint
+19. `[x]` **Bugs & perf** — shipped: the upgrade panel no longer closes itself when clicked (Phaser fires GameObject handlers *and then* the scene-level `pointerdown` regardless — guard the panel bounds); the build ghost updates while paused; ambient SFX are voice-gated and floating text is capped, so a 100-kill swift wave at ×3 speed no longer asks for ~100 oscillators a second; costly buildings confirm before selling
 
 ## Deployment
 

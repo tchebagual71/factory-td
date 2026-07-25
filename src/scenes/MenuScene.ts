@@ -115,7 +115,20 @@ export class MenuScene extends Phaser.Scene {
       this.startGame();
     });
     y += 62;
-    this.button(y, `ACHIEVEMENTS  (${progress.unlocked.size}/${ACHIEVEMENTS.length})`, 0x1e2233, 0x2b3040, () => this.showAchievements());
+    // Paired on one row: the stack has to stay inside the canvas, and neither of
+    // these needs the full width.
+    const half = 186;
+    const halfX = GAME_W / 2 - half / 2 - 4;
+    this.button(y, 'HOW TO PLAY', 0x1e2233, 0x2b3040, () => this.showHowToPlay(), half, halfX);
+    this.button(
+      y,
+      `★ ${progress.unlocked.size}/${ACHIEVEMENTS.length}`,
+      0x1e2233,
+      0x2b3040,
+      () => this.showAchievements(),
+      half,
+      GAME_W / 2 + half / 2 + 4,
+    );
     y += 62;
     this.button(y, 'LEADERBOARD', 0x1e2233, 0x2b3040, () => void this.showLeaderboard());
 
@@ -134,8 +147,8 @@ export class MenuScene extends Phaser.Scene {
     }
     this.add
       .text(GAME_W / 2, GAME_H - 26, IS_TOUCH
-        ? 'Tap a build slot then tap the map · ROTATE turns belts · SELL refunds 50% · tap a tower to upgrade · LOGI shows supply health'
-        : 'R rotate · drag paints belts · right-click sells · SPACE sends the wave · L logistics · F speed · P pause · M mute · ESC closes panels', {
+        ? 'New here? Tap HOW TO PLAY · tap a build slot then tap the map · tap a placed belt to turn it · SELL refunds 50%'
+        : 'New here? Read HOW TO PLAY · R rotate · drag paints belts · right-click sells · SPACE sends the wave · L logistics · F speed · P pause · M mute', {
         ...FONT, fontSize: '11px', color: '#8892a6',
       })
       .setOrigin(0.5);
@@ -170,13 +183,15 @@ export class MenuScene extends Phaser.Scene {
     fill: number,
     stroke: number,
     onClick: () => void,
+    width = 380,
+    cx = GAME_W / 2,
   ): { frame: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text } {
     const frame = this.add
-      .rectangle(GAME_W / 2, y, 380, 50, fill)
+      .rectangle(cx, y, width, 50, fill)
       .setStrokeStyle(2, stroke)
       .setInteractive({ useHandCursor: true });
     const label = this.add
-      .text(GAME_W / 2, y, text, { ...FONT, fontSize: '16px', fontStyle: 'bold', color: '#ffffff' })
+      .text(cx, y, text, { ...FONT, fontSize: width < 300 ? '14px' : '16px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
     frame.on('pointerover', () => frame.setFillStyle(fill + 0x0a0a14));
     frame.on('pointerout', () => frame.setFillStyle(fill));
@@ -261,6 +276,66 @@ export class MenuScene extends Phaser.Scene {
     });
     this.modal.push(frame, label);
     return label;
+  }
+
+  /**
+   * The one thing the game could not previously teach: that towers are fed by a
+   * factory, not by money. A four-line hint that faded after fourteen seconds
+   * was doing this job for a twelve-building palette.
+   */
+  private showHowToPlay(): void {
+    const H = 600;
+    const W = 1000;
+    this.openModal(H, W);
+    this.modalTitle('HOW TO PLAY', H);
+    const top = this.modalTop(H);
+    const left = GAME_W / 2 - W / 2 + 44;
+
+    const steps: [string, string][] = [
+      ['1.  MINE', 'Put a MINER on an orange ore tile. It digs one ore at a time and pushes it out the side it faces — press R before placing to turn it.'],
+      ['2.  BELT IT', 'Drag with BELT selected to paint a line. The belts follow your drag, corners included. Items ride the belt one per tile.'],
+      ['3.  MAKE AMMO', 'Point the belt into a PRESS (1 ore → 1 ammo). Other machines make other ammo: FORGE → shells, ASSEMBLER → piercing rounds (needs blue crystal too), CHILLER → coolant.'],
+      ['4.  FEED THE GUNS', 'Belt the finished ammo into a tower. A tower with no ammo turns grey and stops firing — that, not money, is what loses runs.'],
+      ['5.  SEND THE WAVE', 'Press SPACE when you are ready. Sending early pays a bonus that ticks down while you build. Kills and clears pay for the next expansion.'],
+    ];
+    let y = top + 84;
+    for (const [head, body] of steps) {
+      this.modal.push(
+        this.add.text(left, y, head, { ...FONT, fontSize: '15px', fontStyle: 'bold', color: '#ffe066' }).setDepth(12),
+        this.add
+          .text(left + 130, y, body, { ...FONT, fontSize: '12px', color: '#cdd6e4', wordWrap: { width: W - 200 }, lineSpacing: 3 })
+          .setDepth(12),
+      );
+      y += 72;
+    }
+
+    this.modal.push(
+      this.add
+        .text(left, y + 6, 'COUNTERS', { ...FONT, fontSize: '15px', fontStyle: 'bold', color: '#ffe066' })
+        .setDepth(12),
+      this.add
+        .text(
+          left + 130,
+          y + 6,
+          'ARMORED waves shrug off bullets — answer them with cannons or lancers.  SWIFT waves come fast and\n' +
+            'many — splash damage shines.  BOSS waves cost 5 lives if they get through.  A CRYO field deals no\n' +
+            'damage but slows everything at a choke point, which multiplies every gun covering it.',
+          { ...FONT, fontSize: '12px', color: '#cdd6e4', lineSpacing: 3 },
+        )
+        .setDepth(12),
+      this.add
+        .text(
+          GAME_W / 2,
+          top + H - 96,
+          IS_TOUCH
+            ? 'Tap a build slot, then tap the map · ROTATE turns it · tap a placed belt to turn it · SELL then tap to refund half · tap a tower to upgrade'
+            : 'R rotate (also turns whatever is under the cursor) · right-click sells · click a placed belt to turn it · click a tower to upgrade · L logistics · F speed · P pause',
+          { ...FONT, fontSize: '11px', color: '#8892a6', align: 'center' },
+        )
+        .setOrigin(0.5)
+        .setDepth(12),
+    );
+    this.modalClose(H);
   }
 
   // ---------- map picker & audio ----------

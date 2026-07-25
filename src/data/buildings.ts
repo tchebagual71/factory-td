@@ -200,7 +200,7 @@ export const UPGRADE_TREE: Record<
         desc: 'Huge damage & range',
         tiers: [
           { money: 400, ammo: TOWERS.tower.ammoCap, mult: { damage: 2.6, range: 1.45, fireRate: 1.12, bulletSpeed: 1.4 } },
-          { money: 900, ammo: TOWERS.tower.ammoCap, mult: { damage: 4.2, range: 1.7, fireRate: 1.12, bulletSpeed: 1.8 } },
+          { money: 1300, ammo: TOWERS.tower.ammoCap, mult: { damage: 5.5, range: 1.7, fireRate: 1.12, bulletSpeed: 1.8 } },
         ],
       },
       {
@@ -209,7 +209,7 @@ export const UPGRADE_TREE: Record<
         desc: 'Blistering fire rate',
         tiers: [
           { money: 400, ammo: TOWERS.tower.ammoCap, mult: { damage: 1.7, range: 1.12, fireRate: 1.8 } },
-          { money: 900, ammo: TOWERS.tower.ammoCap, mult: { damage: 1.9, range: 1.12, fireRate: 2.6 } },
+          { money: 1300, ammo: TOWERS.tower.ammoCap, mult: { damage: 2.5, range: 1.12, fireRate: 2.6 } },
         ],
       },
     ],
@@ -223,7 +223,7 @@ export const UPGRADE_TREE: Record<
         desc: 'Massive splash & damage',
         tiers: [
           { money: 500, ammo: TOWERS.cannon.ammoCap, mult: { damage: 2.4, range: 1.2, fireRate: 1.12, splash: 1.4 } },
-          { money: 1100, ammo: TOWERS.cannon.ammoCap, mult: { damage: 3.8, range: 1.3, fireRate: 1.12, splash: 1.8 } },
+          { money: 1500, ammo: TOWERS.cannon.ammoCap, mult: { damage: 4.9, range: 1.3, fireRate: 1.12, splash: 1.8 } },
         ],
       },
       {
@@ -232,7 +232,7 @@ export const UPGRADE_TREE: Record<
         desc: 'Rapid cheap shelling',
         tiers: [
           { money: 450, ammo: TOWERS.cannon.ammoCap, mult: { damage: 1.6, range: 1.12, fireRate: 1.7, splash: 1.15 } },
-          { money: 1000, ammo: TOWERS.cannon.ammoCap, mult: { damage: 1.8, range: 1.12, fireRate: 2.4, splash: 1.15 } },
+          { money: 1400, ammo: TOWERS.cannon.ammoCap, mult: { damage: 2.35, range: 1.12, fireRate: 2.4, splash: 1.15 } },
         ],
       },
     ],
@@ -246,7 +246,7 @@ export const UPGRADE_TREE: Record<
         desc: 'Devastating long-range lance',
         tiers: [
           { money: 550, ammo: TOWERS.lancer.ammoCap, mult: { damage: 2.5, range: 1.4, fireRate: 1.12, bulletSpeed: 1.3, pierce: 1.34 } },
-          { money: 1200, ammo: TOWERS.lancer.ammoCap, mult: { damage: 4.0, range: 1.6, fireRate: 1.12, bulletSpeed: 1.5, pierce: 1.67 } },
+          { money: 1650, ammo: TOWERS.lancer.ammoCap, mult: { damage: 5.2, range: 1.6, fireRate: 1.12, bulletSpeed: 1.5, pierce: 1.67 } },
         ],
       },
       {
@@ -255,7 +255,7 @@ export const UPGRADE_TREE: Record<
         desc: 'Rapid lances, deeper skewers',
         tiers: [
           { money: 500, ammo: TOWERS.lancer.ammoCap, mult: { damage: 1.7, range: 1.12, fireRate: 1.8, pierce: 1.67 } },
-          { money: 1100, ammo: TOWERS.lancer.ammoCap, mult: { damage: 1.9, range: 1.12, fireRate: 2.5, pierce: 2.34 } },
+          { money: 1500, ammo: TOWERS.lancer.ammoCap, mult: { damage: 2.5, range: 1.12, fireRate: 2.5, pierce: 2.34 } },
         ],
       },
     ],
@@ -269,7 +269,7 @@ export const UPGRADE_TREE: Record<
         desc: 'Near-frozen, long lasting',
         tiers: [
           { money: 420, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.15, fireRate: 1.15, slow: 0.62, slowDur: 1.7 } },
-          { money: 950, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.2, fireRate: 1.15, slow: 0.45, slowDur: 2.2 } },
+          { money: 1300, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.2, fireRate: 1.15, slow: 0.45, slowDur: 2.2 } },
         ],
       },
       {
@@ -279,7 +279,7 @@ export const UPGRADE_TREE: Record<
         // slow mults are cumulative vs BASE, so these must stay at or below mk2's 0.88
         tiers: [
           { money: 400, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.5, fireRate: 1.7, slow: 0.86, slowDur: 1.3 } },
-          { money: 900, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.85, fireRate: 2.3, slow: 0.84, slowDur: 1.4 } },
+          { money: 1250, ammo: TOWERS.cryo.ammoCap, mult: { damage: 1, range: 1.85, fireRate: 2.3, slow: 0.84, slowDur: 1.4 } },
         ],
       },
     ],

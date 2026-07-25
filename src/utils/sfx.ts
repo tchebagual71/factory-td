@@ -83,15 +83,34 @@ function blip(
   }
 }
 
+/**
+ * Voice budget for the ambient battle sounds. A dozen gatlings at ×3 speed ask
+ * for ~100 blips a second: that is a wall of noise, not feedback, and it piles
+ * up oscillator nodes for the GC. Each ambient sound declares a minimum gap and
+ * requests inside it are dropped, so the mix stays legible however big the
+ * factory gets. Player-initiated sounds (place, sell, error, wave, leak) are
+ * never throttled — those must answer every single input.
+ */
+const lastPlayed = new Map<string, number>();
+
+function gated(key: string, gapMs: number): boolean {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const prev = lastPlayed.get(key);
+  if (prev !== undefined && now - prev < gapMs) return false;
+  lastPlayed.set(key, now);
+  return true;
+}
+
 export const sfx = {
-  shoot: () => blip(760, 0.06, 'square', 0.025, 240),
-  hit: () => blip(200, 0.05, 'sawtooth', 0.04),
+  shoot: () => gated('shoot', 45) && blip(760, 0.06, 'square', 0.025, 240),
+  hit: () => gated('hit', 55) && blip(200, 0.05, 'sawtooth', 0.04),
   coin: () => {
+    if (!gated('coin', 70)) return;
     blip(988, 0.06, 'square', 0.05);
     setTimeout(() => blip(1319, 0.09, 'square', 0.05), 55);
   },
   /** cryo pulse: a soft downward sine puff, distinct from the percussive weapons */
-  chill: () => blip(880, 0.22, 'sine', 0.05, 330),
+  chill: () => gated('chill', 130) && blip(880, 0.22, 'sine', 0.05, 330),
   place: () => blip(523, 0.08, 'triangle', 0.09),
   sell: () => blip(392, 0.1, 'triangle', 0.08, 260),
   error: () => blip(140, 0.14, 'sawtooth', 0.07),
