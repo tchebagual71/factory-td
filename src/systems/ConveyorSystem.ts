@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import { BELT_SPEED, TILE } from '../config';
 import { isMachine, isTower, MACHINES, recipeNeeds, TOWERS, TUNNEL } from '../data/buildings';
+import { labAccepts, RESEARCH_VALUE } from '../data/research';
+import { GameState } from '../state/GameState';
 import { Building, Dir, DX, DY, ItemEnt, ItemType } from '../types';
 import { GridSystem } from './GridSystem';
 
@@ -28,7 +30,7 @@ export class ConveyorSystem {
   ) {}
 
   update(dt: number): void {
-    const step = BELT_SPEED * dt;
+    const step = BELT_SPEED * GameState.mods.beltSpeed * dt;
     for (let i = this.items.length - 1; i >= 0; i--) {
       const it = this.items[i];
       const tx = it.cx * TILE + TILE / 2;
@@ -106,24 +108,29 @@ export class ConveyorSystem {
       it.cy = ny;
       return true;
     }
-    // Machines accept only the raw inputs their recipe calls for, each with its own buffer
+    // Machines accept exactly the items their recipe calls for, buffered and
+    // capped per type. Past the press those inputs are manufactured goods, not
+    // raw ore, so this can no longer branch on the two resource kinds.
     if (isMachine(nb.type) && recipeNeeds(nb.type, it.type) > 0) {
-      const cap = MACHINES[nb.type].inputCap;
-      if (it.type === 'ore' && nb.inputOre < cap) {
-        nb.inputOre += 1;
-        this.consume(index);
-        this.pop(nb.sprite);
-        return true;
-      }
-      if (it.type === 'crystal' && nb.inputCrystal < cap) {
-        nb.inputCrystal += 1;
+      const held = nb.inputs[it.type] ?? 0;
+      if (held < MACHINES[nb.type].inputCap) {
+        nb.inputs[it.type] = held + 1;
         this.consume(index);
         this.pop(nb.sprite);
         return true;
       }
     }
+    // The Lab has no buffer and no output: finished goods go in and become
+    // research. Raw ore is refused, so research always costs you ammo.
+    if (nb.type === 'lab' && labAccepts(it.type)) {
+      GameState.addResearch(Math.max(1, Math.round(RESEARCH_VALUE[it.type]! * GameState.mods.researchValue)));
+      this.consume(index);
+      this.pop(nb.sprite);
+      return true;
+    }
     if (isTower(nb.type) && it.type === TOWERS[nb.type].ammoType && nb.ammo < TOWERS[nb.type].ammoCap) {
       nb.ammo += 1;
+      nb.fed += 1; // lifetime service record — gates this tower's upgrades
       this.consume(index);
       this.pop(nb.sprite);
       return true;

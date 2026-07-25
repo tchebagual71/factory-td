@@ -102,7 +102,7 @@ describe('producer stalls', () => {
   it('counts a crafting machine as busy even mid-cycle', () => {
     const asm = placeBuilding(grid, 'assembler', 7, 18, 0);
     asm.crafting = true;
-    asm.inputOre = MACHINES.assembler.oreIn;
+    asm.inputs.ammo = MACHINES.assembler.inputs.ammo!;
     logi.update(2);
     expect(asm.utilBusy).toBe(2);
     expect(asm.utilBlocked).toBe(0);

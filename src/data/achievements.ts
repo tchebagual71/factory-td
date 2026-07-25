@@ -17,7 +17,9 @@ export type StatKey =
   | 'moneyEarned'
   | 'multiKills'
   | 'skewers'
-  | 'tunnelsBuilt';
+  | 'tunnelsBuilt'
+  /** research cards taken across all runs */
+  | 'researchTaken';
 
 export type Stats = Record<StatKey, number>;
 
@@ -35,6 +37,7 @@ export function emptyStats(): Stats {
     multiKills: 0,
     skewers: 0,
     tunnelsBuilt: 0,
+    researchTaken: 0,
   };
 }
 

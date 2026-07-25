@@ -140,6 +140,22 @@ export class BootScene extends Phaser.Scene {
     g.generateTexture('chiller', 32, 32);
     g.clear();
 
+    // Lab: pale dome over a lit flask. No output notch — nothing ever leaves it.
+    g.fillStyle(0x2c2a44);
+    g.fillRoundedRect(2, 2, 28, 28, 5);
+    g.fillStyle(0x474170);
+    g.fillRoundedRect(4, 4, 24, 24, 4);
+    g.fillStyle(0x1a1830);
+    g.fillCircle(16, 15, 9);
+    g.fillStyle(0x7cf7c4);
+    g.fillTriangle(13, 21, 16, 8, 19, 21);
+    g.fillStyle(0xd8fff0);
+    g.fillCircle(16, 18, 2.5);
+    g.fillStyle(0xb18cff);
+    g.fillRect(6, 24, 20, 3);
+    g.generateTexture('lab', 32, 32);
+    g.clear();
+
     // Tower base (barrel is a separate rotating sprite)
     g.fillStyle(0x232936);
     g.fillCircle(16, 16, 14);

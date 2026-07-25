@@ -1,8 +1,11 @@
 import { BuildingType, ItemType, PathId } from '../types';
+import { Mods, NO_MODS } from './mods';
 
 export const BELT = { cost: 5 };
 export const SPLITTER = { cost: 20 };
 export const TUNNEL = { cost: 15, reach: 4 }; // exit must be ≤ reach tiles ahead, same facing
+/** Consumes finished goods for research. Has no output, so it needs no facing. */
+export const LAB = { cost: 200 };
 
 /** One miner building, two resources: the tile it stands on decides what it digs and how fast. */
 export const MINER = {
@@ -15,12 +18,14 @@ export function minerCycle(resource: 'ore' | 'crystal'): number {
   return resource === 'crystal' ? MINER.crystalCycle : MINER.cycle;
 }
 
-/** Crafting machines: oreIn ore (+ crystalIn crystal) -> outputPer output items per cycle. */
+/** What one craft cycle consumes, by item type. Absent = not accepted. */
+export type Recipe = Partial<Record<ItemType, number>>;
+
+/** Crafting machines: `inputs` per cycle -> outputPer output items per cycle. */
 export interface MachineStats {
   cost: number;
   cycle: number;
-  oreIn: number;
-  crystalIn: number;
+  inputs: Recipe;
   /** per input type */
   inputCap: number;
   outputCap: number;
@@ -31,20 +36,75 @@ export interface MachineStats {
 
 export type MachineType = 'press' | 'forge' | 'assembler' | 'chiller';
 
+/**
+ * The production chain. Only the press eats raw ore; everything else is built
+ * from the ammo it makes, so `ore → ammo → {shell, piercing, coolant}`.
+ *
+ * That single intermediate is what turns four independent converters into a
+ * factory: presses are a contested backbone, splitters have a real job routing
+ * ammo between the guns and the deeper lines, and a press shortage cascades.
+ *
+ * Ore cost per output is unchanged from the flat-graph version (see `oreCost`)
+ * — the topology moved, the difficulty curve did not.
+ */
 export const MACHINES: Record<MachineType, MachineStats> = {
-  press: { cost: 60, cycle: 1.0, oreIn: 1, crystalIn: 0, inputCap: 5, outputCap: 3, outputPer: 1, output: 'ammo' },
-  forge: { cost: 100, cycle: 2.5, oreIn: 2, crystalIn: 0, inputCap: 8, outputCap: 2, outputPer: 1, output: 'shell' },
-  assembler: { cost: 170, cycle: 3.0, oreIn: 2, crystalIn: 1, inputCap: 6, outputCap: 2, outputPer: 1, output: 'piercing' },
-  // Deliberately the cheapest line in the game: two coolant per ore, so a
-  // single miner can keep several cryo towers pulsing.
-  chiller: { cost: 70, cycle: 1.4, oreIn: 1, crystalIn: 0, inputCap: 5, outputCap: 4, outputPer: 2, output: 'coolant' },
+  press: { cost: 60, cycle: 1.0, inputs: { ore: 1 }, inputCap: 5, outputCap: 3, outputPer: 1, output: 'ammo' },
+  forge: { cost: 100, cycle: 2.5, inputs: { ammo: 2 }, inputCap: 8, outputCap: 2, outputPer: 1, output: 'shell' },
+  assembler: { cost: 170, cycle: 3.0, inputs: { ammo: 2, crystal: 1 }, inputCap: 6, outputCap: 2, outputPer: 1, output: 'piercing' },
+  // Deliberately the cheapest line in the game: two coolant per ammo, so a
+  // single supply line can keep several cryo towers pulsing.
+  chiller: { cost: 70, cycle: 1.4, inputs: { ammo: 1 }, inputCap: 5, outputCap: 4, outputPer: 2, output: 'coolant' },
 };
+
+/** Raw resources — the leaves of the recipe graph, dug rather than crafted. */
+export const RAW_ITEMS: readonly ItemType[] = ['ore', 'crystal'];
+
+/** Every input this machine's recipe consumes, as [item, count] pairs. */
+export function recipeInputs(type: MachineType): [ItemType, number][] {
+  return Object.entries(MACHINES[type].inputs) as [ItemType, number][];
+}
 
 /** How much of `item` this machine's recipe wants (0 = it won't accept it). */
 export function recipeNeeds(type: MachineType, item: ItemType): number {
-  if (item === 'ore') return MACHINES[type].oreIn;
-  if (item === 'crystal') return MACHINES[type].crystalIn;
-  return 0;
+  return MACHINES[type].inputs[item] ?? 0;
+}
+
+/** The machine that produces `item`, or null if it is raw (or nothing makes it). */
+export function producerOf(item: ItemType): MachineType | null {
+  const found = (Object.keys(MACHINES) as MachineType[]).find((m) => MACHINES[m].output === item);
+  return found ?? null;
+}
+
+/**
+ * Raw ore consumed per unit of `item`, resolving the whole chain. Crystal is a
+ * separate raw input and is deliberately NOT counted here — the balance
+ * invariants that use this reason about ore throughput, and crystal scarcity is
+ * measured on its own.
+ *
+ * Depth-limited rather than cycle-detecting: `recipeGraphIsAcyclic` is the test
+ * that guarantees termination, and this stays a simple recursion.
+ */
+export function oreCost(item: ItemType, depth = 0): number {
+  if (item === 'ore') return 1;
+  if (item === 'crystal' || depth > 8) return 0;
+  const maker = producerOf(item);
+  if (!maker) return 0;
+  const stats = MACHINES[maker];
+  let sum = 0;
+  for (const [input, n] of recipeInputs(maker)) sum += oreCost(input, depth + 1) * n;
+  return sum / stats.outputPer;
+}
+
+/** Crystal consumed per unit of `item` — the mirror of `oreCost` for the scarce input. */
+export function crystalCost(item: ItemType, depth = 0): number {
+  if (item === 'crystal') return 1;
+  if (item === 'ore' || depth > 8) return 0;
+  const maker = producerOf(item);
+  if (!maker) return 0;
+  const stats = MACHINES[maker];
+  let sum = 0;
+  for (const [input, n] of recipeInputs(maker)) sum += crystalCost(input, depth + 1) * n;
+  return sum / stats.outputPer;
 }
 
 export interface TowerStats {
@@ -187,6 +247,24 @@ export interface UpgradePath {
 
 export const MAX_MK = 4;
 
+/**
+ * Magazines' worth of ammo a tower must have been *delivered* before each tier
+ * unlocks, indexed by the mark being bought. Scaled by magazine size so a
+ * lancer (6 rounds, slow) and a gun (15 rounds, fast) are asked for a
+ * comparable amount of service rather than the same raw count.
+ *
+ * The money and the full magazine are what an upgrade *costs*; this is what
+ * makes it *earned*. A tier-1 tower that has been well supplied all run is
+ * ready long before one bought thirty seconds ago with spare cash — which is
+ * exactly the behaviour the whole game is about. Tune here.
+ */
+const FED_MAGAZINES: readonly number[] = [0, 0, 2.5, 8, 18];
+
+/** Rounds delivered into a tower before it may be upgraded to `targetMk`. */
+export function fedRequired(type: TowerType, targetMk: number): number {
+  return Math.round(TOWERS[type].ammoCap * (FED_MAGAZINES[targetMk] ?? 0));
+}
+
 export const UPGRADE_TREE: Record<
   TowerType,
   { mk2: UpgradeTier; paths: [UpgradePath, UpgradePath] }
@@ -321,12 +399,37 @@ function applyMult(base: TowerStats, m: StatMult): TowerStats {
  * mutates TOWERS; combat must always read through here. A mk≥3 tower with no
  * path (shouldn't happen) defensively clamps to Mk2 stats.
  */
-export function effStats(type: TowerType, mk: number, path: PathId | null = null): TowerStats {
+export function effStats(
+  type: TowerType,
+  mk: number,
+  path: PathId | null = null,
+  mods: Mods = NO_MODS,
+): TowerStats {
   const base = TOWERS[type];
   const m = Math.min(mk, MAX_MK);
-  if (m <= 1) return { ...base };
-  if (m === 2 || !path) return applyMult(base, UPGRADE_TREE[type].mk2.mult);
-  return applyMult(base, pathOf(type, path).tiers[(m - 3) as 0 | 1].mult);
+  const tier =
+    m <= 1 ? { ...base } : m === 2 || !path ? applyMult(base, UPGRADE_TREE[type].mk2.mult) : applyMult(base, pathOf(type, path).tiers[(m - 3) as 0 | 1].mult);
+  return mods === NO_MODS ? tier : applyMods(tier, mods);
+}
+
+/**
+ * Fold run-scoped research modifiers over a tier's stats. Separate from
+ * `applyMult` because upgrade tiers multiply the BASE table while these
+ * multiply whatever the tier produced — and because keeping it here means
+ * combat never has to know research exists.
+ *
+ * Support towers keep damage 0 whatever the run has researched; `isSupport`
+ * and the tests depend on that staying true.
+ */
+function applyMods(s: TowerStats, m: Mods): TowerStats {
+  return {
+    ...s,
+    damage: s.damage === 0 ? 0 : Math.round(s.damage * m.damage),
+    range: Math.round(s.range * m.range),
+    fireRate: s.fireRate * m.fireRate,
+    pierce: s.pierce > 0 ? s.pierce + m.pierce : 0,
+    slowFactor: s.slowFactor < 1 ? Math.max(MIN_SLOW_FACTOR, s.slowFactor * m.slow) : s.slowFactor,
+  };
 }
 
 export function isMachine(type: BuildingType): type is MachineType {
@@ -344,10 +447,11 @@ export const BUILD_INFO: {
   { type: 'splitter', name: 'Splitter', cost: SPLITTER.cost, hotkey: '2', desc: 'Splits a belt between straight/left/right outputs.' },
   { type: 'tunnel', name: 'Tunnel', cost: TUNNEL.cost, hotkey: '3', desc: 'Items dive underground and surface at the next tunnel facing the same way (≤4 tiles) — crosses anything, even the enemy path.' },
   { type: 'miner', name: 'Miner', cost: MINER.cost, hotkey: '4', desc: 'Place on ore or crystal. Digs whatever it stands on — crystal comes out slower.' },
-  { type: 'press', name: 'Press', cost: MACHINES.press.cost, hotkey: '5', desc: '1 ore → 1 ammo. Feeds gun towers.' },
-  { type: 'forge', name: 'Forge', cost: MACHINES.forge.cost, hotkey: '6', desc: '2 ore → 1 shell. Feeds cannons.' },
-  { type: 'assembler', name: 'Assembler', cost: MACHINES.assembler.cost, hotkey: '7', desc: '2 ore + 1 crystal → 1 piercing round. Needs BOTH inputs belted in. Feeds lancers.' },
-  { type: 'chiller', name: 'Chiller', cost: MACHINES.chiller.cost, hotkey: '8', desc: '1 ore → 2 coolant. The cheapest line in the game. Feeds cryo towers.' },
+  { type: 'press', name: 'Press', cost: MACHINES.press.cost, hotkey: '5', desc: '1 ore → 1 ammo. Feeds gun towers — and every other machine downstream.' },
+  { type: 'forge', name: 'Forge', cost: MACHINES.forge.cost, hotkey: '6', desc: '2 ammo → 1 shell. Feeds cannons. Belt ammo in from a press.' },
+  { type: 'assembler', name: 'Assembler', cost: MACHINES.assembler.cost, hotkey: '7', desc: '2 ammo + 1 crystal → 1 piercing round. Needs BOTH inputs belted in. Feeds lancers.' },
+  { type: 'chiller', name: 'Chiller', cost: MACHINES.chiller.cost, hotkey: '8', desc: '1 ammo → 2 coolant. The cheapest line in the game. Feeds cryo towers.' },
+  { type: 'lab', name: 'Lab', cost: LAB.cost, hotkey: 'X', desc: 'Belt FINISHED rounds in and it converts them to research — every level lets you pick one of three permanent upgrades. Raw ore is worthless to it: research always costs you ammo.' },
   { type: 'tower', name: 'Gun', cost: TOWERS.tower.cost, hotkey: '9', desc: 'Fast single-target. Eats ammo. Click a placed tower to upgrade it.' },
   { type: 'cannon', name: 'Cannon', cost: TOWERS.cannon.cost, hotkey: '0', desc: 'Slow splash damage. Eats shells. Armored enemies resist bullets but not shells.' },
   { type: 'lancer', name: 'Lancer', cost: TOWERS.lancer.cost, hotkey: 'C', desc: 'Fires a lance straight down the path, skewering up to 3 enemies. Ignores armor. Eats piercing rounds.' },

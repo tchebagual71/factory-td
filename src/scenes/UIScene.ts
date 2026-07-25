@@ -3,6 +3,7 @@ import { GAME_H, GAME_W, IS_TOUCH, PLAYFIELD_H, ROOMY_UI, UI_H } from '../config
 import { AchievementDef } from '../data/achievements';
 import { BUILD_INFO } from '../data/buildings';
 import { activeMap, prospectCost, prospectKind } from '../data/map';
+import { ResearchCard, researchForLevel } from '../data/research';
 import { earlySendBonus, waveDef, WAVE_KIND_LABEL } from '../data/waves';
 import { pushAchievements } from '../services/cloud';
 import { ammoDeficits, ammoTotal, GameState, WaveTally } from '../state/GameState';
@@ -35,6 +36,10 @@ export class UIScene extends Phaser.Scene {
   private toastActive = false;
   private menuConfirm = false;
   private surveyArmed = false;
+  private researchBar!: Phaser.GameObjects.Rectangle;
+  private researchText!: Phaser.GameObjects.Text;
+  private cardLayer: Phaser.GameObjects.GameObject[] = [];
+  private cardKeyHandlers: { key: string; handler: () => void }[] = [];
   private summaryCard: Phaser.GameObjects.Container | null = null;
 
   constructor() {
@@ -79,6 +84,25 @@ export class UIScene extends Phaser.Scene {
     this.mapText = this.add
       .text(582, 23, '', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#6b7689' })
       .setOrigin(0, 0.5);
+
+    // ----- research chip (top strip, right of the map name) -----
+    // Progress toward the next level-up draw. It only appears once a Lab has
+    // actually banked something, so a player who never builds one is not
+    // nagged by an empty bar.
+    const researchBox = this.add.rectangle(700, 8, 236, 30, 0x1a1830, 0.9).setOrigin(0).setStrokeStyle(2, 0x474170).setVisible(false);
+    this.researchBar = this.add.rectangle(703, 31, 0, 4, 0x7cf7c4).setOrigin(0, 1).setVisible(false);
+    this.researchText = this.add
+      .text(706, 12, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#7cf7c4' })
+      .setVisible(false);
+    GameState.events.on('research', (points: number, level: number) => {
+      const need = researchForLevel(level + 1);
+      const show = level > 0 || points > 0;
+      researchBox.setVisible(show);
+      this.researchBar.setVisible(show);
+      this.researchText.setVisible(show);
+      this.researchText.setText(`⚗ RESEARCH  Lv${level}   ${points}/${need}`);
+      this.researchBar.width = Math.round(230 * Phaser.Math.Clamp(points / need, 0, 1));
+    });
 
     // ----- pause overlay -----
     const pauseDim = this.add.rectangle(0, 0, GAME_W, PLAYFIELD_H, 0x000000, 0.45).setOrigin(0).setDepth(40).setVisible(false);
@@ -128,6 +152,10 @@ export class UIScene extends Phaser.Scene {
     ev.on('phase', () => this.refreshWaveBtn());
     ev.on('selected', (t: BuildingType | null) => this.refreshSelection(t));
     ev.on('gameover', () => {
+      // A pending draw would otherwise sit on top of the game-over buttons and
+      // keep the sim frozen with no way out.
+      this.clearCards();
+      GameState.finishDraw();
       const prevBest = progress.stats.bestWave;
       progress.recordMax('bestWave', GameState.wave);
       this.showGameOver(prevBest > 0 && GameState.wave > prevBest);
@@ -144,6 +172,7 @@ export class UIScene extends Phaser.Scene {
     });
 
     ev.on('wavesummary', (wave: number, tally: WaveTally) => this.showWaveSummary(wave, tally));
+    ev.on('cards', (cards: ResearchCard[], level: number) => this.showCardDraw(cards, level));
 
     this.refreshStats();
     this.refreshWaveBtn();
@@ -366,6 +395,97 @@ export class UIScene extends Phaser.Scene {
         if (this.summaryCard === c) this.summaryCard = null;
       },
     });
+  }
+
+  /**
+   * The level-up draw: three cards, pick one. The sim is already frozen by
+   * GameState when this fires, so the player can read the board behind the
+   * cards and decide with full information.
+   *
+   * Deliberately interrupts mid-wave rather than queueing to the build phase —
+   * the choice landing at the moment your factory earned it is the whole point.
+   */
+  private showCardDraw(cards: ResearchCard[], level: number): void {
+    this.clearCards();
+    const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.72).setOrigin(0).setDepth(70).setInteractive();
+    const title = this.add
+      .text(GAME_W / 2, 96, `RESEARCH  ·  LEVEL ${level}`, {
+        ...FONT, fontSize: '30px', fontStyle: 'bold', color: '#7cf7c4', stroke: '#000', strokeThickness: 6,
+      })
+      .setOrigin(0.5)
+      .setDepth(71);
+    const sub = this.add
+      .text(GAME_W / 2, 132, 'Your factory earned this. Choose one — it lasts the rest of the run.', {
+        ...FONT, fontSize: '13px', color: '#cdd6e4',
+      })
+      .setOrigin(0.5)
+      .setDepth(71);
+    this.cardLayer.push(dim, title, sub);
+
+    const W = 280;
+    const H = 210;
+    const gap = 28;
+    const total = cards.length * W + (cards.length - 1) * gap;
+    cards.forEach((card, i) => {
+      const x = GAME_W / 2 - total / 2 + i * (W + gap);
+      const y = 190;
+      const frame = this.add
+        .rectangle(x, y, W, H, 0x1a1830)
+        .setOrigin(0)
+        .setStrokeStyle(3, 0x474170)
+        .setDepth(71)
+        .setInteractive({ useHandCursor: true });
+      const name = this.add
+        .text(x + W / 2, y + 34, card.name, { ...FONT, fontSize: '16px', fontStyle: 'bold', color: '#7cf7c4', align: 'center', wordWrap: { width: W - 30 } })
+        .setOrigin(0.5, 0)
+        .setDepth(72);
+      const desc = this.add
+        .text(x + W / 2, y + 92, card.desc, {
+          ...FONT, fontSize: '13px', color: '#cdd6e4', align: 'center', wordWrap: { width: W - 40 }, lineSpacing: 4,
+        })
+        .setOrigin(0.5, 0)
+        .setDepth(72);
+      const stacks = GameState.taken[card.id] ?? 0;
+      const held = this.add
+        .text(x + W / 2, y + H - 26, stacks > 0 ? `already taken ×${stacks}` : '', {
+          ...FONT, fontSize: '11px', color: '#8892a6',
+        })
+        .setOrigin(0.5)
+        .setDepth(72);
+      const key = this.add
+        .text(x + 10, y + 8, `[${i + 1}]`, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#8892a6' }).setDepth(72);
+
+      frame.on('pointerover', () => frame.setFillStyle(0x272348).setStrokeStyle(3, 0x7cf7c4));
+      frame.on('pointerout', () => frame.setFillStyle(0x1a1830).setStrokeStyle(3, 0x474170));
+      frame.on('pointerdown', () => this.pickCard(card.id));
+
+      // stagger the entrance so three cards read as a deal, not a popup
+      frame.setAlpha(0);
+      [name, desc, held, key].forEach((o) => o.setAlpha(0));
+      this.tweens.add({ targets: [frame, name, desc, held, key], alpha: 1, duration: 180, delay: 70 * i });
+      this.cardLayer.push(frame, name, desc, held, key);
+    });
+
+    // number keys pick too — the mouse should never be mandatory
+    const keys = ['ONE', 'TWO', 'THREE'];
+    cards.forEach((card, i) => {
+      const handler = () => this.pickCard(card.id);
+      this.input.keyboard?.once(`keydown-${keys[i]}`, handler);
+      this.cardKeyHandlers.push({ key: `keydown-${keys[i]}`, handler });
+    });
+    sfx.waveClear();
+  }
+
+  private pickCard(id: string): void {
+    this.clearCards(); // destroy first: GameScene may immediately deal the next level
+    GameState.events.emit('ui:pickcard', id);
+  }
+
+  private clearCards(): void {
+    this.cardLayer.forEach((o) => o.destroy());
+    this.cardLayer = [];
+    for (const { key, handler } of this.cardKeyHandlers) this.input.keyboard?.off(key, handler);
+    this.cardKeyHandlers = [];
   }
 
   private refreshStats(pop = false): void {

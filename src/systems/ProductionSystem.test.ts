@@ -74,19 +74,21 @@ describe('assembler (tier-2 recipe)', () => {
   it('waits until BOTH inputs are stocked, then consumes each in recipe amounts', () => {
     const out = placeBuilding(grid, 'belt', 8, 18, 0);
     const asm = placeBuilding(grid, 'assembler', 7, 18, 0);
-    const { oreIn, crystalIn, cycle } = MACHINES.assembler;
+    const { inputs, cycle } = MACHINES.assembler;
+    const ammoIn = inputs.ammo!;
+    const crystalIn = inputs.crystal!;
 
-    asm.inputOre = oreIn;
+    asm.inputs.ammo = ammoIn;
     prod.update(cycle + 0.01);
     expect(asm.crafting).toBe(false); // no crystal — nothing starts
     expect(out.item).toBeNull();
-    expect(asm.inputOre).toBe(oreIn);
+    expect(asm.inputs.ammo).toBe(ammoIn);
 
-    asm.inputCrystal = crystalIn;
+    asm.inputs.crystal = crystalIn;
     prod.update(0.01);
     expect(asm.crafting).toBe(true);
-    expect(asm.inputOre).toBe(0);
-    expect(asm.inputCrystal).toBe(0);
+    expect(asm.inputs.ammo).toBe(0);
+    expect(asm.inputs.crystal).toBe(0);
 
     prod.update(cycle);
     expect(asm.outputBuf).toBe(1);
@@ -97,7 +99,7 @@ describe('assembler (tier-2 recipe)', () => {
   it('banks a chiller’s whole batch, not one item per cycle', () => {
     const out = placeBuilding(grid, 'belt', 8, 18, 0);
     const chiller = placeBuilding(grid, 'chiller', 7, 18, 0);
-    chiller.inputOre = MACHINES.chiller.oreIn;
+    chiller.inputs.ammo = MACHINES.chiller.inputs.ammo!;
 
     prod.update(MACHINES.chiller.cycle + 0.01);
     expect(chiller.outputBuf).toBe(MACHINES.chiller.outputPer);
@@ -110,12 +112,12 @@ describe('assembler (tier-2 recipe)', () => {
   it('leaves a press unaffected by crystal it never asked for', () => {
     const out = placeBuilding(grid, 'belt', 8, 18, 0);
     const press = placeBuilding(grid, 'press', 7, 18, 0);
-    press.inputOre = MACHINES.press.oreIn;
-    press.inputCrystal = 3; // stray stock must not gate or be eaten
+    press.inputs.ore = MACHINES.press.inputs.ore!;
+    press.inputs.crystal = 3; // stray stock must not gate or be eaten
 
     prod.update(MACHINES.press.cycle + 0.02);
     prod.update(0.01);
     expect(out.item?.type).toBe('ammo');
-    expect(press.inputCrystal).toBe(3);
+    expect(press.inputs.crystal).toBe(3);
   });
 });

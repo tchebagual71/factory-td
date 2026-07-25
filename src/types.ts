@@ -16,6 +16,7 @@ export type BuildingType =
   | 'forge'
   | 'assembler'
   | 'chiller'
+  | 'lab'
   | 'tower'
   | 'cannon'
   | 'lancer'
@@ -58,14 +59,22 @@ export interface Building {
   timer: number;
   /** press: currently mid-craft */
   crafting: boolean;
-  /** crafting machines: raw ore waiting to be consumed */
-  inputOre: number;
-  /** crafting machines: raw crystal waiting to be consumed (assembler only) */
-  inputCrystal: number;
+  /**
+   * Crafting machines: items waiting to be consumed, buffered per type and
+   * capped per type. Keyed by ItemType because recipes are no longer limited to
+   * the two raw resources — everything past the press eats ammo.
+   */
+  inputs: Partial<Record<ItemType, number>>;
   /** crafting machines: finished goods waiting for belt space */
   outputBuf: number;
   /** tower: loaded ammo */
   ammo: number;
+  /**
+   * tower: rounds the factory has delivered here over the whole run. Only belt
+   * deliveries count — the pre-loaded magazine is free — so this measures how
+   * well supplied the tower has actually been, and gates its upgrades.
+   */
+  fed: number;
   /** tower: seconds until next shot allowed */
   cooldown: number;
   /** tower: upgrade mark (1 to MAX_MK) */

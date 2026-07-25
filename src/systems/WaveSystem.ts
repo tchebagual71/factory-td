@@ -25,7 +25,7 @@ export class WaveSystem {
   constructor(private scene: GameScene) {}
 
   start(): void {
-    if (GameState.phase !== 'build' || GameState.gameOver || GameState.paused) return;
+    if (GameState.phase !== 'build' || GameState.gameOver || GameState.frozen) return;
     this.def = waveDef(GameState.wave);
     this.toSpawn = this.def.count;
     this.spawnTimer = 0;
@@ -205,7 +205,7 @@ export class WaveSystem {
   }
 
   private completeWave(): void {
-    const bonus = waveClearBonus(GameState.wave);
+    const bonus = Math.round(waveClearBonus(GameState.wave) * GameState.mods.clearCash);
     GameState.addMoney(bonus);
     this.scene.bigText(`WAVE ${GameState.wave} CLEAR  +$${bonus}`);
     sfx.waveClear();

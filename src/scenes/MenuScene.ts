@@ -284,7 +284,7 @@ export class MenuScene extends Phaser.Scene {
    * was doing this job for a twelve-building palette.
    */
   private showHowToPlay(): void {
-    const H = 600;
+    const H = 660;
     const W = 1000;
     this.openModal(H, W);
     this.modalTitle('HOW TO PLAY', H);
@@ -294,9 +294,10 @@ export class MenuScene extends Phaser.Scene {
     const steps: [string, string][] = [
       ['1.  MINE', 'Put a MINER on an orange ore tile. It digs one ore at a time and pushes it out the side it faces — press R before placing to turn it.'],
       ['2.  BELT IT', 'Drag with BELT selected to paint a line. The belts follow your drag, corners included. Items ride the belt one per tile.'],
-      ['3.  MAKE AMMO', 'Point the belt into a PRESS (1 ore → 1 ammo). Other machines make other ammo: FORGE → shells, ASSEMBLER → piercing rounds (needs blue crystal too), CHILLER → coolant.'],
-      ['4.  FEED THE GUNS', 'Belt the finished ammo into a tower. A tower with no ammo turns grey and stops firing — that, not money, is what loses runs.'],
+      ['3.  MAKE AMMO', 'Point the belt into a PRESS (1 ore → 1 ammo). Ammo feeds guns directly — and it is what every deeper machine runs on: FORGE (2 ammo → shell), ASSEMBLER (2 ammo + 1 crystal → piercing round), CHILLER (1 ammo → 2 coolant).'],
+      ['4.  FEED THE GUNS', 'Belt finished rounds into a tower. A tower with no ammo turns grey and stops firing — that, not money, is what loses runs. Use SPLITTERS to serve your guns and your deeper machines from one press line.'],
       ['5.  SEND THE WAVE', 'Press SPACE when you are ready. Sending early pays a bonus that ticks down while you build. Kills and clears pay for the next expansion.'],
+      ['6.  RESEARCH', 'Build a LAB and belt finished rounds into it instead of into a gun. It converts them to research, and every level lets you pick one of three permanent upgrades. That is the standing decision of the whole game: arm the guns now, or buy power for the rest of the run.'],
     ];
     let y = top + 84;
     for (const [head, body] of steps) {

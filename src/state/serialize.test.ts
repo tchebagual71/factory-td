@@ -27,7 +27,7 @@ describe('captureRun → validateSave round trip', () => {
   it('survives JSON with buildings, counters, and items intact', () => {
     const belt = makeBuilding('belt', 5, 5, 1);
     const press = makeBuilding('press', 6, 5);
-    press.inputOre = 3;
+    press.inputs.ore = 3;
     press.outputBuf = 1;
     press.crafting = true;
     press.timer = 0.4;
@@ -43,14 +43,14 @@ describe('captureRun → validateSave round trip', () => {
     expect(back!.auto).toBe(true);
     expect(back!.buildings).toHaveLength(3);
     const p = back!.buildings[1];
-    expect(p).toMatchObject({ t: 'press', inOre: 3, outBuf: 1, crafting: true });
+    expect(p).toMatchObject({ t: 'press', in: { ore: 3 }, outBuf: 1, crafting: true });
     expect(back!.items[0]).toMatchObject({ t: 'ammo', cx: 5, cy: 5 });
   });
 
   it('preserves both assembler input buffers and a lancer specialization', () => {
     const asm = makeBuilding('assembler', 9, 9);
-    asm.inputOre = 4;
-    asm.inputCrystal = 2;
+    asm.inputs.ammo = 4;
+    asm.inputs.crystal = 2;
     const lancer = makeBuilding('lancer', 9, 10);
     lancer.mk = 4;
     lancer.path = 'volley';
@@ -59,7 +59,7 @@ describe('captureRun → validateSave round trip', () => {
     const save = captureRun([asm, lancer], [], SNAPSHOT);
     const back = validateSave(JSON.parse(JSON.stringify(save)))!;
     expect(back).not.toBeNull();
-    expect(back.buildings[0]).toMatchObject({ t: 'assembler', inOre: 4, inCry: 2 });
+    expect(back.buildings[0]).toMatchObject({ t: 'assembler', in: { ammo: 4, crystal: 2 } });
     expect(back.buildings[1]).toMatchObject({ t: 'lancer', mk: 4, path: 'volley', ammo: 6 });
   });
 
@@ -115,6 +115,59 @@ describe('captureRun → validateSave round trip', () => {
   });
 });
 
+describe('v1 → v2 migration', () => {
+  /** A v1 save as it was actually written, back when machines ate raw ore. */
+  function v1(buildings: Record<string, unknown>[]): Record<string, unknown> {
+    return {
+      v: 1,
+      savedAt: Date.now(),
+      money: 500,
+      lives: 20,
+      wave: 6,
+      speed: 1,
+      auto: false,
+      buildings,
+      items: [],
+    };
+  }
+
+  it('still loads a v1 run and stamps it as v2', () => {
+    const back = validateSave(v1([{ t: 'belt', x: 3, y: 3, d: 0, inv: 5 }]));
+    expect(back).not.toBeNull();
+    expect(back!.v).toBe(2);
+    expect(back!.wave).toBe(6);
+  });
+
+  it('drops machine input buffers, because the new recipes would never consume them', () => {
+    // A v1 forge banked raw ore. The v2 forge eats ammo, so carrying that ore
+    // across would restore a machine that can never craft again.
+    const back = validateSave(
+      v1([
+        { t: 'forge', x: 4, y: 4, d: 0, inv: 100, inOre: 6 },
+        { t: 'assembler', x: 5, y: 4, d: 0, inv: 170, inOre: 4, inCry: 2 },
+      ]),
+    )!;
+    for (const b of back.buildings) {
+      expect(b.inOre, `${b.t} kept stale ore`).toBeUndefined();
+      expect(b.inCry, `${b.t} kept stale crystal`).toBeUndefined();
+      expect(b.in ?? {}).toEqual({});
+    }
+  });
+
+  it('keeps everything else about the building — a migration must never cost you a structure', () => {
+    const back = validateSave(
+      v1([{ t: 'tower', x: 7, y: 7, d: 2, inv: 640, mk: 4, path: 'sniper', ammo: 11, inOre: 3 }]),
+    )!;
+    expect(back.buildings).toHaveLength(1);
+    expect(back.buildings[0]).toMatchObject({ t: 'tower', x: 7, y: 7, d: 2, inv: 640, mk: 4, path: 'sniper', ammo: 11 });
+  });
+
+  it('still rejects a v1 save that was corrupt to begin with', () => {
+    expect(validateSave(v1([{ t: 'nuke', x: 1, y: 1, d: 0, inv: 5 }]))).toBeNull();
+    expect(validateSave({ ...v1([]), lives: -3 })).toBeNull();
+  });
+});
+
 describe('validateSave rejects corrupt input', () => {
   function base(): SaveV1 {
     return captureRun([makeBuilding('belt', 1, 1)], [], SNAPSHOT);
@@ -124,7 +177,9 @@ describe('validateSave rejects corrupt input', () => {
     ['null', null],
     ['a string', 'hi'],
     ['empty object', {}],
-    ['wrong version', { ...base(), v: 2 }],
+    ['a version from the future', { ...base(), v: 99 }],
+    ['a bogus input buffer key', { ...base(), buildings: [{ t: 'press', x: 1, y: 1, d: 0, inv: 60, in: { gold: 2 } }] }],
+    ['a negative input buffer', { ...base(), buildings: [{ t: 'press', x: 1, y: 1, d: 0, inv: 60, in: { ore: -1 } }] }],
     ['NaN money', { ...base(), money: NaN }],
     ['negative lives', { ...base(), lives: -1 }],
     ['zero wave', { ...base(), wave: 0 }],

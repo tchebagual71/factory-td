@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { START_LIVES, START_MONEY } from '../config';
+import { emptyMods, Mods } from '../data/mods';
+import { modsFrom, researchForLevel } from '../data/research';
 import type { ItemType } from '../types';
 
 export type Phase = 'build' | 'wave';
@@ -84,6 +86,59 @@ class GameStateClass {
   /** surveys bought this run — each one costs more than the last */
   surveys = 0;
 
+  // ---------- research ----------
+  /** research banked toward the next level */
+  research = 0;
+  researchLevel = 0;
+  /** levels earned but not yet spent on a card; the draw shows one per level */
+  pendingLevels = 0;
+  /** how many times each research card has been taken (mods are derived from this) */
+  taken: Record<string, number> = {};
+  mods: Mods = emptyMods();
+  /** true while a level-up draw is on screen — freezes the sim without being a user pause */
+  awaitingCard = false;
+
+  /** The sim is stopped, for any reason. Player pause and the card draw both qualify. */
+  get frozen(): boolean {
+    return this.paused || this.awaitingCard;
+  }
+
+  /**
+   * Bank research from a lab delivery. Rolls over as many levels as the deposit
+   * covers — a big shell dump can be worth more than one — and announces them
+   * so the draw can be presented one at a time.
+   */
+  addResearch(n: number): void {
+    if (n <= 0) return;
+    this.research += n;
+    let gained = 0;
+    while (this.research >= researchForLevel(this.researchLevel + 1)) {
+      this.research -= researchForLevel(this.researchLevel + 1);
+      this.researchLevel += 1;
+      gained += 1;
+    }
+    this.events.emit('research', this.research, this.researchLevel);
+    if (gained > 0) {
+      this.pendingLevels += gained;
+      this.awaitingCard = true;
+      this.events.emit('levelup');
+    }
+  }
+
+  /** Record a taken card and recompute the run's modifiers from scratch. */
+  takeCard(id: string): void {
+    this.taken[id] = (this.taken[id] ?? 0) + 1;
+    this.mods = modsFrom(this.taken);
+    this.pendingLevels = Math.max(0, this.pendingLevels - 1);
+    this.events.emit('mods', this.mods);
+  }
+
+  /** Card draw finished (or was skipped because the pool ran dry) — resume the sim. */
+  finishDraw(): void {
+    this.awaitingCard = false;
+    this.pendingLevels = 0;
+  }
+
   toggleOverlay(): void {
     this.overlay = !this.overlay;
     this.events.emit('overlay', this.overlay);
@@ -95,7 +150,7 @@ class GameStateClass {
   }
 
   togglePause(): void {
-    if (this.gameOver) return;
+    if (this.gameOver || this.awaitingCard) return; // a pending card draw owns the freeze
     this.paused = !this.paused;
     this.events.emit('paused', this.paused);
   }
@@ -122,6 +177,13 @@ class GameStateClass {
     this.money -= n;
     this.events.emit('money', this.money);
     return true;
+  }
+
+  /** Research can hand lives back. Never resurrects a finished run. */
+  gainLives(n: number): void {
+    if (this.gameOver || n <= 0) return;
+    this.lives += n;
+    this.events.emit('lives', this.lives);
   }
 
   loseLives(n: number): void {
@@ -152,7 +214,16 @@ class GameStateClass {
     speed: 1 | 2 | 3;
     auto: boolean;
     surveys?: number;
+    research?: number;
+    researchLevel?: number;
+    taken?: Record<string, number>;
   }): void {
+    this.research = s.research ?? 0;
+    this.researchLevel = s.researchLevel ?? 0;
+    this.taken = { ...(s.taken ?? {}) };
+    this.mods = modsFrom(this.taken);
+    this.pendingLevels = 0;
+    this.awaitingCard = false;
     this.money = s.money;
     this.lives = s.lives;
     this.wave = s.wave;
@@ -164,6 +235,8 @@ class GameStateClass {
     this.tally = emptyTally();
     this.surveys = s.surveys ?? 0;
     this.events.emit('surveys', this.surveys);
+    this.events.emit('research', this.research, this.researchLevel);
+    this.events.emit('mods', this.mods);
     this.events.emit('money', this.money);
     this.events.emit('lives', this.lives);
     this.events.emit('wave', this.wave);
@@ -185,9 +258,17 @@ class GameStateClass {
     this.tally = emptyTally();
     this.overlay = false;
     this.surveys = 0;
+    this.research = 0;
+    this.researchLevel = 0;
+    this.pendingLevels = 0;
+    this.awaitingCard = false;
+    this.taken = {};
+    this.mods = emptyMods();
     this.events.emit('paused', false);
     this.events.emit('overlay', false);
     this.events.emit('surveys', 0);
+    this.events.emit('research', 0, 0);
+    this.events.emit('mods', this.mods);
     this.events.emit('money', this.money);
     this.events.emit('lives', this.lives);
     this.events.emit('wave', this.wave);

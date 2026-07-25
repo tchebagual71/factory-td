@@ -25,10 +25,15 @@ export interface SavedBuilding {
   mk?: number;
   path?: PathId | null;
   ammo?: number;
+  /** rounds delivered into this tower over the run (gates its upgrades) */
+  fed?: number;
   timer?: number;
   crafting?: boolean;
+  /** buffered machine inputs, keyed by item type (v2+) */
+  in?: Partial<Record<ItemType, number>>;
+  /** v1 only: buffered ore. Read for migration, never written. */
   inOre?: number;
-  /** buffered crystal (assembler); absent in saves written before crystal existed */
+  /** v1 only: buffered crystal. Read for migration, never written. */
   inCry?: number;
   outBuf?: number;
   outIdx?: number;
@@ -66,8 +71,10 @@ export interface SavedPatch {
   k: 'ore' | 'crystal';
 }
 
+export const SAVE_VERSION = 2;
+
 export interface SaveV1 {
-  v: 1;
+  v: typeof SAVE_VERSION;
   savedAt: number;
   money: number;
   lives: number;
@@ -78,6 +85,11 @@ export interface SaveV1 {
   items: SavedItem[];
   /** surveys bought (drives the next survey's price); absent in pre-prospecting saves */
   surveys?: number;
+  /** research banked toward the next level */
+  research?: number;
+  researchLevel?: number;
+  /** research cards taken, by id -> count. Mods are recomputed from this on load. */
+  taken?: Record<string, number>;
   patches?: SavedPatch[];
   tiles?: SavedTile[];
   /** layout id; absent (or unknown) falls back to the default map */
@@ -91,6 +103,9 @@ interface Snapshot {
   speed: 1 | 2 | 3;
   auto: boolean;
   surveys?: number;
+  research?: number;
+  researchLevel?: number;
+  taken?: Record<string, number>;
 }
 
 /** What the grid contributes to a save: revealed patches + every changed tile. */
@@ -107,7 +122,7 @@ export function captureRun(
   terrain: TerrainSnapshot = { patches: [], tiles: [] },
 ): SaveV1 {
   return {
-    v: 1,
+    v: SAVE_VERSION,
     savedAt: Date.now(),
     money: gs.money,
     lives: gs.lives,
@@ -115,6 +130,9 @@ export function captureRun(
     speed: gs.speed,
     auto: gs.auto,
     surveys: gs.surveys ?? 0,
+    research: gs.research ?? 0,
+    researchLevel: gs.researchLevel ?? 0,
+    taken: { ...(gs.taken ?? {}) },
     patches: terrain.patches,
     tiles: terrain.tiles,
     map: terrain.map,
@@ -123,10 +141,11 @@ export function captureRun(
       if (b.mk > 1) sb.mk = b.mk;
       if (b.path) sb.path = b.path;
       if (b.ammo > 0) sb.ammo = b.ammo;
+      if (b.fed > 0) sb.fed = b.fed;
       if (b.timer > 0) sb.timer = b.timer;
       if (b.crafting) sb.crafting = true;
-      if (b.inputOre > 0) sb.inOre = b.inputOre;
-      if (b.inputCrystal > 0) sb.inCry = b.inputCrystal;
+      const buffered = Object.entries(b.inputs).filter(([, n]) => (n ?? 0) > 0);
+      if (buffered.length > 0) sb.in = Object.fromEntries(buffered);
       if (b.outputBuf > 0) sb.outBuf = b.outputBuf;
       if (b.outIdx > 0) sb.outIdx = b.outIdx;
       return sb;
@@ -148,6 +167,7 @@ const BUILDING_TYPES: readonly BuildingType[] = [
   'forge',
   'assembler',
   'chiller',
+  'lab',
   'tower',
   'cannon',
   'lancer',
@@ -181,7 +201,8 @@ function inGrid(x: unknown, y: unknown): boolean {
 export function validateSave(raw: unknown): SaveV1 | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const s = raw as Record<string, unknown>;
-  if (s.v !== 1) return null;
+  const legacy = s.v === 1;
+  if (!legacy && s.v !== SAVE_VERSION) return null;
   if (!isFiniteNum(s.savedAt) || !isFiniteNum(s.money) || s.money < 0) return null;
   if (!isFiniteNum(s.lives) || s.lives < 1) return null;
   if (!isFiniteNum(s.wave) || s.wave < 1 || s.wave > 10000) return null;
@@ -198,10 +219,17 @@ export function validateSave(raw: unknown): SaveV1 | null {
     if (!isFiniteNum(b.inv) || b.inv < 0) return null;
     if (b.mk !== undefined && (!isFiniteNum(b.mk) || b.mk < 1 || b.mk > MAX_MK)) return null;
     if (b.path !== undefined && b.path !== null && !PATH_IDS.includes(b.path as PathId)) return null;
-    for (const key of ['ammo', 'timer', 'inOre', 'inCry', 'outBuf', 'outIdx'] as const) {
+    for (const key of ['ammo', 'fed', 'timer', 'inOre', 'inCry', 'outBuf', 'outIdx'] as const) {
       if (b[key] !== undefined && (!isFiniteNum(b[key]) || (b[key] as number) < 0)) return null;
     }
     if (b.crafting !== undefined && typeof b.crafting !== 'boolean') return null;
+    if (b.in !== undefined) {
+      if (typeof b.in !== 'object' || b.in === null || Array.isArray(b.in)) return null;
+      for (const [item, n] of Object.entries(b.in as Record<string, unknown>)) {
+        if (!ITEM_TYPES.includes(item as ItemType)) return null;
+        if (!isFiniteNum(n) || n < 0) return null;
+      }
+    }
     const cell = `${b.x},${b.y}`;
     if (seen.has(cell)) return null; // two buildings on one tile
     seen.add(cell);
@@ -216,6 +244,17 @@ export function validateSave(raw: unknown): SaveV1 | null {
   }
 
   if (s.surveys !== undefined && (!isFiniteNum(s.surveys) || s.surveys < 0 || s.surveys > 1000)) return null;
+  for (const key of ['research', 'researchLevel'] as const) {
+    if (s[key] !== undefined && (!isFiniteNum(s[key]) || (s[key] as number) < 0)) return null;
+  }
+  if (s.taken !== undefined) {
+    if (typeof s.taken !== 'object' || s.taken === null || Array.isArray(s.taken)) return null;
+    for (const [id, n] of Object.entries(s.taken as Record<string, unknown>)) {
+      // ids come back as object keys, so they must be shape-checked like any other untrusted string
+      if (!/^[a-z0-9_]{1,40}$/.test(id)) return null;
+      if (!isFiniteNum(n) || n < 0 || n > 999) return null;
+    }
+  }
   // An unknown map id is tolerated (falls back to the default) but a non-string is corruption
   if (s.map !== undefined && typeof s.map !== 'string') return null;
 
@@ -240,5 +279,20 @@ export function validateSave(raw: unknown): SaveV1 | null {
     }
   }
 
-  return raw as SaveV1;
+  return legacy ? migrateV1(s as unknown as SaveV1) : (raw as SaveV1);
+}
+
+/**
+ * v1 → v2. Recipes changed shape: past the press, machines now consume ammo
+ * rather than raw ore, so a v1 machine's buffered `inOre`/`inCry` is stock its
+ * new recipe will never accept — the machine would restore permanently stalled.
+ * Dropping the buffers costs the player a few seconds of production and never
+ * a building, which is the cheapest correct migration.
+ */
+function migrateV1(s: SaveV1): SaveV1 {
+  return {
+    ...s,
+    v: SAVE_VERSION,
+    buildings: s.buildings.map(({ inOre: _o, inCry: _c, ...b }) => b),
+  };
 }

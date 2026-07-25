@@ -60,6 +60,8 @@ src/
     auth.ts             # Google OAuth / magic link / anonymous + linking, profile upsert
     cloud.ts            # fire-and-forget save/score/achievement sync, leaderboard fetch, syncOnSignIn
   data/
+    mods.ts             # pure: run-scoped modifier bag granted by research (shared by buildings.ts + research.ts)
+    research.ts         # pure: lab item values, XP curve, weighted card pool, seeded draw, modsFrom
     map.ts              # fixed path waypoints + ore/crystal patch rectangles
     buildings.ts        # building stats & costs; UPGRADE_TREE (branching Mk paths) + effStats
     waves.ts            # wave scaling formulas (hp/count/speed/bounty, boss every 5th)
@@ -95,6 +97,23 @@ src/
   - **Input**: a belt whose direction points into a machine inserts its item (ore → press intake, ammo → tower magazine)
 - Belt drag-painting follows the drag: `beltPaint.beltRun` fills every cell between pointer samples and aims each belt at the next, so a stroke that turns a corner lays a working corner. Clicking a placed belt/machine (or `R` over it) turns it in place
 
+### Production chain (`ore → ammo → everything`)
+
+Only the **press** eats raw ore. Forge (2 ammo → shell), assembler (2 ammo + 1 crystal → piercing) and chiller (1 ammo → 2 coolant) all run on the ammo it makes. That single intermediate is what turns four independent converters into a factory: presses are a contested backbone, **splitters finally have a real job** routing ammo between the guns and the deeper lines, and a press shortage cascades.
+
+- Ore cost per output is **identical** to the old flat graph (`oreCost`/`crystalCost` in `buildings.ts` resolve the chain and are test-pinned at ammo 1 / shell 2 / piercing 2 / coolant 0.5). The topology moved; the difficulty curve did not.
+- Recipes are a `Partial<Record<ItemType, number>>` map (`MachineStats.inputs`), and machines buffer **per item type** (`Building.inputs`). `recipeNeeds(machine, item)` remains the single answer to "does this machine accept this item", used by belt intake and the tests alike.
+- Onboarding is unaffected: the first line a player builds is still `ore → press → gun`, two buildings. Depth is opt-in per tower type.
+
+### Research: the Lab and the level-up draw
+
+A **Lab** consumes finished goods (never raw ore — research must always cost you ammo) and banks research. Each level pauses the game and offers **one of three** cards, which stack as run-scoped `Mods`.
+
+- `data/research.ts` is pure: item values, `researchForLevel` (the single dial for how often the draw interrupts), a weighted `CARDS` pool with `needs()` predicates so no card is offered with nothing to improve, and a seeded `draw()`.
+- `modsFrom(taken)` rebuilds the whole modifier bag from the taken-card counts, so mods are never applied incrementally and the save only stores counts. It clamps past each card's `max`, so a tampered save can't stack forever.
+- Mods reach the sim only where stats are already resolved: `effStats(type, mk, path, mods)` for combat (still pure — `NO_MODS` is the default so every existing caller is unchanged), belt speed in `ConveyorSystem`, cycle times in `ProductionSystem`, clear payout in `WaveSystem`.
+- `GameState.awaitingCard` freezes the sim without being a user pause: `GameState.frozen` is what systems check, `togglePause` refuses while a draw is pending, and `select()`/`tryUpgrade()` ignore hotkeys so "1" picks a card rather than also selecting a belt behind the modal.
+
 ### Ammo economy (the genre bridge)
 - Towers have finite magazines (`ammoCap`), consume 1 ammo per shot, and are placed pre-loaded (`startAmmo`) so wave 1 flows before a factory exists
 - Production tree (stats in `data/buildings.ts`):
@@ -108,6 +127,7 @@ src/
 - **Splitter**: belt node that round-robins items between straight/left/right outputs (skipping blocked ones); merging needs no special building — any belts pointing into the same cell merge
 - **Tunnel**: items dive underground and surface at the next tunnel with the same facing within 4 tiles (rendered at low alpha in transit); crosses the enemy path, other belts, anything. An unpaired tunnel degrades to plain-belt behavior
 - **Cryo field / coolant** (support): the only tower with `damage: 0` — `isSupport()` and `DAMAGE_TOWERS` exist so combat and the tests treat it as a multiplier rather than a weapon. It pulses only when something is in range (an idle field never drains the tank), chilling every enemy to `slowFactor` of normal speed for `slowDur`. `WaveSystem.chill` refuses to let a weaker pulse overwrite a stronger one and keeps the longer timer, so overlapping fields cooperate; `MIN_SLOW_FACTOR` guarantees enemies always keep walking. More seconds under fire is more damage *without* more ammo — that's the choke-point payoff
+- **Upgrades are earned, not just bought**: every tier costs money *and* the tower's full magazine *and* a threshold of `Building.fed` — rounds the factory has actually delivered there over the run (`fedRequired`, scaled by magazine size so a slow 6-round lancer isn't punished next to a fast 15-round gun). A full magazine alone rewarded patience; this rewards logistics
 - **Tower upgrades (branching tree)**: click a tower → upgrade panel. Mk1→Mk2 is shared; at Mk3 the tower picks a specialization path (guns: **Sniper** dmg/range vs **Gatling** fire rate; cannons: **Siege** splash/dmg vs **Flak** rate; lancers: **Railgun** dmg/range vs **Volley** rate/pierce) with a Mk4 tier each (`UPGRADE_TREE`/`effStats(type, mk, path)` in `data/buildings.ts`, `MAX_MK = 4`). Each tier costs money + the tower's *full loaded magazine* — the factory arms the upgrade. Combat always reads `effStats`, never `TOWERS` directly; `Building.path` holds the choice; pips are path-colored
 - **Achievements & meta progression**: lifetime stats tracked in `state/progress.ts` (hooks in WaveSystem/CombatSystem/GameScene), defs + pure unlock logic in `data/achievements.ts` (15 defs). Unlocks grant capped perks (≤ $100 total starting-money bonus, test-enforced) applied to fresh runs; toasts slide in top-right (UIScene)
 - **Resistances**: armored enemies take 25% damage from bullets, 100% from shells and piercing rounds (`resistMult`) — the wave preview + tower mix read is the core strategic decision
@@ -130,7 +150,8 @@ src/
 - Flow: Boot → Menu → (launch ui, start game). `GameScene.create()` calls `GameState.reset()` and re-registers listeners — blanket `.off()` only for events it alone consumes, targeted `.off(event, fn)` with stable arrow-property refs for shared events (`phase`, `gameover`). **UIScene sleeps, never stops** (menu button) so its plain `.on` listeners register exactly once
 
 ### Save/resume & cloud sync
-- `state/serialize.ts` is the contract: pure `captureRun`/`validateSave`, versioned (`v: 1`); saves happen only in build phase so enemies/bullets never serialize. Never trust stored/cloud JSON — everything re-validates through `validateSave`
+- `state/serialize.ts` is the contract: pure `captureRun`/`validateSave`, versioned (`SAVE_VERSION`, currently **2**); saves happen only in build phase so enemies/bullets never serialize. Never trust stored/cloud JSON — everything re-validates through `validateSave`
+- **v1 saves still load.** `migrateV1` drops machine input buffers, because a v1 forge banked raw ore its v2 recipe will never consume — carrying it across would restore a permanently stalled machine. That is exactly the "restores *wrong* rather than incomplete" case that justifies a version bump instead of an optional field
 - New state is added as *optional* fields (`mk`, `path`, `inCry`, `surveys`, `patches`, `tiles`, …) so older saves keep validating and restore with sensible defaults; bump `v` only for a change that would make an old save restore *wrong* rather than incomplete
 - The map is now run state too: `patches` (prospected) and `tiles` (only deposits whose reserves changed) round-trip through the save, and terrain is restored *before* buildings so placements are validated against the map as it actually was
 - Autosave: on every return to build phase (wave-clear checkpoint), debounced 1s on build edits, `beforeunload` flush; run slot cleared on game over. `GameScene.ready` guards against saving during `create()` event bursts
@@ -188,6 +209,13 @@ Ranked for fun/strategy impact. Mark `[x]` with a one-line note when shipped.
 16. `[x]` **How to play** — shipped: a five-step modal on the title screen. Onboarding was a four-line hint that faded after 14s
 17. `[x]` **Per-ammo-type wave report** — shipped: the report card judges supply per ammo type and names the starved line. Grand totals let a chiller's 2-coolant-per-ore hide a starving gun line behind a healthy-looking sum
 18. `[x]` **Presentation** — shipped: belts run a scrolling chevron loop (all belts share one animation, started on a random frame), enemies rotate to their heading and carry a nose, guns recoil and flash from a fixed pool, swift enemies went teal so they can't be mistaken for the near-white frost tint
+20. `[x]` **Full production chain** — shipped: everything past the press runs on ammo, at unchanged ore cost per output. See "Production chain" above. Save format → v2 with a v1 migration
+21. `[x]` **Lab + research + level-up draw** — shipped: belt finished goods into a Lab, pick 1 of 3 stacking upgrades per level. See "Research" above
+22. `[ ]` **Blueprints: the permanent between-runs tree** — planned: a second currency earned per run, spent in a MenuScene tree (`state/meta.ts` + pure `data/metaTree.ts`, localStorage-only; cloud sync would need a `jsonb` column on `profiles`)
+23. `[ ]` **Achievements expansion + collection screen** — planned: tiered families past the current 15, browsable grid with progress. No DB migration needed (ids only have to match `^[a-z0-9_]{1,40}$`)
+24. `[ ]` **In-run mission cards** — planned: three active objectives with immediate payouts, reusing `UIScene.pumpToasts`
+25. `[ ]` **End-of-run score card** — planned: pure `data/score.ts` grading wave/throughput/efficiency, shown on the game-over overlay
+
 19. `[x]` **Bugs & perf** — shipped: the upgrade panel no longer closes itself when clicked (Phaser fires GameObject handlers *and then* the scene-level `pointerdown` regardless — guard the panel bounds); the build ghost updates while paused; ambient SFX are voice-gated and floating text is capped, so a 100-kill swift wave at ×3 speed no longer asks for ~100 oscillators a second; costly buildings confirm before selling
 
 ## Deployment

@@ -90,7 +90,7 @@ export class CombatSystem {
   update(dt: number): void {
     for (const b of this.grid.buildings) {
       if (!isTower(b.type)) continue;
-      const stats = effStats(b.type, b.mk, b.path);
+      const stats = effStats(b.type, b.mk, b.path, GameState.mods);
       const cx = b.x * TILE + TILE / 2;
       const cy = b.y * TILE + TILE / 2;
 

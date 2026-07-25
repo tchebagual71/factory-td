@@ -1,16 +1,24 @@
 import { describe, expect, it } from 'vitest';
+import { ItemType } from '../types';
 import {
   BUILD_INFO,
   costOf,
+  crystalCost,
   DAMAGE_TOWERS,
   effStats,
+  fedRequired,
   isSupport,
   MACHINES,
+  MachineType,
   MAX_MK,
   MIN_SLOW_FACTOR,
   MINER,
   minerCycle,
   nextTier,
+  oreCost,
+  producerOf,
+  RAW_ITEMS,
+  recipeInputs,
   recipeNeeds,
   TOWER_TYPES,
   TOWERS,
@@ -184,6 +192,37 @@ describe('nextTier', () => {
   });
 });
 
+describe('fedRequired — upgrades are earned by being supplied', () => {
+  it('asks for nothing at mk1 and rises with every tier', () => {
+    for (const type of TOWER_TYPES) {
+      expect(fedRequired(type, 1)).toBe(0);
+      for (let mk = 3; mk <= MAX_MK; mk++) {
+        expect(fedRequired(type, mk), `${type} mk${mk}`).toBeGreaterThan(fedRequired(type, mk - 1));
+      }
+    }
+  });
+
+  it('scales with magazine size, so a slow small-magazine tower is not punished', () => {
+    // a lancer holds 6 and fires slowly; a gun holds 15 and fires fast. Asking
+    // both for the same raw round count would make the lancer unupgradable.
+    for (let mk = 2; mk <= MAX_MK; mk++) {
+      const perMag = TOWER_TYPES.map((t) => fedRequired(t, mk) / TOWERS[t].ammoCap);
+      for (const r of perMag) expect(r).toBeCloseTo(perMag[0], 1);
+    }
+  });
+
+  it('stays reachable: the first tier costs only a few magazines', () => {
+    for (const type of TOWER_TYPES) {
+      expect(fedRequired(type, 2)).toBeLessThanOrEqual(TOWERS[type].ammoCap * 4);
+      expect(fedRequired(type, 2)).toBeGreaterThan(TOWERS[type].ammoCap);
+    }
+  });
+
+  it('never demands anything past the last mark', () => {
+    for (const type of TOWER_TYPES) expect(fedRequired(type, MAX_MK + 1)).toBe(0);
+  });
+});
+
 describe('upgrade costs', () => {
   it('every tier demands the tower’s full loaded magazine — the factory arms the upgrade', () => {
     for (const type of TOWER_TYPES) {
@@ -216,26 +255,74 @@ describe('build costs', () => {
   });
 });
 
+describe('recipe graph', () => {
+  it('is acyclic and grounded: every input is raw or made by some machine', () => {
+    const resolve = (item: ItemType, seen: ItemType[]): void => {
+      expect(seen, `cycle reaching ${item} via ${seen.join('→')}`).not.toContain(item);
+      if (RAW_ITEMS.includes(item)) return;
+      const maker = producerOf(item);
+      expect(maker, `nothing produces ${item}`).not.toBeNull();
+      for (const [input] of recipeInputs(maker!)) resolve(input, [...seen, item]);
+    };
+    for (const m of Object.keys(MACHINES) as MachineType[]) resolve(MACHINES[m].output, []);
+  });
+
+  it('never lets a machine consume what it produces', () => {
+    for (const m of Object.keys(MACHINES) as MachineType[]) {
+      expect(recipeNeeds(m, MACHINES[m].output), `${m} feeds itself`).toBe(0);
+    }
+  });
+
+  it('accepts exactly its declared inputs and nothing else', () => {
+    const ALL: ItemType[] = ['ore', 'crystal', 'ammo', 'shell', 'piercing', 'coolant'];
+    for (const m of Object.keys(MACHINES) as MachineType[]) {
+      const declared = new Set(recipeInputs(m).map(([item]) => item));
+      expect(declared.size, `${m} has no inputs`).toBeGreaterThan(0);
+      for (const item of ALL) {
+        expect(recipeNeeds(m, item) > 0, `${m} vs ${item}`).toBe(declared.has(item));
+      }
+    }
+  });
+
+  it('runs everything past the press on ammo — the press is the shared backbone', () => {
+    expect(recipeNeeds('press', 'ore')).toBeGreaterThan(0);
+    for (const m of ['forge', 'assembler', 'chiller'] as const) {
+      expect(recipeNeeds(m, 'ammo'), `${m} should consume ammo`).toBeGreaterThan(0);
+      expect(recipeNeeds(m, 'ore'), `${m} should no longer eat raw ore`).toBe(0);
+    }
+  });
+});
+
 describe('economy invariants (CLAUDE.md balance intent)', () => {
   it('one miner+press line sustains roughly half a continuously-firing gun tower', () => {
     // Line throughput is miner-limited: ore/sec into a press that needs 1 ore per ammo.
     const oreRate = 1 / MINER.cycle;
     const pressRate = 1 / MACHINES.press.cycle;
-    const ammoRate = Math.min(oreRate, pressRate / MACHINES.press.oreIn);
+    const ammoRate = Math.min(oreRate, pressRate / recipeNeeds('press', 'ore'));
     const gunDemand = effStats('tower', 1).fireRate;
     const ratio = ammoRate / gunDemand;
     expect(ratio).toBeGreaterThan(0.4);
     expect(ratio).toBeLessThan(0.7);
   });
 
+  it('the chain did not change what anything costs in raw ore', () => {
+    // Deepening the graph was a topology change, not a balance change — these
+    // are the flat-graph costs and the verified difficulty curve assumes them.
+    expect(oreCost('ammo')).toBe(1);
+    expect(oreCost('shell')).toBe(2);
+    expect(oreCost('piercing')).toBe(2);
+    expect(oreCost('coolant')).toBe(0.5);
+    expect(crystalCost('piercing')).toBe(1);
+  });
+
   it('shells cost twice the ore of bullets', () => {
-    expect(MACHINES.forge.oreIn).toBe(2 * MACHINES.press.oreIn);
+    expect(oreCost('shell')).toBe(2 * oreCost('ammo'));
   });
 
   it('an assembler line sustains roughly half a lancer, same pressure as press→gun', () => {
-    // Two miners feed one assembler; the scarcer input caps the line.
-    const oreRate = Math.min(1 / MINER.cycle / MACHINES.assembler.oreIn, 1 / MACHINES.assembler.cycle);
-    const crystalRate = Math.min(1 / minerCycle('crystal') / MACHINES.assembler.crystalIn, 1 / MACHINES.assembler.cycle);
+    // Ore and crystal both have to arrive; the scarcer input caps the line.
+    const oreRate = Math.min(1 / MINER.cycle / oreCost('piercing'), 1 / MACHINES.assembler.cycle);
+    const crystalRate = Math.min(1 / minerCycle('crystal') / crystalCost('piercing'), 1 / MACHINES.assembler.cycle);
     const roundRate = Math.min(oreRate, crystalRate);
     const ratio = roundRate / effStats('lancer', 1).fireRate;
     expect(ratio).toBeGreaterThan(0.3);
@@ -244,33 +331,31 @@ describe('economy invariants (CLAUDE.md balance intent)', () => {
 
   it('crystal is the scarce input: slower to mine and needed by exactly one recipe', () => {
     expect(minerCycle('crystal')).toBeGreaterThan(minerCycle('ore'));
-    const crystalEaters = (['press', 'forge', 'assembler'] as const).filter((m) => recipeNeeds(m, 'crystal') > 0);
+    const crystalEaters = (Object.keys(MACHINES) as MachineType[]).filter((m) => recipeNeeds(m, 'crystal') > 0);
     expect(crystalEaters).toEqual(['assembler']);
   });
 
-  it('machines only ever accept raw resources, never finished goods', () => {
-    for (const m of ['press', 'forge', 'assembler'] as const) {
-      for (const finished of ['ammo', 'shell', 'piercing'] as const) {
-        expect(recipeNeeds(m, finished), `${m} must reject ${finished}`).toBe(0);
-      }
-      expect(recipeNeeds(m, 'ore') + recipeNeeds(m, 'crystal')).toBeGreaterThan(0);
-    }
-  });
-
   it('coolant is the cheapest consumable per ore — that is what makes the cryo field sustainable', () => {
-    const orePer = (m: 'press' | 'forge' | 'assembler' | 'chiller') => MACHINES[m].oreIn / MACHINES[m].outputPer;
-    expect(orePer('chiller')).toBeLessThan(orePer('press'));
-    expect(orePer('chiller')).toBeLessThan(orePer('forge'));
+    expect(oreCost('coolant')).toBeLessThan(oreCost('ammo'));
+    expect(oreCost('coolant')).toBeLessThan(oreCost('shell'));
     expect(MACHINES.chiller.outputPer).toBeGreaterThan(1);
   });
 
   it('one miner + chiller keeps several cryo towers pulsing', () => {
     const coolantRate = Math.min(
-      (1 / MINER.cycle / MACHINES.chiller.oreIn) * MACHINES.chiller.outputPer,
+      1 / MINER.cycle / oreCost('coolant'),
       (1 / MACHINES.chiller.cycle) * MACHINES.chiller.outputPer,
     );
     const towersSupported = coolantRate / effStats('cryo', 1).fireRate;
     expect(towersSupported).toBeGreaterThan(1.5);
+  });
+
+  it('one press can serve more than one downstream machine — the backbone is not a bottleneck by construction', () => {
+    const pressRate = 1 / MACHINES.press.cycle; // ammo/sec from a fully fed press
+    for (const m of ['forge', 'assembler', 'chiller'] as const) {
+      const demand = recipeNeeds(m, 'ammo') / MACHINES[m].cycle;
+      expect(pressRate / demand, `${m} demand vs one press`).toBeGreaterThan(1);
+    }
   });
 
   it('every tower type has an ammo item some machine actually produces', () => {

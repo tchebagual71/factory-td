@@ -129,40 +129,57 @@ describe('machine and tower intake', () => {
     const press = placeBuilding(grid, 'press', 8, 18, 0);
     addItem(conv, belt, 'ore');
     conv.update(DT);
-    expect(press.inputOre).toBe(1);
+    expect(press.inputs.ore).toBe(1);
     expect(conv.items).toHaveLength(0); // consumed, not moved
 
-    press.inputOre = MACHINES.press.inputCap;
+    press.inputs.ore = MACHINES.press.inputCap;
     const stuck = addItem(conv, belt, 'ore');
     conv.update(DT);
     expect(belt.item).toBe(stuck);
-    expect(press.inputOre).toBe(MACHINES.press.inputCap);
+    expect(press.inputs.ore).toBe(MACHINES.press.inputCap);
   });
 
-  it('only accepts ore into machines — finished goods stay on the belt', () => {
+  it('refuses items no recipe of that machine calls for — they stay on the belt', () => {
     const belt = placeBuilding(grid, 'belt', 7, 18, 0);
-    placeBuilding(grid, 'press', 8, 18, 0);
+    const press = placeBuilding(grid, 'press', 8, 18, 0);
+    // the press eats raw ore only; its own output must never flow back in
     const ammo = addItem(conv, belt, 'ammo');
     conv.update(DT);
     expect(belt.item).toBe(ammo);
+    expect(press.inputs.ammo ?? 0).toBe(0);
   });
 
-  it('feeds an assembler both raw inputs into separate buffers', () => {
+  it('feeds a downstream machine its manufactured input — the chain past the press runs on ammo', () => {
+    const belt = placeBuilding(grid, 'belt', 7, 18, 0);
+    const forge = placeBuilding(grid, 'forge', 8, 18, 0);
+    addItem(conv, belt, 'ammo');
+    conv.update(DT);
+    expect(forge.inputs.ammo).toBe(1);
+    expect(conv.items).toHaveLength(0);
+
+    // raw ore is no longer a forge input and must be left alone
+    const ore = addItem(conv, belt, 'ore');
+    conv.update(DT);
+    expect(belt.item).toBe(ore);
+    expect(forge.inputs.ore ?? 0).toBe(0);
+  });
+
+  it('feeds an assembler both inputs into separate buffers', () => {
     const belt = placeBuilding(grid, 'belt', 7, 18, 0);
     const asm = placeBuilding(grid, 'assembler', 8, 18, 0);
-    addItem(conv, belt, 'ore');
+    addItem(conv, belt, 'ammo');
     conv.update(DT);
     addItem(conv, belt, 'crystal');
     conv.update(DT);
-    expect(asm.inputOre).toBe(1);
-    expect(asm.inputCrystal).toBe(1);
+    expect(asm.inputs.ammo).toBe(1);
+    expect(asm.inputs.crystal).toBe(1);
     expect(conv.items).toHaveLength(0);
 
-    asm.inputCrystal = MACHINES.assembler.inputCap;
+    asm.inputs.crystal = MACHINES.assembler.inputCap;
     const stuck = addItem(conv, belt, 'crystal');
     conv.update(DT);
-    expect(belt.item).toBe(stuck); // crystal buffer full — the ore buffer must not absorb it
-    expect(asm.inputOre).toBe(1);
+    expect(belt.item).toBe(stuck); // crystal buffer full — the ammo buffer must not absorb it
+    expect(asm.inputs.ammo).toBe(1);
   });
 
   it('refuses crystal at machines whose recipe does not call for it', () => {
@@ -171,8 +188,8 @@ describe('machine and tower intake', () => {
     const crystal = addItem(conv, belt, 'crystal');
     conv.update(DT);
     expect(belt.item).toBe(crystal);
-    expect(press.inputOre).toBe(0);
-    expect(press.inputCrystal).toBe(0);
+    expect(press.inputs.ore ?? 0).toBe(0);
+    expect(press.inputs.crystal ?? 0).toBe(0);
   });
 
   it('loads cryo towers with coolant, and never lets coolant into a gun', () => {
@@ -188,6 +205,30 @@ describe('machine and tower intake', () => {
     conv.update(DT);
     expect(gunBelt.item).toBe(coolant);
     expect(gun.ammo).toBe(0);
+  });
+
+  it('records every delivered round against the tower, but not rounds it refused', () => {
+    const belt = placeBuilding(grid, 'belt', 7, 18, 0);
+    const gun = placeBuilding(grid, 'tower', 8, 18, 0);
+    addItem(conv, belt, 'ammo');
+    conv.update(DT);
+    addItem(conv, belt, 'ammo');
+    conv.update(DT);
+    expect(gun.ammo).toBe(2);
+    expect(gun.fed).toBe(2);
+
+    // wrong caliber is turned away and must not count as service
+    const shell = addItem(conv, belt, 'shell');
+    conv.update(DT);
+    expect(belt.item).toBe(shell);
+    expect(gun.fed).toBe(2);
+
+    // nor does a delivery a full magazine cannot take
+    gun.ammo = TOWERS.tower.ammoCap;
+    const overflow = addItem(conv, belt, 'ammo');
+    conv.update(DT);
+    expect(belt.item).toBe(overflow);
+    expect(gun.fed).toBe(2);
   });
 
   it('loads lancers with piercing rounds only', () => {

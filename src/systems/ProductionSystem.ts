@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { isMachine, MACHINES, minerCycle } from '../data/buildings';
+import { isMachine, MACHINES, minerCycle, recipeInputs } from '../data/buildings';
 import { bumpAmmo, GameState } from '../state/GameState';
 import { ConveyorSystem } from './ConveyorSystem';
 import { GridSystem, minedResource } from './GridSystem';
@@ -28,7 +28,7 @@ export class ProductionSystem {
           continue;
         }
         b.timer += dt;
-        const ready = b.timer >= minerCycle(resource);
+        const ready = b.timer >= minerCycle(resource) / GameState.mods.minerSpeed;
         if (ready && this.conveyor.spawnFrom(b.x, b.y, b.dir, resource)) {
           b.timer = 0;
           b.stalled = false;
@@ -42,18 +42,18 @@ export class ProductionSystem {
         if (b.outputBuf > 0 && this.conveyor.spawnFrom(b.x, b.y, b.dir, stats.output)) {
           b.outputBuf -= 1;
         }
-        const fed = b.inputOre >= stats.oreIn && b.inputCrystal >= stats.crystalIn;
+        const recipe = recipeInputs(b.type);
+        const fed = recipe.every(([item, n]) => (b.inputs[item] ?? 0) >= n);
         // starved of inputs, or backed up because nothing is taking the output
         b.stalled = (!b.crafting && !fed) || b.outputBuf >= stats.outputCap;
         if (!b.crafting && fed && b.outputBuf < stats.outputCap) {
-          b.inputOre -= stats.oreIn;
-          b.inputCrystal -= stats.crystalIn;
+          for (const [item, n] of recipe) b.inputs[item] = (b.inputs[item] ?? 0) - n;
           b.crafting = true;
           b.timer = 0;
         }
         if (b.crafting) {
           b.timer += dt;
-          if (b.timer >= stats.cycle) {
+          if (b.timer >= stats.cycle / GameState.mods.craftSpeed) {
             b.crafting = false;
             b.outputBuf += stats.outputPer;
             bumpAmmo(GameState.tally.produced, stats.output, stats.outputPer);

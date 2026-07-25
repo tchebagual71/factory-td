@@ -3,6 +3,8 @@ import { GAME_W, GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
 import {
   costOf,
   effStats,
+  fedRequired,
+  isMachine,
   isSupport,
   isTower,
   MAX_MK,
@@ -23,6 +25,7 @@ import {
   RESERVES,
   setActiveMap,
 } from '../data/map';
+import { cardById, draw, DrawContext, grantAmount } from '../data/research';
 import { clearSave, pushBest, pushSave } from '../services/cloud';
 import { GameState } from '../state/GameState';
 import { clearLocal, consumePendingLoad, consumePendingMap, saveLocal } from '../state/persistence';
@@ -184,6 +187,8 @@ export class GameScene extends Phaser.Scene {
     GameState.events.off('ui:prospect').on('ui:prospect', () => this.toggleSurveyMode());
     GameState.events.off('ui:rotate').on('ui:rotate', () => this.rotateBuildDir());
     GameState.events.off('ui:sellmode').on('ui:sellmode', () => this.toggleSellMode());
+    GameState.events.off('ui:pickcard').on('ui:pickcard', (id: string) => this.onPickCard(id));
+    GameState.events.off('levelup').on('levelup', () => this.offerCards());
     // Targeted off/on (other scenes listen to these events too; stable refs survive restarts)
     GameState.events.off('phase', this.onPhaseSave).on('phase', this.onPhaseSave);
     GameState.events.off('gameover', this.onGameOverClear).on('gameover', this.onGameOverClear);
@@ -195,7 +200,7 @@ export class GameScene extends Phaser.Scene {
       .text(
         640,
         90,
-        'MINERS on ore → belt ore into a PRESS (ammo for GUNS) or FORGE (shells for CANNONS)\nBlue crystal patches feed the ASSEMBLER (2 ore + 1 crystal → piercing rounds for LANCERS)\nA cheap CHILLER (1 ore → 2 coolant) powers CRYO fields that slow everything at a choke point\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!  [SPACE] sends the wave  ·  [L] logistics view\nFull guide on the title screen under HOW TO PLAY',
+        'MINERS on ore → belt ore into a PRESS. Ammo feeds GUNS — and every deeper machine runs on it\nFORGE: 2 ammo → shell (CANNONS)  ·  ASSEMBLER: 2 ammo + 1 crystal → piercing (LANCERS)\nCHILLER: 1 ammo → 2 coolant, the cheapest line in the game (CRYO fields slow a choke point)\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!  [SPACE] sends the wave  ·  [L] logistics view\nFull guide on the title screen under HOW TO PLAY',
         { fontFamily: 'monospace', fontSize: '14px', color: '#cdd6e4', align: 'center', stroke: '#000', strokeThickness: 4 },
       )
       .setOrigin(0.5)
@@ -213,9 +218,9 @@ export class GameScene extends Phaser.Scene {
 
   update(_t: number, deltaMs: number): void {
     if (GameState.gameOver) return;
-    if (GameState.paused) {
+    if (GameState.frozen) {
       // Pause still lets you plan and build; a frozen ghost would just lie
-      // about where the next click lands.
+      // about where the next click lands. (A pending card draw freezes too.)
       this.updateGhost();
       return;
     }
@@ -245,10 +250,22 @@ export class GameScene extends Phaser.Scene {
 
     const st = this.selTower;
     if (st && this.panel.visible && isTower(st.type)) {
-      if (st.ammo !== this.panelMagShown) {
-        this.panelMagShown = st.ammo;
+      // Magazine and lifetime deliveries both tick while belts run, so this is
+      // repainted only when one of them actually moves.
+      const stamp = st.ammo * 100000 + st.fed;
+      if (stamp !== this.panelMagShown) {
+        this.panelMagShown = stamp;
         const cap = TOWERS[st.type].ammoCap;
-        this.panelMag.setText(`MAG ${st.ammo}/${cap}`).setColor(st.ammo >= cap ? '#5ef078' : '#ffd75e');
+        const needFed = fedRequired(st.type, st.mk + 1);
+        const magPart = `MAG ${st.ammo}/${cap}`;
+        if (needFed > 0 && st.mk < MAX_MK) {
+          const short = st.fed < needFed;
+          this.panelMag
+            .setText(`${magPart}   FED ${Math.min(st.fed, needFed)}/${needFed}`)
+            .setColor(short ? '#ff9f43' : '#5ef078');
+        } else {
+          this.panelMag.setText(magPart).setColor(st.ammo >= cap ? '#5ef078' : '#ffd75e');
+        }
       }
       if (st.mk === 2) {
         const [pa, pb] = UPGRADE_TREE[st.type].paths;
@@ -262,7 +279,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private tintAfford(btn: Phaser.GameObjects.Rectangle, label: Phaser.GameObjects.Text, b: Building, tier: UpgradeTier): void {
-    const can = GameState.money >= tier.money && b.ammo >= tier.ammo;
+    const needFed = isTower(b.type) ? fedRequired(b.type, b.mk + 1) : 0;
+    const can = GameState.money >= tier.money && b.ammo >= tier.ammo && b.fed >= needFed;
     btn.setFillStyle(can ? 0x2e7d4f : 0x3a3f52);
     label.setColor(can ? '#ffffff' : '#8892a6');
   }
@@ -322,36 +340,36 @@ export class GameScene extends Phaser.Scene {
 
   private createUpgradePanel(): void {
     this.panel = this.add.container(GAME_W - 266, 44).setDepth(40).setVisible(false);
-    const bg = this.add.rectangle(0, 0, 258, 124, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
+    const bg = this.add.rectangle(0, 0, 258, 136, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
     this.panelBg = bg;
     this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: '13px', fontStyle: 'bold', color: '#ffe066' });
-    this.panelInfo = this.add.text(10, 25, '', { fontFamily: 'monospace', fontSize: '10px', color: '#cdd6e4', lineSpacing: 2 });
+    this.panelInfo = this.add.text(10, 37, '', { fontFamily: 'monospace', fontSize: '10px', color: '#cdd6e4', lineSpacing: 2 });
     // Two fixed button slots: A alone for linear tiers, A+B at the Mk3 branch.
-    // Buttons sit below the 4-line branch info (ends ~y90).
+    // Buttons sit below the 4-line branch info (ends ~y85).
     this.panelBtnA = this.add
-      .rectangle(10, 96, 114, 22, 0x2e7d4f)
+      .rectangle(10, 108, 114, 22, 0x2e7d4f)
       .setOrigin(0)
       .setStrokeStyle(1, 0x5ef078)
       .setInteractive({ useHandCursor: true });
     this.panelBtnA.on('pointerdown', () => this.tryUpgrade(0));
     this.panelBtnAText = this.add
-      .text(67, 107, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
+      .text(67, 119, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
     this.panelBtnB = this.add
-      .rectangle(134, 96, 114, 22, 0x2e7d4f)
+      .rectangle(134, 108, 114, 22, 0x2e7d4f)
       .setOrigin(0)
       .setStrokeStyle(1, 0x5ef078)
       .setInteractive({ useHandCursor: true });
     this.panelBtnB.on('pointerdown', () => this.tryUpgrade(1));
     this.panelBtnBText = this.add
-      .text(191, 107, '', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
+      .text(191, 119, '', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
-    // Every tier is paid partly in a *full* magazine, so "how full am I?" is the
-    // question the panel has to answer — without it the greyed-out button is a
-    // mystery. Sits on the title row, right-aligned.
+    // Every tier is paid partly in a *full* magazine and gated on lifetime
+    // deliveries, so "how full am I / how much have I been fed?" is the question
+    // the panel has to answer — without it a greyed-out button is a mystery.
+    // Own row: combined with the title it would overrun the panel.
     this.panelMag = this.add
-      .text(248, 8, '', { fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold', color: '#cdd6e4' })
-      .setOrigin(1, 0);
+      .text(10, 22, '', { fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold', color: '#cdd6e4' });
     this.panel.add([
       bg,
       this.panelTitle,
@@ -381,7 +399,7 @@ export class GameScene extends Phaser.Scene {
       this.panel.setVisible(false);
       return;
     }
-    const cur = effStats(b.type, b.mk, b.path);
+    const cur = effStats(b.type, b.mk, b.path, GameState.mods);
     const LABELS: Record<string, string> = { cannon: 'CANNON', lancer: 'LANCER', cryo: 'CRYO FIELD' };
     const label = LABELS[b.type] ?? 'GUN TOWER';
     const pathName = b.path ? ` · ${pathOf(b.type, b.path).name}` : '';
@@ -410,8 +428,8 @@ export class GameScene extends Phaser.Scene {
       // The branch: choose a specialization
       const [pa, pb] = UPGRADE_TREE[b.type].paths;
       this.panelInfo.setText(
-        `${pa.name}: ${brief(effStats(b.type, 3, pa.id))}\n  $${pa.tiers[0].money} + full mag (${pa.tiers[0].ammo})\n` +
-          `${pb.name}: ${brief(effStats(b.type, 3, pb.id))}\n  $${pb.tiers[0].money} + full mag (${pb.tiers[0].ammo})`,
+        `${pa.name}: ${brief(effStats(b.type, 3, pa.id, GameState.mods))}\n  $${pa.tiers[0].money} + full mag (${pa.tiers[0].ammo})\n` +
+          `${pb.name}: ${brief(effStats(b.type, 3, pb.id, GameState.mods))}\n  $${pb.tiers[0].money} + full mag (${pb.tiers[0].ammo})`,
       );
       showA(`${pa.name} [U]`);
       showB(`${pb.name} [I]`);
@@ -420,8 +438,8 @@ export class GameScene extends Phaser.Scene {
 
     const tier = nextTier(b.type, b.mk, b.path);
     if (tier) {
-      const next = effStats(b.type, b.mk + 1, b.path ?? UPGRADE_TREE[b.type].paths[0].id);
-      const nextStats = b.mk === 1 ? effStats(b.type, 2) : next;
+      const next = effStats(b.type, b.mk + 1, b.path ?? UPGRADE_TREE[b.type].paths[0].id, GameState.mods);
+      const nextStats = b.mk === 1 ? effStats(b.type, 2, null, GameState.mods) : next;
       const delta = support
         ? `SLOW ${Math.round((1 - cur.slowFactor) * 100)}%→${Math.round((1 - nextStats.slowFactor) * 100)}% · RNG ${cur.range}→${nextStats.range}\nHOLD ${cur.slowDur.toFixed(1)}→${nextStats.slowDur.toFixed(1)}s · PULSE ${cur.fireRate.toFixed(1)}→${nextStats.fireRate.toFixed(1)}/s`
         : `DMG ${cur.damage}→${nextStats.damage} · RNG ${cur.range}→${nextStats.range}\nROF ${cur.fireRate.toFixed(1)}→${nextStats.fireRate.toFixed(1)}/s`;
@@ -436,7 +454,7 @@ export class GameScene extends Phaser.Scene {
 
   private tryUpgrade(choice: 0 | 1 = 0): void {
     const b = this.selTower;
-    if (!b || !isTower(b.type) || GameState.gameOver) return;
+    if (!b || !isTower(b.type) || GameState.gameOver || GameState.awaitingCard) return;
     let tier: UpgradeTier | null;
     let newPath: PathId | null = null;
     if (b.mk === 2) {
@@ -450,6 +468,12 @@ export class GameScene extends Phaser.Scene {
     if (!tier) return;
     const cx = b.x * TILE + TILE / 2;
     const cy = b.y * TILE + TILE / 2;
+    const needFed = fedRequired(b.type, b.mk + 1);
+    if (b.fed < needFed) {
+      sfx.error();
+      this.floatText(cx, cy - 12, `Delivered ${b.fed}/${needFed} rounds`, '#ff9f43');
+      return;
+    }
     if (b.ammo < tier.ammo) {
       sfx.error();
       this.floatText(cx, cy - 12, 'Need a full magazine!', '#ff5555');
@@ -474,6 +498,62 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.shake(80, 0.002);
     sfx.waveClear();
     this.refreshPanel();
+  }
+
+  // ---------- research: the level-up draw ----------
+
+  /**
+   * What the run currently contains, so the draw never offers an upgrade with
+   * nothing to improve (no "+1 pierce" before a lancer exists).
+   */
+  private drawContext(): DrawContext {
+    const towers: Record<string, number> = {};
+    let machines = 0;
+    let miners = 0;
+    let belts = 0;
+    for (const b of this.grid.buildings) {
+      if (isTower(b.type)) towers[b.type] = (towers[b.type] ?? 0) + 1;
+      else if (isMachine(b.type)) machines += 1;
+      else if (b.type === 'miner') miners += 1;
+      else if (b.type === 'belt') belts += 1;
+    }
+    return { towers, machines, miners, belts, taken: GameState.taken };
+  }
+
+  /**
+   * Present the next pending level's choice. The sim stays frozen until the
+   * queue drains — and if the pool is genuinely exhausted we unfreeze rather
+   * than showing an empty draw.
+   */
+  private offerCards(): void {
+    if (GameState.gameOver || GameState.pendingLevels <= 0) {
+      GameState.finishDraw();
+      return;
+    }
+    const cards = draw(this.drawContext(), () => Phaser.Math.RND.frac(), 3);
+    if (cards.length === 0) {
+      GameState.finishDraw();
+      return;
+    }
+    GameState.events.emit('cards', cards, GameState.researchLevel);
+  }
+
+  private onPickCard(id: string): void {
+    const card = cardById(id);
+    if (!card) return;
+    if (card.instant === 'life') GameState.gainLives(1);
+    else if (card.instant === 'cash') GameState.addMoney(grantAmount(GameState.wave));
+    GameState.takeCard(id);
+    progress.record('researchTaken');
+
+    this.bigText(card.name);
+    this.burst(640, 300, 0x7cf7c4, 26);
+    this.cameras.main.shake(90, 0.002);
+    sfx.waveClear();
+    this.requestSave();
+
+    if (GameState.pendingLevels > 0) this.offerCards();
+    else GameState.finishDraw();
   }
 
   // ---------- save / restore ----------
@@ -540,10 +620,10 @@ export class GameScene extends Phaser.Scene {
       b.mk = sb.mk ?? 1;
       b.path = sb.path ?? null;
       if (sb.ammo !== undefined) b.ammo = sb.ammo;
+      b.fed = sb.fed ?? 0;
       b.timer = sb.timer ?? 0;
       b.crafting = sb.crafting ?? false;
-      b.inputOre = sb.inOre ?? 0;
-      b.inputCrystal = sb.inCry ?? 0;
+      b.inputs = { ...(sb.in ?? {}) };
       b.outputBuf = sb.outBuf ?? 0;
       b.outIdx = sb.outIdx ?? 0;
       b.invested = sb.inv;
@@ -568,6 +648,7 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-SIX', () => this.select('forge'));
     kb.on('keydown-SEVEN', () => this.select('assembler'));
     kb.on('keydown-EIGHT', () => this.select('chiller'));
+    kb.on('keydown-X', () => this.select('lab'));
     kb.on('keydown-NINE', () => this.select('tower'));
     kb.on('keydown-ZERO', () => this.select('cannon'));
     kb.on('keydown-C', () => this.select('lancer'));
@@ -726,6 +807,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private select(type: BuildingType | null): void {
+    // The card draw owns the keyboard while it is up: "1" picks a card, and
+    // must not also select a belt behind the modal. (Pointer input is already
+    // swallowed by the modal's dim.)
+    if (GameState.awaitingCard) return;
     this.selected = type;
     GameState.events.emit('selected', type);
     if (type && this.surveyMode) {
@@ -750,6 +835,9 @@ export class GameScene extends Phaser.Scene {
     const cy = ty * TILE + TILE / 2;
     const tower = isTower(type);
     const flat = type === 'belt' || type === 'splitter' || type === 'tunnel';
+    // The lab has no output, so it has no facing to show — leave it upright
+    // however the build cursor happened to be rotated.
+    const facing = type !== 'lab';
     const depth = flat ? 1 : 3;
     // Belts are Sprites so they can run the scrolling chevron loop; everything
     // else stays a plain Image. All belts share one animation, and starting them
@@ -758,7 +846,7 @@ export class GameScene extends Phaser.Scene {
       type === 'belt'
         ? this.add.sprite(cx, cy, 'belt').setDepth(depth).play({ key: BELT_ANIM, startFrame: Phaser.Math.Between(0, BELT_FRAME_KEYS.length - 1) })
         : this.add.image(cx, cy, type).setDepth(depth);
-    if (!tower) sprite.setRotation((dir * Math.PI) / 2);
+    if (!tower && facing) sprite.setRotation((dir * Math.PI) / 2);
 
     const b: Building = {
       type,
@@ -770,10 +858,10 @@ export class GameScene extends Phaser.Scene {
       outIdx: 0,
       timer: 0,
       crafting: false,
-      inputOre: 0,
-      inputCrystal: 0,
+      inputs: {},
       outputBuf: 0,
       ammo: tower ? TOWERS[type].startAmmo : 0,
+      fed: 0,
       cooldown: 0,
       mk: 1,
       path: null,
@@ -916,7 +1004,7 @@ export class GameScene extends Phaser.Scene {
       const show = hovered && isTower(hovered.type) ? hovered : this.selTower;
       if (show && isTower(show.type)) {
         this.rangeCircle
-          .setRadius(effStats(show.type, show.mk, show.path).range)
+          .setRadius(effStats(show.type, show.mk, show.path, GameState.mods).range)
           .setVisible(true)
           .setPosition(show.x * TILE + TILE / 2, show.y * TILE + TILE / 2);
       } else {
@@ -929,10 +1017,11 @@ export class GameScene extends Phaser.Scene {
     const sel = this.selected;
     const ok = this.grid.canPlace(sel, tx, ty) && GameState.money >= costOf(sel);
     const towerSel = isTower(sel);
+    const upright = towerSel || sel === 'lab'; // neither has a facing to preview
     this.ghost
       .setAlpha(0.6)
       .setPosition(cx, cy)
-      .setRotation(towerSel ? 0 : (this.buildDir * Math.PI) / 2)
+      .setRotation(upright ? 0 : (this.buildDir * Math.PI) / 2)
       .setTint(ok ? 0x88ff88 : 0xff6666);
     if (towerSel) this.rangeCircle.setRadius(TOWERS[sel].range);
     this.rangeCircle.setVisible(towerSel).setPosition(cx, cy);
