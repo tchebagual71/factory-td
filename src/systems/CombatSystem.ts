@@ -97,12 +97,18 @@ export class CombatSystem {
       b.cooldown -= dt;
       if (b.ammoBar) b.ammoBar.scaleX = b.ammo / TOWERS[b.type].ammoCap;
       const starved = b.ammo <= 0;
-      if (starved) {
-        b.sprite.setTint(0x8a8a8a);
-        b.barrel?.setTint(0x8a8a8a);
-      } else {
-        b.sprite.clearTint();
-        b.barrel?.clearTint();
+      // Only repaint on the transition. Tinting is a per-frame write into the
+      // renderer's pipeline data for every tower on the board otherwise, and a
+      // starved tower is the one thing here that changes once per magazine.
+      if (starved !== b.starvedShown) {
+        b.starvedShown = starved;
+        if (starved) {
+          b.sprite.setTint(0x8a8a8a);
+          b.barrel?.setTint(0x8a8a8a);
+        } else {
+          b.sprite.clearTint();
+          b.barrel?.clearTint();
+        }
       }
       if (b.cooldown > 0 || starved) continue;
 

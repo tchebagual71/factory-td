@@ -4,15 +4,31 @@ import { ConveyorSystem } from '../systems/ConveyorSystem';
 import { GridSystem } from '../systems/GridSystem';
 import { Building, BuildingType, Dir, ItemEnt, ItemType } from '../types';
 
-/** Minimal sprite mock covering everything ConveyorSystem touches. */
+/**
+ * Minimal sprite mock covering everything ConveyorSystem and WaveSystem touch.
+ * `tint` / `tintFill` are recorded rather than ignored so the enemy tint
+ * priority chain (hit flash over frost over nothing) can be asserted.
+ */
 export interface MockSprite {
   x: number;
   y: number;
   alpha: number;
+  rotation: number;
+  scaleX: number;
+  fillColor: number;
+  /** null = no tint applied */
+  tint: number | null;
+  /** true when the last tint was a solid fill (a hit flash) rather than a multiply */
+  tintFill: boolean;
   destroyed: boolean;
   setPosition(x: number, y: number): MockSprite;
   setAlpha(a: number): MockSprite;
   setDepth(d: number): MockSprite;
+  setRotation(r: number): MockSprite;
+  setTint(t: number): MockSprite;
+  setTintFill(t: number): MockSprite;
+  clearTint(): MockSprite;
+  setOrigin(x?: number, y?: number): MockSprite;
   destroy(): void;
 }
 
@@ -21,6 +37,11 @@ export function makeSprite(x = 0, y = 0): MockSprite {
     x,
     y,
     alpha: 1,
+    rotation: 0,
+    scaleX: 1,
+    fillColor: 0,
+    tint: null,
+    tintFill: false,
     destroyed: false,
     setPosition(nx: number, ny: number) {
       s.x = nx;
@@ -32,6 +53,28 @@ export function makeSprite(x = 0, y = 0): MockSprite {
       return s;
     },
     setDepth() {
+      return s;
+    },
+    setRotation(r: number) {
+      s.rotation = r;
+      return s;
+    },
+    setTint(t: number) {
+      s.tint = t;
+      s.tintFill = false;
+      return s;
+    },
+    setTintFill(t: number) {
+      s.tint = t;
+      s.tintFill = true;
+      return s;
+    },
+    clearTint() {
+      s.tint = null;
+      s.tintFill = false;
+      return s;
+    },
+    setOrigin() {
       return s;
     },
     destroy() {
@@ -58,15 +101,27 @@ function makeChainable(): Record<string, unknown> {
   return proxy;
 }
 
+/**
+ * Stand-in for GameScene. Includes the juice helpers the systems call
+ * (`floatText`, `burst`, `bigText`, camera shake) so a system under test can be
+ * driven through a real wave instead of only having its pure bits poked.
+ */
 export function makeScene(): Phaser.Scene {
   return {
     add: {
       image: (x: number, y: number) => makeSprite(x, y),
+      rectangle: (x: number, y: number) => makeSprite(x, y),
+      circle: (x: number, y: number) => makeSprite(x, y),
+      particles: () => makeChainable(),
       graphics: () => makeChainable(),
       text: () => makeChainable(),
     },
-    tweens: { add: () => undefined },
+    tweens: { add: () => undefined, killTweensOf: () => undefined },
     time: { now: 0, delayedCall: () => undefined },
+    cameras: { main: { shake: () => undefined, flash: () => undefined } },
+    floatText: () => undefined,
+    bigText: () => undefined,
+    burst: () => undefined,
   } as unknown as Phaser.Scene;
 }
 

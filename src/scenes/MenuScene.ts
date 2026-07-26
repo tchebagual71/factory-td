@@ -147,8 +147,8 @@ export class MenuScene extends Phaser.Scene {
     }
     this.add
       .text(GAME_W / 2, GAME_H - 26, IS_TOUCH
-        ? 'New here? Tap HOW TO PLAY · tap a build slot then tap the map · tap a placed belt to turn it · SELL refunds 50%'
-        : 'New here? Read HOW TO PLAY · R rotate · drag paints belts · right-click sells · SPACE sends the wave · L logistics · F speed · P pause · M mute', {
+        ? 'New here? Tap HOW TO PLAY · tap a build slot then tap the map · tap it again to cancel · SELL refunds 50% · [?] in-game help'
+        : 'New here? Read HOW TO PLAY · 1-9 factory · ZXCV guns · R rotate · drag paints belts · right-click sells · SPACE wave · L logistics · H help', {
         ...FONT, fontSize: '11px', color: '#8892a6',
       })
       .setOrigin(0.5);
@@ -329,8 +329,8 @@ export class MenuScene extends Phaser.Scene {
           GAME_W / 2,
           top + H - 96,
           IS_TOUCH
-            ? 'Tap a build slot, then tap the map · ROTATE turns it · tap a placed belt to turn it · SELL then tap to refund half · tap a tower to upgrade'
-            : 'R rotate (also turns whatever is under the cursor) · right-click sells · click a placed belt to turn it · click a tower to upgrade · L logistics · F speed · P pause',
+            ? 'The build bar is split LOGISTICS · PRODUCTION · GUNS. Tap a slot then tap the map (tap it again to cancel) · ROTATE turns it\nSELL then tap to refund half · tap a tower to upgrade · the [?] button in-game reopens this reference'
+            : 'The build bar is split LOGISTICS · PRODUCTION · GUNS — keys 1-9 are the factory, ZXCV the guns · H reopens this in-game\nR rotate (also turns whatever is under the cursor) · right-click sells · click a tower to upgrade · L logistics · F speed · P pause',
           { ...FONT, fontSize: '11px', color: '#8892a6', align: 'center' },
         )
         .setOrigin(0.5)

@@ -94,6 +94,8 @@ export interface Building {
   utilBusy: number;
   utilBlocked: number;
   utilTotal: number;
+  /** tower: last painted starved/armed state, so the grey tint is written only when it flips */
+  starvedShown?: boolean;
   /** ground shadow for buildings that stand proud of the terrain */
   shadow?: Phaser.GameObjects.Ellipse;
   barrel?: Phaser.GameObjects.Image;
@@ -111,6 +113,12 @@ export interface Enemy {
   /** seconds of coolant slow remaining; while > 0 the enemy moves at `slowFactor` speed */
   slow: number;
   slowFactor: number;
+  /** seconds of hit-flash remaining — ticked down in the move loop rather than by a per-hit timer */
+  flash: number;
+  /** colour of the current hit flash: white for a clean hit, steel for a resisted one */
+  flashTint: number;
+  /** tint currently written to the sprite (0 = none), so the GPU is only touched on a change */
+  tinted: number;
   /** index of the waypoint the enemy is walking toward */
   wp: number;
   /** total px traveled — targeting priority (furthest along path) */

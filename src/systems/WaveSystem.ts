@@ -13,6 +13,9 @@ import type { GameScene } from '../scenes/GameScene';
  */
 const FROST_TINT = 0xe8f6ff;
 
+/** How long a hit flash stays on an enemy. Game seconds, so it shortens at ×3 like everything else. */
+const FLASH_SECONDS = 0.05;
+
 /** Spawns waves, walks enemies along the fixed path, handles kills and leaks. */
 export class WaveSystem {
   enemies: Enemy[] = [];
@@ -21,6 +24,8 @@ export class WaveSystem {
   private def: WaveDef | null = null;
   private toSpawn = 0;
   private spawnTimer = 0;
+  /** something died this frame, so the enemy list needs compacting */
+  private reap = false;
 
   constructor(private scene: GameScene) {}
 
@@ -63,12 +68,19 @@ export class WaveSystem {
       if (e.dead) continue;
       if (e.slow > 0) {
         e.slow -= dt;
-        // frosted tint, reapplied each frame because hit() flashes over it
-        if (e.slow > 0) e.sprite.setTint(FROST_TINT);
-        else {
-          e.slowFactor = 1;
-          e.sprite.clearTint();
-        }
+        if (e.slow <= 0) e.slowFactor = 1;
+      }
+      // One tint decision per frame, in priority order. The hit flash used to be
+      // undone by a `delayedCall` per hit — a fresh timer object for every bullet
+      // that landed — and a frosted enemy repainted over it on the very next
+      // frame, so the "wrong ammo" tell barely showed on anything chilled.
+      if (e.flash > 0) e.flash -= dt;
+      const want = e.flash > 0 ? e.flashTint : e.slow > 0 ? FROST_TINT : 0;
+      if (want !== e.tinted) {
+        e.tinted = want;
+        if (want === 0) e.sprite.clearTint();
+        else if (want === FROST_TINT) e.sprite.setTint(FROST_TINT);
+        else e.sprite.setTintFill(want);
       }
       const fromX = e.x;
       const fromY = e.y;
@@ -81,7 +93,12 @@ export class WaveSystem {
       e.hpBar.scaleX = Math.max(0, e.hp / e.maxHp);
       e.hpBar.fillColor = e.hp / e.maxHp > 0.5 ? 0x5ef078 : e.hp / e.maxHp > 0.25 ? 0xffd75e : 0xff5555;
     }
-    this.enemies = this.enemies.filter((e) => !e.dead);
+    // Only rebuild the list on a frame where something actually died — this ran
+    // every frame of every wave and allocated an array each time.
+    if (this.reap) {
+      this.reap = false;
+      this.enemies = this.enemies.filter((e) => !e.dead);
+    }
 
     if (this.toSpawn === 0 && this.enemies.length === 0 && !GameState.gameOver) {
       this.completeWave();
@@ -94,11 +111,11 @@ export class WaveSystem {
     const mult = resistMult(e.kind, source);
     e.hp -= Math.max(1, Math.round(dmg * mult));
     sfx.hit();
-    // resisted hits flash steel-gray instead of white — the "wrong ammo" tell
-    e.sprite.setTintFill(mult < 1 ? 0x7a8494 : 0xffffff);
-    this.scene.time.delayedCall(45, () => {
-      if (!e.dead) e.sprite.clearTint();
-    });
+    // resisted hits flash steel-gray instead of white — the "wrong ammo" tell.
+    // The tint itself is applied by the update loop, which owns the sprite's
+    // colour; see the priority chain there.
+    e.flashTint = mult < 1 ? 0x7a8494 : 0xffffff;
+    e.flash = FLASH_SECONDS;
     if (e.hp <= 0) {
       this.kill(e);
       return true;
@@ -108,6 +125,7 @@ export class WaveSystem {
 
   private kill(e: Enemy): void {
     e.dead = true;
+    this.reap = true;
     GameState.addMoney(e.bounty);
     GameState.tally.kills += 1;
     progress.record('kills');
@@ -125,6 +143,7 @@ export class WaveSystem {
 
   private leak(e: Enemy): void {
     e.dead = true;
+    this.reap = true;
     GameState.tally.leaked += 1;
     GameState.loseLives(e.leak);
     this.scene.floatText(e.x - 20, e.y, `-${e.leak}♥`, '#ff5555');
@@ -192,6 +211,9 @@ export class WaveSystem {
       speed: def.speed,
       slow: 0,
       slowFactor: 1,
+      flash: 0,
+      flashTint: 0,
+      tinted: 0,
       wp: 0,
       traveled: 0,
       bounty: def.bounty,

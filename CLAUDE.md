@@ -40,7 +40,8 @@ src/
     BootScene.ts        # procedural texture generation, then starts menu
     MenuScene.ts        # title: continue/new-run, map picker, volume, achievements, leaderboard, account/sign-in modals
     GameScene.ts        # gameplay orchestration, input/placement, save/restore, juice helpers (floatText/burst/bigText)
-    UIScene.ts          # HUD overlay running in parallel (stat chips, build palette, wave button, toasts, game over)
+    UIScene.ts          # HUD overlay running in parallel (stat chips, build palette, wave button, toasts, help, game over)
+    hudLayout.ts        # pure HUD geometry: bottom bar (grouped palette/touch pad/wave cluster), top strip, slot contents
   systems/
     GridSystem.ts       # tile grid: single source of truth for cell contents & placement rules
     ConveyorSystem.ts   # item movement on belts + machine insertion (press/tower intake), item restore
@@ -149,6 +150,14 @@ A **Lab** consumes finished goods (never raw ore — research must always cost y
 - All cross-scene signals go through `GameState.events`: `money`/`lives`/`wave`/`phase`/`gameover` (state→UI), `ui:select`/`ui:startwave` (UI→game), `selected` (game→UI), `achievement` (progress→UI toast)
 - Flow: Boot → Menu → (launch ui, start game). `GameScene.create()` calls `GameState.reset()` and re-registers listeners — blanket `.off()` only for events it alone consumes, targeted `.off(event, fn)` with stable arrow-property refs for shared events (`phase`, `gameover`). **UIScene sleeps, never stops** (menu button) so its plain `.on` listeners register exactly once
 
+### HUD geometry & the categorised build bar
+- **All HUD geometry is pure and tested** (`scenes/hudLayout.ts` + `hudLayout.test.ts`): the bottom bar (`hudLayout`), the top status strip (`topStrip`), and what goes *inside* one palette slot (`slotContent`). Never hardcode a control position in UIScene — overlapping buttons are invisible in review and obvious in a test, and the tests run the layout at the four screen shapes the game actually has to survive (16:9 desktop, iPad, phone landscape, boxy tablet)
+- The palette is split into **three labelled shelves** — `BUILD_CATEGORIES` in `data/buildings.ts`: LOGISTICS (blue) / PRODUCTION (orange) / DEFENSE (red). Guns and factory equipment are bought for opposite reasons — one spends throughput, the other builds it — so they are separate blocks with coloured headers and matching slot rims, not one strip of thirteen lookalikes. `BUILD_INFO` **must stay sorted by category** (test-pinned): the bar draws each group as one contiguous block sized by `buildGroupSizes()`
+- **Hotkeys follow the same split**: the number row (1–9) is the factory, `Z X C V` the guns. `GameScene` binds them straight off `BUILD_INFO`, so a key can never drift from the badge drawn on its slot
+- Selecting the armed slot again cancels it — on touch there is no ESC and no right-click, so that toggle is the only way out of build mode
+- `[?]` in the top strip (or `H`) opens an in-game controls & building reference. On touch the tapped slot's description also stays on the hint line, because there is no hover tooltip
+- Compact bars quote no keyboard shortcuts and grow no hotkey badges; the touch bar additionally gets the rotate/sell/pause pad that stands in for `R`/right-click/`P`
+
 ### Save/resume & cloud sync
 - `state/serialize.ts` is the contract: pure `captureRun`/`validateSave`, versioned (`SAVE_VERSION`, currently **2**); saves happen only in build phase so enemies/bullets never serialize. Never trust stored/cloud JSON — everything re-validates through `validateSave`
 - **v1 saves still load.** `migrateV1` drops machine input buffers, because a v1 forge banked raw ore its v2 recipe will never consume — carrying it across would restore a permanently stalled machine. That is exactly the "restores *wrong* rather than incomplete" case that justifies a version bump instead of an optional field
@@ -216,6 +225,11 @@ Ranked for fun/strategy impact. Mark `[x]` with a one-line note when shipped.
 24. `[ ]` **In-run mission cards** — planned: three active objectives with immediate payouts, reusing `UIScene.pumpToasts`
 25. `[ ]` **End-of-run score card** — planned: pure `data/score.ts` grading wave/throughput/efficiency, shown on the game-over overlay
 
+26. `[x]` **UI audit: categorised build bar, mobile ergonomics, frame-cost pass** — shipped:
+    - the palette is three labelled shelves (LOGISTICS / PRODUCTION / DEFENSE) with category-coloured rims and matching hotkey halves — see "HUD geometry & the categorised build bar"; the top status strip and per-slot content joined the pure, tested layout module
+    - touch: finger-sized help/mute/survey chips (they were 16px glyphs on a canvas the phone scales *down*), a 1.4× upgrade panel, tap-the-slot-again to cancel, the tapped building's description pinned to the hint line, and no keyboard shortcuts quoted anywhere
+    - fixed: `SEND WAVE [SPC]` re-stamped over the touch label on every phase change; the two-line wave preview spilling over the send button on the 80px bar; achievement toasts sliding in over the upgrade panel; the intro hint running through the status strip; the logistics legend doing the same
+    - frame cost: `effStats` memoised per Mods bag (it ran per tower per frame), particle emitters and the enemy hit-flash pooled instead of allocating an emitter and a `delayedCall` per kill/hit, recipe input lists resolved once, enemy list compacted only when something died, and tower tint / logistics labels written only on change
 19. `[x]` **Bugs & perf** — shipped: the upgrade panel no longer closes itself when clicked (Phaser fires GameObject handlers *and then* the scene-level `pointerdown` regardless — guard the panel bounds); the build ghost updates while paused; ambient SFX are voice-gated and floating text is capped, so a 100-kill swift wave at ×3 speed no longer asks for ~100 oscillators a second; costly buildings confirm before selling
 
 ## Deployment

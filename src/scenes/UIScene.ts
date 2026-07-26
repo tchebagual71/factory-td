@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_H, GAME_W, IS_TOUCH, PLAYFIELD_H, ROOMY_UI, UI_H } from '../config';
 import { AchievementDef } from '../data/achievements';
-import { BUILD_INFO } from '../data/buildings';
+import { BUILD_CATEGORIES, BUILD_INFO, buildGroupSizes, categoryOf } from '../data/buildings';
 import { activeMap, prospectCost, prospectKind } from '../data/map';
 import { ResearchCard, researchForLevel } from '../data/research';
 import { earlySendBonus, waveDef, WAVE_KIND_LABEL } from '../data/waves';
@@ -10,7 +10,7 @@ import { ammoDeficits, ammoTotal, GameState, WaveTally } from '../state/GameStat
 import { progress } from '../state/progress';
 import { BuildingType } from '../types';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
-import { HudLayout, hudLayout } from './hudLayout';
+import { HudLayout, hudLayout, slotContent, topStrip } from './hudLayout';
 
 const FONT = { fontFamily: 'monospace' };
 
@@ -27,6 +27,15 @@ export class UIScene extends Phaser.Scene {
   private autoBtnText!: Phaser.GameObjects.Text;
   private paletteFrames = new Map<BuildingType, Phaser.GameObjects.Rectangle>();
   private paletteButtons = new Map<BuildingType, Phaser.GameObjects.Container>();
+  /** each slot's category tint, so deselecting restores the right rim colour */
+  private slotColor = new Map<BuildingType, number>();
+  /** currently armed build type — drives the selection ring and the touch description */
+  private selectedType: BuildingType | null = null;
+  /** greyed-out state last painted per slot, so an affordability sweep is a no-op when nothing changed */
+  private slotAffordable = new Map<BuildingType, boolean>();
+  private helpLayer: Phaser.GameObjects.GameObject[] = [];
+  /** bottom edge of the status strip — anything that floats over the board hangs off this */
+  private stripBottom = 38;
   private descText!: Phaser.GameObjects.Text;
   private overlay: Phaser.GameObjects.GameObject[] = [];
   private earlyText!: Phaser.GameObjects.Text;
@@ -47,26 +56,34 @@ export class UIScene extends Phaser.Scene {
   }
 
   create(): void {
-    // ----- top-left stat chips -----
-    this.add.rectangle(8, 8, 356, 30, 0x000000, 0.55).setOrigin(0).setDepth(0);
-    this.moneyText = this.add.text(18, 14, '', { ...FONT, fontSize: '16px', fontStyle: 'bold', color: '#ffe066' });
-    this.livesText = this.add.text(130, 14, '', { ...FONT, fontSize: '16px', fontStyle: 'bold', color: '#ff6b6b' });
-    this.waveText = this.add.text(230, 14, '', { ...FONT, fontSize: '16px', fontStyle: 'bold', color: '#cdd6e4' });
-    const muteBtn = this.add
-      .text(338, 14, isMuted() ? '✕' : '♪', { ...FONT, fontSize: '16px', fontStyle: 'bold', color: isMuted() ? '#8892a6' : '#5ef078' })
-      .setInteractive({ useHandCursor: true });
-    const applyMute = (m: boolean) => muteBtn.setText(m ? '✕' : '♪').setColor(m ? '#8892a6' : '#5ef078');
-    muteBtn.on('pointerdown', () => applyMute(toggleMute()));
-    this.input.keyboard?.on('keydown-M', () => applyMute(toggleMute()));
+    // ----- top status strip (pure geometry: see hudLayout.topStrip) -----
+    const top = topStrip(GAME_W, IS_TOUCH);
+    this.stripBottom = top.stats.y + top.h;
+    const chipFont = IS_TOUCH ? '19px' : '16px';
+    const cy = top.stats.y + top.h / 2;
 
-    // ----- prospecting (top strip, right of the stat chips) -----
+    this.add.rectangle(top.stats.x, top.stats.y, top.stats.w, top.h, 0x000000, 0.55).setOrigin(0).setDepth(0);
+    const chipX = (frac: number) => top.stats.x + 10 + Math.round((top.stats.w - 20) * frac);
+    this.moneyText = this.add
+      .text(chipX(0), cy, '', { ...FONT, fontSize: chipFont, fontStyle: 'bold', color: '#ffe066' })
+      .setOrigin(0, 0.5);
+    this.livesText = this.add
+      .text(chipX(0.36), cy, '', { ...FONT, fontSize: chipFont, fontStyle: 'bold', color: '#ff6b6b' })
+      .setOrigin(0, 0.5);
+    this.waveText = this.add
+      .text(chipX(0.65), cy, '', { ...FONT, fontSize: chipFont, fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(0, 0.5);
+
+    // ----- prospecting -----
     const prospectBtn = this.add
-      .rectangle(372, 8, 196, 30, 0x1e2233, 0.9)
+      .rectangle(top.survey.x, top.survey.y, top.survey.w, top.h, 0x1e2233, 0.9)
       .setOrigin(0)
       .setStrokeStyle(2, 0x2b3040)
       .setInteractive({ useHandCursor: true });
     this.prospectText = this.add
-      .text(470, 23, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(top.survey.x + top.survey.w / 2, cy, '', {
+        ...FONT, fontSize: IS_TOUCH ? '14px' : '12px', fontStyle: 'bold', color: '#cdd6e4',
+      })
       .setOrigin(0.5);
     prospectBtn.on('pointerover', () => prospectBtn.setFillStyle(0x272c42, 0.9));
     prospectBtn.on('pointerout', () => prospectBtn.setFillStyle(0x1e2233, 0.9));
@@ -82,17 +99,23 @@ export class UIScene extends Phaser.Scene {
     // Which layout this run is on. UIScene sleeps rather than stopping, so this
     // is refreshed with the stats instead of being captured once at create().
     this.mapText = this.add
-      .text(582, 23, '', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#6b7689' })
-      .setOrigin(0, 0.5);
+      .text(top.map.x + top.map.w, cy, '', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#6b7689' })
+      .setOrigin(1, 0.5);
 
-    // ----- research chip (top strip, right of the map name) -----
+    // ----- research chip -----
     // Progress toward the next level-up draw. It only appears once a Lab has
     // actually banked something, so a player who never builds one is not
     // nagged by an empty bar.
-    const researchBox = this.add.rectangle(700, 8, 236, 30, 0x1a1830, 0.9).setOrigin(0).setStrokeStyle(2, 0x474170).setVisible(false);
-    this.researchBar = this.add.rectangle(703, 31, 0, 4, 0x7cf7c4).setOrigin(0, 1).setVisible(false);
+    const rr = top.research;
+    const researchBox = this.add
+      .rectangle(rr.x, rr.y, rr.w, top.h, 0x1a1830, 0.9)
+      .setOrigin(0)
+      .setStrokeStyle(2, 0x474170)
+      .setVisible(false);
+    const barW = rr.w - 6;
+    this.researchBar = this.add.rectangle(rr.x + 3, rr.y + top.h - 3, 0, 4, 0x7cf7c4).setOrigin(0, 1).setVisible(false);
     this.researchText = this.add
-      .text(706, 12, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#7cf7c4' })
+      .text(rr.x + 6, rr.y + 4, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#7cf7c4' })
       .setVisible(false);
     GameState.events.on('research', (points: number, level: number) => {
       const need = researchForLevel(level + 1);
@@ -101,8 +124,27 @@ export class UIScene extends Phaser.Scene {
       this.researchBar.setVisible(show);
       this.researchText.setVisible(show);
       this.researchText.setText(`⚗ RESEARCH  Lv${level}   ${points}/${need}`);
-      this.researchBar.width = Math.round(230 * Phaser.Math.Clamp(points / need, 0, 1));
+      this.researchBar.width = Math.round(barW * Phaser.Math.Clamp(points / need, 0, 1));
     });
+
+    // ----- help & mute (right end of the strip) -----
+    // Both were previously bare glyphs; on a phone the whole canvas is scaled
+    // down to fit, so a 16px label is not a hittable target.
+    const help = this.hudButton(top.help.x, top.help.y, top.help.w, top.h, '?', IS_TOUCH ? 22 : 17, () =>
+      this.showHelp(),
+    );
+    help.label.setColor('#8892a6');
+    this.input.keyboard?.on('keydown-H', () => this.showHelp());
+
+    const mute = this.hudButton(top.mute.x, top.mute.y, top.mute.w, top.h, '', IS_TOUCH ? 20 : 16, () =>
+      applyMute(toggleMute()),
+    );
+    const applyMute = (m: boolean) => mute.label.setText(m ? '✕' : '♪').setColor(m ? '#8892a6' : '#5ef078');
+    applyMute(isMuted());
+    this.input.keyboard?.on('keydown-M', () => applyMute(toggleMute()));
+    // ESC is the universal "get this off my screen" — GameScene also uses it to
+    // clear the build selection, which is the right thing to happen either way.
+    this.input.keyboard?.on('keydown-ESC', () => this.closeHelp());
 
     // ----- pause overlay -----
     const pauseDim = this.add.rectangle(0, 0, GAME_W, PLAYFIELD_H, 0x000000, 0.45).setOrigin(0).setDepth(40).setVisible(false);
@@ -128,15 +170,17 @@ export class UIScene extends Phaser.Scene {
       barH: UI_H,
       roomy: ROOMY_UI,
       touch: IS_TOUCH,
-      slotCount: BUILD_INFO.length,
+      groups: buildGroupSizes(),
     });
 
     this.buildPalette(layout);
     if (IS_TOUCH) this.buildTouchControls(layout);
     this.buildWaveCluster(layout);
 
+    // Hangs below the status strip: at y=10 it ran straight through the survey
+    // and research chips, which are exactly what you are reading past.
     const legend = this.add
-      .text(GAME_W / 2, 10, 'LOGISTICS  ·  tower % = ammo uptime last wave  ·  green belts flowing, red jammed  ·  orange rings = starved or backed up', {
+      .text(GAME_W / 2, top.stats.y + top.h + 6, 'LOGISTICS  ·  tower % = ammo uptime last wave  ·  green belts flowing, red jammed  ·  orange rings = starved or backed up', {
         ...FONT, fontSize: '11px', color: '#cdd6e4', backgroundColor: '#000000cc', padding: { x: 8, y: 4 },
       })
       .setOrigin(0.5, 0)
@@ -148,13 +192,17 @@ export class UIScene extends Phaser.Scene {
     const ev = GameState.events;
     ev.on('money', () => this.refreshStats(true));
     ev.on('lives', () => this.refreshStats());
-    ev.on('wave', () => this.refreshStats());
+    ev.on('wave', () => {
+      this.refreshStats();
+      this.refreshPreview();
+    });
     ev.on('phase', () => this.refreshWaveBtn());
     ev.on('selected', (t: BuildingType | null) => this.refreshSelection(t));
     ev.on('gameover', () => {
-      // A pending draw would otherwise sit on top of the game-over buttons and
-      // keep the sim frozen with no way out.
+      // A pending draw (or an open help panel) would otherwise sit on top of the
+      // game-over buttons and keep the sim frozen with no way out.
       this.clearCards();
+      this.closeHelp();
       GameState.finishDraw();
       const prevBest = progress.stats.bestWave;
       progress.recordMax('bestWave', GameState.wave);
@@ -171,11 +219,126 @@ export class UIScene extends Phaser.Scene {
       this.autoBtn.setStrokeStyle(2, on ? 0x5ef078 : 0x2b3040);
     });
 
+    // UIScene sleeps rather than stops, so anything still on screen when the
+    // player leaves would be waiting for them when the next run starts.
+    ev.on('ui:menu', () => {
+      this.closeHelp();
+      this.summaryCard?.destroy();
+      this.summaryCard = null;
+    });
+
     ev.on('wavesummary', (wave: number, tally: WaveTally) => this.showWaveSummary(wave, tally));
     ev.on('cards', (cards: ResearchCard[], level: number) => this.showCardDraw(cards, level));
 
     this.refreshStats();
+    this.refreshPreview();
     this.refreshWaveBtn();
+  }
+
+  /**
+   * In-game controls & build reference. The title screen's HOW TO PLAY teaches
+   * the loop, but a player who skipped it (or came back to a run three days
+   * later) had no way to ask "what does the lancer eat again?" without
+   * abandoning the run — and on touch there is no hover tooltip to fall back on.
+   */
+  private showHelp(): void {
+    if (this.helpLayer.length > 0) {
+      this.closeHelp();
+      return;
+    }
+    // The game-over overlay owns the screen, and a card draw is a decision the
+    // player has to make before anything else happens.
+    if (GameState.gameOver || GameState.awaitingCard) return;
+    const W = 940;
+    // Height follows the content instead of a guessed constant — the build
+    // reference grows by a row whenever a building is added to the palette.
+    const refH = BUILD_CATEGORIES.length * 28 + BUILD_INFO.length * 16;
+    const H = Math.min(GAME_H - 40, 66 + Math.max(226, refH) + 76);
+    const x = GAME_W / 2 - W / 2;
+    const y = GAME_H / 2 - H / 2;
+
+    const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.78).setOrigin(0).setDepth(80).setInteractive();
+    dim.on('pointerdown', () => this.closeHelp());
+    const panel = this.add
+      .rectangle(x, y, W, H, 0x141625, 0.99)
+      .setOrigin(0)
+      .setStrokeStyle(2, 0x2b3040)
+      .setDepth(81)
+      .setInteractive(); // swallow clicks so the dim behind never closes the panel
+    this.helpLayer.push(dim, panel);
+
+    this.helpLayer.push(
+      this.add
+        .text(GAME_W / 2, y + 26, 'CONTROLS & BUILDINGS', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#ffe066' })
+        .setOrigin(0.5)
+        .setDepth(82),
+    );
+
+    // ----- controls column -----
+    const controls: [string, string][] = IS_TOUCH
+      ? [
+          // two rendered lines max — the rows below sit at a fixed 30px pitch
+          ['Build', 'Three shelves: LOGI, PROD, GUNS. Tap a slot, then the board; tap it again to cancel.'],
+          ['Belts', 'Drag across the board to paint a line — corners included.'],
+          ['Rotate', 'ROTATE sets the facing before you build; tap a placed belt to turn it.'],
+          ['Sell', 'SELL, then tap a building — refunds half. Or long-press it.'],
+          ['Upgrade', 'Tap a placed tower to open its upgrade panel.'],
+          ['Wave', 'SEND WAVE. AUTO sends them back to back; ×1/×2/×3 is game speed.'],
+          ['Logistics', 'LOGI shades belts by throughput and shows each tower’s ammo uptime.'],
+        ]
+      : [
+          ['Build', 'Pick from the three shelves in the bar, or use the hotkeys listed here. ESC cancels.'],
+          ['Belts', 'Hold and drag to paint a line; it turns corners with your drag.'],
+          ['Rotate', 'R turns whatever is under the cursor, or the pending build on bare ground.'],
+          ['Sell', 'Right-click a building — refunds half. Expensive ones ask twice.'],
+          ['Upgrade', 'Click a placed tower, then U (or I for the second path at Mk3).'],
+          ['Wave', 'SPACE sends it · F cycles speed ×1/×2/×3 · P pauses.'],
+          ['Logistics', 'L shades belts by throughput and shows each tower’s ammo uptime · M mutes.'],
+        ];
+    let cy = y + 66;
+    for (const [head, body] of controls) {
+      this.helpLayer.push(
+        this.add.text(x + 30, cy, head, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#6bd4ff' }).setDepth(82),
+        this.add
+          .text(x + 116, cy, body, { ...FONT, fontSize: '11px', color: '#cdd6e4', wordWrap: { width: 320 }, lineSpacing: 2 })
+          .setDepth(82),
+      );
+      cy += 30;
+    }
+
+    // ----- build reference, grouped exactly like the palette -----
+    let by = y + 66;
+    const bx = x + 500;
+    for (const cat of BUILD_CATEGORIES) {
+      this.helpLayer.push(
+        this.add
+          .text(bx, by, `${cat.name}  —  ${cat.blurb}`, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: cat.css })
+          .setDepth(82),
+      );
+      by += 18;
+      for (const info of BUILD_INFO.filter((b) => b.cat === cat.id)) {
+        const key = IS_TOUCH ? '' : `[${info.hotkey}] `;
+        this.helpLayer.push(
+          this.add
+            .text(bx + 10, by, `${key}${info.name}`, { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#e8edf5' })
+            .setDepth(82),
+          this.add.text(bx + 120, by, `$${info.cost}`, { ...FONT, fontSize: '11px', color: '#ffe066' }).setDepth(82),
+        );
+        by += 16;
+      }
+      by += 10;
+    }
+
+    const closeY = y + H - 32;
+    const close = this.hudButton(GAME_W / 2 - 80, closeY - 18, 160, 36, 'CLOSE', 14, () => this.closeHelp(), 0x2e7d4f, 0x5ef078);
+    close.frame.setDepth(82);
+    close.label.setDepth(83).setColor('#ffffff');
+    this.helpLayer.push(close.frame, close.label);
+  }
+
+  private closeHelp(): void {
+    this.helpLayer.forEach((o) => o.destroy());
+    this.helpLayer = [];
   }
 
   /** Shared HUD button: a frame plus a centered label, with hover feedback. */
@@ -205,45 +368,68 @@ export class UIScene extends Phaser.Scene {
   }
 
   /**
-   * Build palette. One row of small slots on a 16:9 desktop bar; two rows of
-   * big, finger-sized slots whenever the bar is roomy (tablets and touch).
+   * Build palette, split into labelled category blocks — LOGISTICS, PRODUCTION
+   * and DEFENSE. Guns and factory equipment are bought for opposite reasons, so
+   * they read as separate shelves rather than one strip of thirteen lookalikes:
+   * each block has a coloured header and its slots carry that colour on the rim.
+   *
+   * One row of small slots on a 16:9 desktop bar; two rows of big, finger-sized
+   * slots whenever the bar is roomy (tablets and touch).
    */
   private buildPalette(layout: HudLayout): void {
     const bh = layout.slots[0].h;
-    const big = bh >= 78;
-    const iconScale = Math.min(2, Math.max(0.9, (bh * 0.42) / 32));
+    const inner = slotContent(bh);
 
-    const HINT = IS_TOUCH
-      ? 'Tap a slot then tap the map · ROTATE turns it · tap a placed belt to turn it · SELL then tap to refund 50% · tap a tower to upgrade'
-      : 'Drag paints belts round corners · R turns what is under the cursor · click a placed belt to turn it · right-click sells · click a tower to upgrade · [L] logistics';
+    // Category headers: the block label and its colour are the whole point of
+    // the grouping, so they are drawn even on the cramped 80px desktop bar.
+    layout.groupHeaders.forEach((h, gi) => {
+      const cat = BUILD_CATEGORIES[gi];
+      const size = h.h >= 15 ? 11 : 9;
+      // Fall back to the abbreviation only if the full word genuinely will not
+      // fit — a bar reading "LOGI / PRODUCTION / DEFENSE" looks like a bug.
+      const fits = cat.name.length * size * 0.62 + 12 <= h.w;
+      this.add.rectangle(h.x, h.y, h.w, h.h, cat.color, 0.14).setOrigin(0);
+      this.add.rectangle(h.x, h.y + h.h - 2, h.w, 2, cat.color, 0.6).setOrigin(0);
+      this.add
+        .text(h.x + h.w / 2, h.y + h.h / 2, fits ? cat.name : cat.short, {
+          ...FONT, fontSize: `${size}px`, fontStyle: 'bold', color: cat.css,
+        })
+        .setOrigin(0.5);
+    });
 
     BUILD_INFO.forEach((info, i) => {
       const { x, y, w: bw } = layout.slots[i];
+      const cat = categoryOf(info.type)!;
+      this.slotColor.set(info.type, cat.color);
       const container = this.add.container(x, y);
       const frame = this.add
         .rectangle(0, 0, bw, bh, 0x1e2233)
         .setOrigin(0)
-        .setStrokeStyle(2, 0x2b3040)
+        .setStrokeStyle(2, cat.color, 0.45)
         .setInteractive({ useHandCursor: true });
       frame.on('pointerdown', () => GameState.events.emit('ui:select', info.type));
       frame.on('pointerover', () => {
         frame.setFillStyle(0x272c42);
-        this.descText.setText(info.desc);
+        this.showDesc(info.desc, cat.css);
       });
       frame.on('pointerout', () => {
         frame.setFillStyle(0x1e2233);
-        this.descText.setText(HINT);
+        this.showHint();
       });
       container.add([
         frame,
-        this.add.image(bw / 2, bh * 0.34, info.type).setScale(iconScale),
+        this.add.image(bw / 2, inner.iconY, info.type).setScale(inner.iconScale),
         this.add
-          .text(bw / 2, bh * 0.6, info.name, { ...FONT, fontSize: big ? '12px' : '10px', fontStyle: 'bold', color: '#e8edf5' })
-          .setOrigin(0.5, 0),
-        this.add
-          .text(bw / 2, bh * 0.78, `$${info.cost}`, { ...FONT, fontSize: big ? '13px' : '11px', color: '#ffe066' })
+          .text(bw / 2, inner.costY, `$${info.cost}`, { ...FONT, fontSize: `${inner.costSize}px`, color: '#ffe066' })
           .setOrigin(0.5, 0),
       ]);
+      if (inner.showName) {
+        container.add(
+          this.add
+            .text(bw / 2, inner.nameY, info.name, { ...FONT, fontSize: `${inner.nameSize}px`, fontStyle: 'bold', color: '#e8edf5' })
+            .setOrigin(0.5, 0),
+        );
+      }
       // the hotkey badge is noise on a device with no keyboard
       if (!IS_TOUCH) {
         container.add(this.add.text(4, 3, info.hotkey, { ...FONT, fontSize: '9px', color: '#8892a6' }));
@@ -253,9 +439,35 @@ export class UIScene extends Phaser.Scene {
     });
 
     this.descText = this.add
-      .text(layout.slots[0].x + 2, PLAYFIELD_H - 20, HINT, {
+      .text(layout.groupHeaders[0].x + 2, PLAYFIELD_H - 20, '', {
         ...FONT, fontSize: '11px', color: '#cdd6e4', stroke: '#000000', strokeThickness: 3,
       });
+    this.showHint();
+  }
+
+  /** The idle line above the palette: what the controls are on this device. */
+  private get paletteHint(): string {
+    return IS_TOUCH
+      ? 'Tap a slot then tap the map · tap the slot again to cancel · ROTATE turns it · SELL then tap to refund 50% · tap a tower to upgrade · [?] help'
+      : 'Drag paints belts round corners · R turns what is under the cursor · right-click sells · click a tower to upgrade · [L] logistics · [H] help';
+  }
+
+  private showDesc(text: string, color = '#cdd6e4'): void {
+    this.descText.setText(text).setColor(color);
+  }
+
+  /**
+   * Fall back to whatever is contextually useful. On touch there is no hover,
+   * so a tapped slot keeps its description on screen until another is chosen —
+   * otherwise a touch player never sees what a building does at all.
+   */
+  private showHint(): void {
+    const sel = this.selectedType ? BUILD_INFO.find((b) => b.type === this.selectedType) : null;
+    if (IS_TOUCH && sel) {
+      this.showDesc(sel.desc, categoryOf(sel.type)?.css ?? '#cdd6e4');
+      return;
+    }
+    this.showDesc(this.paletteHint, '#cdd6e4');
   }
 
   /**
@@ -488,6 +700,13 @@ export class UIScene extends Phaser.Scene {
     this.cardKeyHandlers = [];
   }
 
+  /**
+   * Money/lives/wave chips and everything that keys off the wallet. Called on
+   * every coin, so it does the cheap work only: the wave preview is rebuilt
+   * separately, and each palette slot's greyed-out state is written just when it
+   * actually flips. A late swift wave is a hundred kills in forty seconds, and
+   * each `setText` re-renders a canvas texture.
+   */
   private refreshStats(pop = false): void {
     this.moneyText.setText(`$ ${GameState.money}`);
     this.livesText.setText(`♥ ${GameState.lives}`);
@@ -496,28 +715,49 @@ export class UIScene extends Phaser.Scene {
       this.moneyText.setScale(1.25);
       this.tweens.add({ targets: this.moneyText, scale: 1, duration: 150 });
     }
-    const d = waveDef(GameState.wave);
-    // matches the enemy textures, so the preview colour names the thing you'll see
-    const KIND_COLOR: Record<string, string> = { normal: '#cdd6e4', swift: '#2fe3d0', armored: '#9aa7bd', boss: '#ff6b6b' };
-    const KIND_HINT: Record<string, string> = {
-      normal: '',
-      swift: '\nfast & many — splash shines',
-      armored: '\nresists bullets — shells or lances',
-      boss: '\ntanky · a leak costs 5♥',
-    };
-    this.previewText
-      .setText(`Next: ${d.count}× ${WAVE_KIND_LABEL[d.kind]} · ${d.hp} HP${KIND_HINT[d.kind]}`)
-      .setColor(KIND_COLOR[d.kind]);
     for (const info of BUILD_INFO) {
-      this.paletteButtons.get(info.type)?.setAlpha(GameState.money >= info.cost ? 1 : 0.45);
+      const can = GameState.money >= info.cost;
+      if (this.slotAffordable.get(info.type) === can) continue;
+      this.slotAffordable.set(info.type, can);
+      this.paletteButtons.get(info.type)?.setAlpha(can ? 1 : 0.45);
     }
 
-    this.mapText.setText(`◈ ${activeMap().name}`);
     const cost = prospectCost(GameState.surveys);
     const kind = prospectKind(GameState.surveys);
     this.prospectText
       .setText(this.surveyArmed ? `⛏ PICK A SITE  (ESC)` : `⛏ SURVEY ${kind.toUpperCase()}  $${cost}`)
       .setColor(this.surveyArmed ? '#5ef078' : GameState.money >= cost ? (kind === 'ore' ? '#ff9f43' : '#6bd4ff') : '#8892a6');
+  }
+
+  /**
+   * Next-wave preview + map name: only changes when the wave does.
+   *
+   * The counter-play hint gets its own line only on a roomy bar. The compact
+   * 80px strip gives the preview 18px, so a second line spilled over the SEND
+   * WAVE button underneath it — there it becomes a short tail on one line.
+   */
+  private refreshPreview(): void {
+    const d = waveDef(GameState.wave);
+    // matches the enemy textures, so the preview colour names the thing you'll see
+    const KIND_COLOR: Record<string, string> = { normal: '#cdd6e4', swift: '#2fe3d0', armored: '#9aa7bd', boss: '#ff6b6b' };
+    const LONG: Record<string, string> = {
+      normal: '',
+      swift: 'fast & many — splash shines',
+      armored: 'resists bullets — shells or lances',
+      boss: 'tanky · a leak costs 5♥',
+    };
+    const SHORT: Record<string, string> = {
+      normal: '',
+      swift: 'splash shines',
+      armored: 'shells or lances',
+      boss: 'a leak costs 5♥',
+    };
+    const hint = ROOMY_UI ? LONG[d.kind] : SHORT[d.kind];
+    const tail = hint ? (ROOMY_UI ? `\n${hint}` : ` · ${hint}`) : '';
+    this.previewText
+      .setText(`Next: ${d.count}× ${WAVE_KIND_LABEL[d.kind]} · ${d.hp} HP${tail}`)
+      .setColor(KIND_COLOR[d.kind]);
+    this.mapText.setText(`◈ ${activeMap().name}`);
   }
 
   private refreshWaveBtn(): void {
@@ -529,7 +769,9 @@ export class UIScene extends Phaser.Scene {
     }
     this.waveBtn.setFillStyle(building ? 0x2e7d4f : 0x5c2530);
     this.waveBtn.setStrokeStyle(2, building ? 0x5ef078 : 0xff5555);
-    this.waveBtnText.setText(building ? 'SEND WAVE [SPC]' : 'DEFEND!');
+    // Never quote a keyboard shortcut on a device with no keyboard — this used
+    // to re-stamp "[SPC]" over the touch label on the first phase change.
+    this.waveBtnText.setText(building ? (IS_TOUCH ? 'SEND WAVE' : 'SEND WAVE [SPC]') : 'DEFEND!');
     this.refreshStats();
   }
 
@@ -539,16 +781,19 @@ export class UIScene extends Phaser.Scene {
     const def = this.toastQueue.shift();
     if (!def) return;
     this.toastActive = true;
-    const c = this.add.container(GAME_W + 270, 8).setDepth(60);
+    // Top LEFT, under the stat chips. On the right it slid in over the map name
+    // and the help/mute buttons, and — once the upgrade panel moved down to
+    // clear the taller touch strip — straight across the panel you were reading.
+    const c = this.add.container(-280, this.stripBottom + 8).setDepth(60);
     const bg = this.add.rectangle(0, 0, 262, 34, 0x141625, 0.95).setOrigin(0).setStrokeStyle(2, 0xffe066);
     const name = this.add.text(10, 4, `★ ${def.name}`, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#ffe066' });
     const desc = this.add.text(10, 20, def.unlock ? `${def.desc} — ${def.unlock.label}` : def.desc, { ...FONT, fontSize: '9px', color: '#cdd6e4' });
     c.add([bg, name, desc]);
     sfx.coin();
-    this.tweens.add({ targets: c, x: GAME_W - 270, duration: 250, ease: 'Back.out' });
+    this.tweens.add({ targets: c, x: 8, duration: 250, ease: 'Back.out' });
     this.tweens.add({
       targets: c,
-      x: GAME_W + 270,
+      x: -280,
       delay: 3000,
       duration: 200,
       ease: 'Cubic.in',
@@ -560,10 +805,17 @@ export class UIScene extends Phaser.Scene {
     });
   }
 
+  /**
+   * Armed slot gets a thick gold rim; the rest fall back to their category
+   * colour, so the palette still reads as three shelves while one is selected.
+   */
   private refreshSelection(t: BuildingType | null): void {
+    this.selectedType = t;
     for (const [type, frame] of this.paletteFrames) {
-      frame.setStrokeStyle(2, type === t ? 0xffe066 : 0x2b3040);
+      if (type === t) frame.setStrokeStyle(3, 0xffe066, 1);
+      else frame.setStrokeStyle(2, this.slotColor.get(type) ?? 0x2b3040, 0.45);
     }
+    this.showHint();
   }
 
   private showGameOver(newBest = false): void {

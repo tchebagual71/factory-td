@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ItemType } from '../types';
+import { emptyMods, Mods } from './mods';
 import {
   BUILD_INFO,
   costOf,
@@ -80,6 +81,28 @@ describe('effStats', () => {
         }
       }
     }
+  });
+
+  /**
+   * `effStats` memoises per Mods bag (combat calls it for every tower every
+   * frame). The cache must key on everything that changes the answer, or a
+   * researched run reads a tower's pre-research stats forever.
+   */
+  describe('memoisation', () => {
+    it('keeps mark, path and mods apart', () => {
+      const mods: Mods = { ...emptyMods(), damage: 2 };
+      expect(effStats('tower', 1)).not.toEqual(effStats('tower', 2));
+      expect(effStats('tower', 3, 'sniper')).not.toEqual(effStats('tower', 3, 'gatling'));
+      expect(effStats('tower', 1, null, mods).damage).toBe(TOWERS.tower.damage * 2);
+      // and the un-modded answer is not poisoned by the modded one
+      expect(effStats('tower', 1).damage).toBe(TOWERS.tower.damage);
+    });
+
+    it('hands back a stable value for repeated identical queries', () => {
+      const a = effStats('lancer', 4, 'railgun');
+      const b = effStats('lancer', 4, 'railgun');
+      expect(a).toEqual(b);
+    });
   });
 
   it('cryo paths are differentiated: cryostasis freezes harder, blizzard covers more ground faster', () => {

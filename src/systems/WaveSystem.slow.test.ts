@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { effStats } from '../data/buildings';
 import { GameState } from '../state/GameState';
-import { makeScene, makeSprite } from '../test/helpers';
+import { makeScene, MockSprite, makeSprite } from '../test/helpers';
 import { Enemy } from '../types';
 import { WaveSystem } from './WaveSystem';
 
@@ -21,6 +21,9 @@ function makeEnemy(overrides: Partial<Enemy> = {}): Enemy {
     speed: 60,
     slow: 0,
     slowFactor: 1,
+    flash: 0,
+    flashTint: 0,
+    tinted: 0,
     wp: 0,
     traveled: 0,
     bounty: 5,
@@ -72,6 +75,66 @@ describe('chill', () => {
     const e = makeEnemy({ slow: 0, slowFactor: 1 });
     wave.chill(e, 0.9, 1);
     expect(e.slowFactor).toBe(0.9);
+  });
+});
+
+/**
+ * The hit flash is the "wrong ammo" tell — a resisted hit flashes steel instead
+ * of white. It used to be a `delayedCall` per landed bullet; the update loop now
+ * owns the sprite's colour and resolves flash-over-frost-over-nothing in one
+ * decision per frame.
+ */
+describe('hit flash', () => {
+  const spriteOf = (e: Enemy) => e.sprite as unknown as MockSprite;
+
+  function liveEnemy(overrides: Partial<Enemy> = {}): Enemy {
+    const e = makeEnemy({ hp: 10000, maxHp: 10000, ...overrides });
+    wave.start(); // gives the system a wave definition so update() runs
+    wave.enemies.push(e);
+    return e;
+  }
+
+  it('flashes white on a clean hit and clears itself without a timer', () => {
+    const e = liveEnemy();
+    wave.hit(e, 5);
+    wave.update(0.01);
+    expect(spriteOf(e).tint).toBe(0xffffff);
+    expect(spriteOf(e).tintFill).toBe(true);
+
+    wave.update(0.2); // well past the flash
+    expect(spriteOf(e).tint).toBeNull();
+  });
+
+  it('flashes steel-gray when the round is resisted', () => {
+    const e = liveEnemy({ kind: 'armored' });
+    wave.hit(e, 5, 'ammo'); // bullets bounce off armour
+    wave.update(0.01);
+    expect(spriteOf(e).tint).not.toBe(0xffffff);
+    expect(spriteOf(e).tintFill).toBe(true);
+  });
+
+  it('does not flash steel when the ammo actually counters the armour', () => {
+    const e = liveEnemy({ kind: 'armored' });
+    wave.hit(e, 5, 'shell');
+    wave.update(0.01);
+    expect(spriteOf(e).tint).toBe(0xffffff);
+  });
+
+  it('shows the flash over a frost tint, then falls back to frost', () => {
+    const e = liveEnemy();
+    wave.chill(e, 0.5, 5);
+    wave.update(0.01);
+    const frost = spriteOf(e).tint;
+    expect(frost).not.toBeNull();
+    expect(spriteOf(e).tintFill).toBe(false);
+
+    wave.hit(e, 5);
+    wave.update(0.01);
+    expect(spriteOf(e).tintFill, 'a hit on a chilled enemy must still read as a hit').toBe(true);
+
+    wave.update(0.2);
+    expect(spriteOf(e).tint, 'and the frost comes back once the flash lapses').toBe(frost);
+    expect(spriteOf(e).tintFill).toBe(false);
   });
 });
 

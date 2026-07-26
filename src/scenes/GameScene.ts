@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
-import { GAME_W, GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
+import { GAME_W, GRID_H, GRID_W, IS_TOUCH, PLAYFIELD_H, TILE } from '../config';
 import {
+  BUILD_INFO,
   costOf,
   effStats,
   fedRequired,
@@ -40,13 +41,28 @@ import { WaveSystem } from '../systems/WaveSystem';
 import { Building, BuildingType, Dir, PathId } from '../types';
 import { beltRun } from '../systems/beltPaint';
 import { BELT_FRAME_KEYS } from './BootScene';
+import { topStrip } from './hudLayout';
 import { sfx } from '../utils/sfx';
 
 /** Concurrent floating-text objects allowed before new ones are dropped. */
 const MAX_FLOATERS = 24;
 
+/** Recycled particle emitters. Enough that overlapping puffs never visibly cut each other short. */
+const BURST_POOL = 10;
+
 /** Shared scrolling-chevron animation played by every belt. */
 const BELT_ANIM = 'belt-run';
+
+/** Upgrade-panel geometry. Authored small; scaled up bodily for fingers. */
+const PANEL_W = 258;
+const PANEL_SCALE = IS_TOUCH ? 1.4 : 1;
+
+/** Phaser spells its digit keys out; letters are themselves. */
+const DIGIT_KEYS = ['ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
+
+function phaserKeyName(hotkey: string): string {
+  return /^[0-9]$/.test(hotkey) ? DIGIT_KEYS[Number(hotkey)] : hotkey.toUpperCase();
+}
 
 /** Mk-pip / float-text tint per specialization path. */
 const PATH_COLORS: Record<PathId, number> = {
@@ -94,6 +110,9 @@ export class GameScene extends Phaser.Scene {
   private depositsTimer = 0;
   /** live floating-text objects, so a 100-kill wave can't flood the frame */
   private floaters = 0;
+  /** recycled particle emitters — see `burst` */
+  private bursts: Phaser.GameObjects.Particles.ParticleEmitter[] = [];
+  private burstIdx = 0;
 
   /** last cell painted in the current belt drag — fast drags interpolate from here */
   private paintCell: { x: number; y: number } | null = null;
@@ -122,6 +141,8 @@ export class GameScene extends Phaser.Scene {
     this.ready = false;
     this.saveDirty = false;
     this.floaters = 0; // restart wipes the tweens, so their onComplete never decrements
+    this.bursts = []; // and it destroys the pooled emitters — never reuse the dead ones
+    this.burstIdx = 0;
     GameState.reset();
 
     // The layout has to be chosen before anything reads the board: a resumed
@@ -196,14 +217,19 @@ export class GameScene extends Phaser.Scene {
     window.addEventListener('beforeunload', this.onBeforeUnload);
     this.events.once('shutdown', () => window.removeEventListener('beforeunload', this.onBeforeUnload));
 
+    // Hangs off the status strip rather than a fixed y: on a phone the strip is
+    // taller, and a centred five-line block ran straight through it.
     const hint = this.add
       .text(
         640,
-        90,
-        'MINERS on ore → belt ore into a PRESS. Ammo feeds GUNS — and every deeper machine runs on it\nFORGE: 2 ammo → shell (CANNONS)  ·  ASSEMBLER: 2 ammo + 1 crystal → piercing (LANCERS)\nCHILLER: 1 ammo → 2 coolant, the cheapest line in the game (CRYO fields slow a choke point)\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!  [SPACE] sends the wave  ·  [L] logistics view\nFull guide on the title screen under HOW TO PLAY',
+        topStrip(GAME_W, IS_TOUCH).h + 30,
+        'MINERS on ore → belt ore into a PRESS. Ammo feeds GUNS — and every deeper machine runs on it\nFORGE: 2 ammo → shell (CANNONS)  ·  ASSEMBLER: 2 ammo + 1 crystal → piercing (LANCERS)\nCHILLER: 1 ammo → 2 coolant, the cheapest line in the game (CRYO fields slow a choke point)\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!\n' +
+          (IS_TOUCH
+            ? 'The build bar is split LOGISTICS · PRODUCTION · GUNS — tap [?] up top for the full reference at any time'
+            : 'The build bar is split LOGISTICS · PRODUCTION · GUNS — [SPACE] sends the wave · [L] logistics · [?] or [H] for help'),
         { fontFamily: 'monospace', fontSize: '14px', color: '#cdd6e4', align: 'center', stroke: '#000', strokeThickness: 4 },
       )
-      .setOrigin(0.5)
+      .setOrigin(0.5, 0)
       .setDepth(30);
     this.tweens.add({ targets: hint, alpha: 0, delay: 14000, duration: 1500, onComplete: () => hint.destroy() });
     // let the HUD's rotate button show the facing this run starts on
@@ -323,24 +349,50 @@ export class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: t, alpha: 0, y: 210, delay: 1300, duration: 600, onComplete: () => t.destroy() });
   }
 
+  /**
+   * Particle puff. Emitters are pooled and recycled round-robin: this fires on
+   * every kill, every splash and every lance hit, and building one emitter (plus
+   * a 500ms destroy timer) per event meant a hundred-kill swift wave allocated a
+   * hundred emitters and a hundred timers in about forty seconds.
+   *
+   * Particles already in flight from a previous use keep their own lifespan, so
+   * reusing an emitter mid-puff is harmless.
+   */
   burst(x: number, y: number, tint: number, count: number): void {
-    const e = this.add.particles(x, y, 'px', {
-      speed: { min: 40, max: 170 },
-      lifespan: { min: 150, max: 450 },
-      scale: { start: 1.2, end: 0 },
-      tint,
-      emitting: false,
-    });
-    e.setDepth(25);
+    if (this.bursts.length < BURST_POOL) {
+      this.bursts.push(
+        this.add
+          .particles(0, 0, 'px', {
+            speed: { min: 40, max: 170 },
+            lifespan: { min: 150, max: 450 },
+            scale: { start: 1.2, end: 0 },
+            emitting: false,
+          })
+          .setDepth(25),
+      );
+    }
+    const e = this.bursts[this.burstIdx];
+    this.burstIdx = (this.burstIdx + 1) % BURST_POOL;
+    e.setPosition(x, y);
+    e.setParticleTint(tint);
     e.explode(count);
-    this.time.delayedCall(500, () => e.destroy());
   }
 
   // ---------- tower upgrades ----------
 
   private createUpgradePanel(): void {
-    this.panel = this.add.container(GAME_W - 266, 44).setDepth(40).setVisible(false);
-    const bg = this.add.rectangle(0, 0, 258, 136, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
+    // Laid out at a fixed size and then scaled as a whole on touch: 22px-tall
+    // buttons are a comfortable click and an impossible tap, and Phaser
+    // transforms container children's hit areas along with their art, so the
+    // targets grow with the panel.
+    const s = PANEL_SCALE;
+    const strip = topStrip(GAME_W, IS_TOUCH);
+    this.panel = this.add
+      .container(GAME_W - 8 - PANEL_W * s, strip.stats.y + strip.h + 8)
+      .setScale(s)
+      .setDepth(40)
+      .setVisible(false);
+    const bg = this.add.rectangle(0, 0, PANEL_W, 136, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
     this.panelBg = bg;
     this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: '13px', fontStyle: 'bold', color: '#ffe066' });
     this.panelInfo = this.add.text(10, 37, '', { fontFamily: 'monospace', fontSize: '10px', color: '#cdd6e4', lineSpacing: 2 });
@@ -640,19 +692,12 @@ export class GameScene extends Phaser.Scene {
     this.input.mouse?.disableContextMenu();
     const kb = this.input.keyboard!;
     kb.removeAllListeners();
-    kb.on('keydown-ONE', () => this.select('belt'));
-    kb.on('keydown-TWO', () => this.select('splitter'));
-    kb.on('keydown-THREE', () => this.select('tunnel'));
-    kb.on('keydown-FOUR', () => this.select('miner'));
-    kb.on('keydown-FIVE', () => this.select('press'));
-    kb.on('keydown-SIX', () => this.select('forge'));
-    kb.on('keydown-SEVEN', () => this.select('assembler'));
-    kb.on('keydown-EIGHT', () => this.select('chiller'));
-    kb.on('keydown-X', () => this.select('lab'));
-    kb.on('keydown-NINE', () => this.select('tower'));
-    kb.on('keydown-ZERO', () => this.select('cannon'));
-    kb.on('keydown-C', () => this.select('lancer'));
-    kb.on('keydown-V', () => this.select('cryo'));
+    // Bound straight off BUILD_INFO so the keys can never drift from the badges
+    // drawn on the palette slots. The number row is the factory, ZXCV the guns
+    // — the same split the palette draws, so the category tells you where to reach.
+    for (const info of BUILD_INFO) {
+      kb.on(`keydown-${phaserKeyName(info.hotkey)}`, () => this.select(info.type));
+    }
     kb.on('keydown-U', () => this.tryUpgrade(0));
     kb.on('keydown-I', () => this.tryUpgrade(1));
     // Factorio's rule: R turns whatever is under the cursor, or the thing you
@@ -811,6 +856,9 @@ export class GameScene extends Phaser.Scene {
     // must not also select a belt behind the modal. (Pointer input is already
     // swallowed by the modal's dim.)
     if (GameState.awaitingCard) return;
+    // Choosing the armed slot again cancels it. On touch there is no ESC and no
+    // right-click, so without this a player who taps BELT is stuck in belt mode.
+    if (type !== null && type === this.selected) type = null;
     this.selected = type;
     GameState.events.emit('selected', type);
     if (type && this.surveyMode) {

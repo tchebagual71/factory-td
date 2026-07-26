@@ -15,6 +15,9 @@ const ITEM_TEXTURE: Record<ItemType, string> = {
   coolant: 'item-coolant',
 };
 
+/** Splitter output directions relative to its facing: 0=straight, 3=left, 1=right. */
+const SPLIT_OFFSETS = [0, 3, 1];
+
 /**
  * Moves items along belts and splitters. Each cell holds at most one item;
  * items glide smoothly to their cell center, then hop to the next cell if
@@ -58,11 +61,9 @@ export class ConveyorSystem {
         const dive = this.tryTunnel(it, host);
         moved = dive === 'moved' || (dive === 'none' && this.tryTransfer(i, it, host, host.dir));
       } else if (host.type === 'splitter') {
-        // offsets relative to facing: 0=straight, 3=left, 1=right
-        const offsets = [0, 3, 1];
         for (let k = 0; k < 3; k++) {
           const slot = (host.outIdx + k) % 3;
-          const dir = ((host.dir + offsets[slot]) % 4) as Dir;
+          const dir = ((host.dir + SPLIT_OFFSETS[slot]) % 4) as Dir;
           if (this.tryTransfer(i, it, host, dir)) {
             host.outIdx = (slot + 1) % 3;
             moved = true;

@@ -111,9 +111,10 @@ export class LogisticsSystem {
         live.add(b);
         // No data yet (built after the wave started) reads as "—", not a false 0%
         const measured = b.utilTotal > 0;
-        label
-          .setText(measured ? `${Math.round(up * 100)}%` : '—')
-          .setColor(measured ? uptimeColor(up) : '#8892a6');
+        // Every setText re-rasterises a canvas texture; the percentage only
+        // moves a few times a second, so skip the frames where it hasn't.
+        const shown = measured ? `${Math.round(up * 100)}%` : '—';
+        if (label.text !== shown) label.setText(shown).setColor(measured ? uptimeColor(up) : '#8892a6');
         this.g.lineStyle(2, b.ammo > 0 ? 0x5ef078 : 0xff5555, 0.5);
         this.g.strokeRect(px + 1, py + 1, TILE - 2, TILE - 2);
         // magazine fill, so "80% uptime but currently empty" is visible too

@@ -59,9 +59,19 @@ export const MACHINES: Record<MachineType, MachineStats> = {
 /** Raw resources — the leaves of the recipe graph, dug rather than crafted. */
 export const RAW_ITEMS: readonly ItemType[] = ['ore', 'crystal'];
 
-/** Every input this machine's recipe consumes, as [item, count] pairs. */
-export function recipeInputs(type: MachineType): [ItemType, number][] {
-  return Object.entries(MACHINES[type].inputs) as [ItemType, number][];
+/**
+ * Every input this machine's recipe consumes, as [item, count] pairs.
+ *
+ * Resolved once per machine type: recipes are static, and ProductionSystem asks
+ * for this on every machine on every frame — `Object.entries` there meant a
+ * fresh array of fresh tuples per machine per tick. Callers must not mutate it.
+ */
+const RECIPE_INPUTS: Record<MachineType, [ItemType, number][]> = Object.fromEntries(
+  (Object.keys(MACHINES) as MachineType[]).map((m) => [m, Object.entries(MACHINES[m].inputs) as [ItemType, number][]]),
+) as Record<MachineType, [ItemType, number][]>;
+
+export function recipeInputs(type: MachineType): readonly [ItemType, number][] {
+  return RECIPE_INPUTS[type];
 }
 
 /** How much of `item` this machine's recipe wants (0 = it won't accept it). */
@@ -395,9 +405,24 @@ function applyMult(base: TowerStats, m: StatMult): TowerStats {
 }
 
 /**
+ * Memo for `effStats`. Combat resolves stats for every tower every frame, and
+ * the answer only moves when a tower is upgraded or a research card is taken —
+ * so a late-game board of forty towers was allocating ~2400 throwaway stat
+ * objects a second for nothing.
+ *
+ * Keyed on the `Mods` object's identity: `modsFrom` always returns a fresh bag,
+ * so taking a card naturally invalidates the whole cache and a stale row is
+ * impossible. Entries are shared, and callers must treat them as read-only —
+ * every caller in the codebase only reads.
+ */
+const statCache = new WeakMap<Mods, Map<string, TowerStats>>();
+
+/**
  * Effective combat stats for a tower at a given mark/path. Pure — never
  * mutates TOWERS; combat must always read through here. A mk≥3 tower with no
  * path (shouldn't happen) defensively clamps to Mk2 stats.
+ *
+ * The returned object is cached and shared: read it, never write to it.
  */
 export function effStats(
   type: TowerType,
@@ -405,11 +430,22 @@ export function effStats(
   path: PathId | null = null,
   mods: Mods = NO_MODS,
 ): TowerStats {
+  let byKey = statCache.get(mods);
+  if (!byKey) {
+    byKey = new Map();
+    statCache.set(mods, byKey);
+  }
+  const key = `${type}|${mk}|${path ?? ''}`;
+  const hit = byKey.get(key);
+  if (hit) return hit;
+
   const base = TOWERS[type];
   const m = Math.min(mk, MAX_MK);
   const tier =
     m <= 1 ? { ...base } : m === 2 || !path ? applyMult(base, UPGRADE_TREE[type].mk2.mult) : applyMult(base, pathOf(type, path).tiers[(m - 3) as 0 | 1].mult);
-  return mods === NO_MODS ? tier : applyMods(tier, mods);
+  const out = mods === NO_MODS ? tier : applyMods(tier, mods);
+  byKey.set(key, out);
+  return out;
 }
 
 /**
@@ -436,27 +472,95 @@ export function isMachine(type: BuildingType): type is MachineType {
   return type in MACHINES;
 }
 
-export const BUILD_INFO: {
+/**
+ * Palette grouping. Guns and factory equipment are bought for opposite reasons
+ * — one spends throughput, the other builds it — so they get separate, labelled
+ * blocks in the build bar rather than one undifferentiated strip of thirteen.
+ *
+ * Hotkeys follow the same split: the number row is the factory, ZXCV is the
+ * armoury. Knowing the category tells you which half of the keyboard to reach for.
+ */
+export type BuildCategory = 'logistics' | 'production' | 'defense';
+
+export const BUILD_CATEGORIES: {
+  id: BuildCategory;
+  /** header shown above the group in the build bar */
+  name: string;
+  /** short form for narrow bars */
+  short: string;
+  /** slot border / header tint — the group's identity colour */
+  color: number;
+  /** hex twin of `color`, for Text styles */
+  css: string;
+  /** one line explaining what the whole group is for */
+  blurb: string;
+}[] = [
+  {
+    id: 'logistics',
+    name: 'LOGISTICS',
+    short: 'LOGI',
+    color: 0x6bd4ff,
+    css: '#6bd4ff',
+    blurb: 'Move items around the board.',
+  },
+  {
+    id: 'production',
+    name: 'PRODUCTION',
+    short: 'PROD',
+    color: 0xff9f43,
+    css: '#ff9f43',
+    blurb: 'Dig ore and turn it into rounds.',
+  },
+  {
+    id: 'defense',
+    name: 'DEFENSE',
+    short: 'GUNS',
+    color: 0xff6b6b,
+    css: '#ff6b6b',
+    blurb: 'Spend those rounds on the enemy.',
+  },
+];
+
+export interface BuildInfo {
   type: BuildingType;
   name: string;
   cost: number;
   hotkey: string;
+  cat: BuildCategory;
   desc: string;
-}[] = [
-  { type: 'belt', name: 'Belt', cost: BELT.cost, hotkey: '1', desc: 'Moves items. R to rotate, drag to paint.' },
-  { type: 'splitter', name: 'Splitter', cost: SPLITTER.cost, hotkey: '2', desc: 'Splits a belt between straight/left/right outputs.' },
-  { type: 'tunnel', name: 'Tunnel', cost: TUNNEL.cost, hotkey: '3', desc: 'Items dive underground and surface at the next tunnel facing the same way (≤4 tiles) — crosses anything, even the enemy path.' },
-  { type: 'miner', name: 'Miner', cost: MINER.cost, hotkey: '4', desc: 'Place on ore or crystal. Digs whatever it stands on — crystal comes out slower.' },
-  { type: 'press', name: 'Press', cost: MACHINES.press.cost, hotkey: '5', desc: '1 ore → 1 ammo. Feeds gun towers — and every other machine downstream.' },
-  { type: 'forge', name: 'Forge', cost: MACHINES.forge.cost, hotkey: '6', desc: '2 ammo → 1 shell. Feeds cannons. Belt ammo in from a press.' },
-  { type: 'assembler', name: 'Assembler', cost: MACHINES.assembler.cost, hotkey: '7', desc: '2 ammo + 1 crystal → 1 piercing round. Needs BOTH inputs belted in. Feeds lancers.' },
-  { type: 'chiller', name: 'Chiller', cost: MACHINES.chiller.cost, hotkey: '8', desc: '1 ammo → 2 coolant. The cheapest line in the game. Feeds cryo towers.' },
-  { type: 'lab', name: 'Lab', cost: LAB.cost, hotkey: 'X', desc: 'Belt FINISHED rounds in and it converts them to research — every level lets you pick one of three permanent upgrades. Raw ore is worthless to it: research always costs you ammo.' },
-  { type: 'tower', name: 'Gun', cost: TOWERS.tower.cost, hotkey: '9', desc: 'Fast single-target. Eats ammo. Click a placed tower to upgrade it.' },
-  { type: 'cannon', name: 'Cannon', cost: TOWERS.cannon.cost, hotkey: '0', desc: 'Slow splash damage. Eats shells. Armored enemies resist bullets but not shells.' },
-  { type: 'lancer', name: 'Lancer', cost: TOWERS.lancer.cost, hotkey: 'C', desc: 'Fires a lance straight down the path, skewering up to 3 enemies. Ignores armor. Eats piercing rounds.' },
-  { type: 'cryo', name: 'Cryo', cost: TOWERS.cryo.cost, hotkey: 'V', desc: 'No damage — pulses coolant to slow everything in range, multiplying every gun covering the same choke point.' },
+}
+
+/**
+ * Ordered by category, and it must stay that way: the build bar draws each
+ * group as one contiguous block of slots (`buildGroupSizes` below), and
+ * `buildings.test.ts` pins the invariant.
+ */
+export const BUILD_INFO: BuildInfo[] = [
+  { type: 'belt', name: 'Belt', cost: BELT.cost, hotkey: '1', cat: 'logistics', desc: 'Moves items one per tile. Drag to paint a line — it turns corners with you.' },
+  { type: 'splitter', name: 'Splitter', cost: SPLITTER.cost, hotkey: '2', cat: 'logistics', desc: 'Splits a belt between straight/left/right outputs.' },
+  { type: 'tunnel', name: 'Tunnel', cost: TUNNEL.cost, hotkey: '3', cat: 'logistics', desc: 'Items dive underground and surface at the next tunnel facing the same way (≤4 tiles) — crosses anything, even the enemy path.' },
+  { type: 'miner', name: 'Miner', cost: MINER.cost, hotkey: '4', cat: 'production', desc: 'Place on ore or crystal. Digs whatever it stands on — crystal comes out slower.' },
+  { type: 'press', name: 'Press', cost: MACHINES.press.cost, hotkey: '5', cat: 'production', desc: '1 ore → 1 ammo. Feeds gun towers — and every other machine downstream.' },
+  { type: 'forge', name: 'Forge', cost: MACHINES.forge.cost, hotkey: '6', cat: 'production', desc: '2 ammo → 1 shell. Feeds cannons. Belt ammo in from a press.' },
+  { type: 'assembler', name: 'Assembler', cost: MACHINES.assembler.cost, hotkey: '7', cat: 'production', desc: '2 ammo + 1 crystal → 1 piercing round. Needs BOTH inputs belted in. Feeds lancers.' },
+  { type: 'chiller', name: 'Chiller', cost: MACHINES.chiller.cost, hotkey: '8', cat: 'production', desc: '1 ammo → 2 coolant. The cheapest line in the game. Feeds cryo towers.' },
+  { type: 'lab', name: 'Lab', cost: LAB.cost, hotkey: '9', cat: 'production', desc: 'Belt FINISHED rounds in and it converts them to research — every level lets you pick one of three permanent upgrades. Raw ore is worthless to it: research always costs you ammo.' },
+  { type: 'tower', name: 'Gun', cost: TOWERS.tower.cost, hotkey: 'Z', cat: 'defense', desc: 'Fast single-target. Eats ammo. Select a placed tower to open its upgrades.' },
+  { type: 'cannon', name: 'Cannon', cost: TOWERS.cannon.cost, hotkey: 'X', cat: 'defense', desc: 'Slow splash damage. Eats shells. Armored enemies resist bullets but not shells.' },
+  { type: 'lancer', name: 'Lancer', cost: TOWERS.lancer.cost, hotkey: 'C', cat: 'defense', desc: 'Fires a lance straight down the path, skewering up to 3 enemies. Ignores armor. Eats piercing rounds.' },
+  { type: 'cryo', name: 'Cryo', cost: TOWERS.cryo.cost, hotkey: 'V', cat: 'defense', desc: 'No damage — pulses coolant to slow everything in range, multiplying every gun covering the same choke point.' },
 ];
+
+/** Slots per category, in `BUILD_CATEGORIES` order — the build bar's block sizes. */
+export function buildGroupSizes(): number[] {
+  return BUILD_CATEGORIES.map((c) => BUILD_INFO.filter((b) => b.cat === c.id).length);
+}
+
+/** The category a build type belongs to — its palette colour and shelf. */
+export function categoryOf(type: BuildingType): (typeof BUILD_CATEGORIES)[number] | undefined {
+  const info = BUILD_INFO.find((b) => b.type === type);
+  return info && BUILD_CATEGORIES.find((c) => c.id === info.cat);
+}
 
 export function costOf(type: BuildingType): number {
   return BUILD_INFO.find((b) => b.type === type)!.cost;
