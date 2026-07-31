@@ -241,6 +241,9 @@ export class UIScene extends Phaser.Scene {
     this.add.rectangle(layout.deck.x, layout.deck.y, layout.deck.w, layout.deck.h, UI_COLOR.surface.hex).setOrigin(0);
     this.add.rectangle(layout.deck.x, layout.deck.y, layout.deck.w, 2, UI_COLOR.lineBright.hex).setOrigin(0);
 
+    // Palette construction shows its contextual hint immediately, so its target
+    // has to exist before the slots are created.
+    this.buildCoach();
     this.buildPalette(layout);
     if (IS_TOUCH) this.buildTouchControls(layout);
     this.buildWaveCluster(layout);
@@ -273,7 +276,6 @@ export class UIScene extends Phaser.Scene {
     // the same lane and briefly cover them, then reveal the replacement card;
     // objective -> payout -> new objective reads as one continuous beat.
     this.buildMissionCards();
-    this.buildCoach();
 
     // ----- state listeners -----
     const ev = GameState.events;
@@ -600,6 +602,9 @@ export class UIScene extends Phaser.Scene {
   }
 
   private showDesc(text: string, color = '#cdd6e4'): void {
+    // Events can arrive while the HUD is being rebuilt. The next coach refresh
+    // will paint the latest text once its target exists.
+    if (!this.descText) return;
     this.descText.setText(text).setColor(color);
   }
 

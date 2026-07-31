@@ -49,5 +49,9 @@ const MathStub = {
   },
 };
 
-export default { Events: { EventEmitter }, Math: MathStub };
+class Scene {
+  constructor(..._args: unknown[]) {}
+}
+
+export default { Events: { EventEmitter }, Math: MathStub, Scene };
 export { EventEmitter };
