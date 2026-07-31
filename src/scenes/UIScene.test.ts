@@ -62,7 +62,7 @@ describe('UIScene description handoff', () => {
     expect(frame!.stroke).toBe(controlVisual('hover').stroke);
   });
 
-  it('restores a selected build slot gold rim after hover-out', () => {
+  it('keeps a selected build slot gold rim through hover and hover-out', () => {
     const frames: PaletteObject[] = [];
     const object = () => new PaletteObject();
     const scene = {
@@ -96,6 +96,7 @@ describe('UIScene description handoff', () => {
     const frame = scene.paletteFrames.get('belt') as PaletteObject;
     const state = scene.paletteState.get('belt') as PaletteObject;
     frame.handlers.get('pointerover')!();
+    expect(frame.stroke).toBe(UI_COLOR.money.hex);
     frame.handlers.get('pointerout')!();
 
     expect(frame.stroke).toBe(UI_COLOR.money.hex);

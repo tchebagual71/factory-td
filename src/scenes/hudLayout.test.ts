@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { BUILD_CATEGORIES, BUILD_INFO, buildGroupSizes } from '../data/buildings';
 import {
   fittedScale,
+  fitCardCopy,
   hudLayout,
   HudLayoutOpts,
   overlayZones,
   overlaps,
+  overlayHit,
   Rect,
   renderedSize,
   slotContent,
@@ -351,6 +353,37 @@ describe('top status strip', () => {
         // and nothing below the strip is shielded at all
         expect(stripHit(s, s.help.x + 2, s.stats.y + s.h + 1), 'below the strip').toBe(false);
       });
+    }
+  });
+});
+
+describe('board overlay hit zones', () => {
+  it('shields the objective and coach cards, but not the empty board between them', () => {
+    const zones = overlayZones(GAME_W, 640, topStrip(GAME_W, false).stats.y + topStrip(GAME_W, false).h, false);
+    expect(overlayHit(zones, zones.objective.x + 1, zones.objective.y + 1, { objective: true, coach: true, inspector: false })).toBe(true);
+    expect(overlayHit(zones, zones.coach.x + 1, zones.coach.y + 1, { objective: true, coach: true, inspector: false })).toBe(true);
+    expect(overlayHit(zones, GAME_W / 2, 240, { objective: true, coach: true, inspector: false })).toBe(false);
+  });
+
+  it('keeps a displayed inspector inside its reserved zone on desktop and touch', () => {
+    for (const touch of [false, true]) {
+      const zones = overlayZones(GAME_W, 640, topStrip(GAME_W, touch).stats.y + topStrip(GAME_W, touch).h, touch);
+      const panelScale = touch ? 1.2 : 1;
+      expect(258 * panelScale).toBeLessThanOrEqual(zones.inspector.w);
+      expect(136 * panelScale).toBeLessThanOrEqual(zones.inspector.h);
+      expect(overlayHit(zones, zones.inspector.x + 1, zones.inspector.y + 1, { objective: true, coach: true, inspector: true })).toBe(true);
+    }
+  });
+});
+
+describe('small-card copy fitting', () => {
+  it('wraps long contract and coach text without exceeding their allotted line count', () => {
+    const long = 'Route finished ammunition through a splitter and into every defense tower before the armored boss arrives.';
+    for (const [chars, lines] of [[30, 2], [52, 2]] as const) {
+      const fitted = fitCardCopy(long, chars, lines);
+      expect(fitted.split('\n')).toHaveLength(lines);
+      expect(fitted.split('\n').every((line) => line.length <= chars)).toBe(true);
+      expect(fitted.endsWith('…')).toBe(true);
     }
   });
 });

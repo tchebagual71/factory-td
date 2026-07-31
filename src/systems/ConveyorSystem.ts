@@ -157,6 +157,7 @@ export class ConveyorSystem {
       return true;
     }
     if (isTower(nb.type) && it.type === TOWERS[nb.type].ammoType && nb.ammo < TOWERS[nb.type].ammoCap) {
+      const firstDelivery = nb.fed === 0;
       nb.ammo += 1;
       nb.fed += 1; // lifetime service record — gates this tower's upgrades
       // The one place a round becomes usable defence. Everything the wave report
@@ -164,6 +165,7 @@ export class ConveyorSystem {
       bumpAmmo(GameState.tally.delivered, it.type);
       this.consume(index);
       this.pop(nb.sprite);
+      if (firstDelivery) GameState.events.emit('towerfed');
       return true;
     }
     return false;

@@ -125,11 +125,13 @@ cues documented above.
 
 ## Screen migration order
 
-1. Apply tokens and control states to title, map, account, and volume controls.
-2. Move instructional/help and account flows to the panel anatomy and overlay
-   hierarchy.
-3. Convert Workshop, achievements, and leaderboard lists to category/card rhythm.
-4. Apply the command-card hierarchy to research, wave report, inspector, and
-   game-over screens.
-5. Verify each migrated screen at desktop, landscape touch, and portrait rotation
-   behavior before broadening the visual language further.
+1. In-game help and title How to Play.
+2. Tower inspector and upgrade comparison.
+3. Research cards.
+4. Wave report and unified transient queue.
+5. Game-over score card.
+6. Title screen and renderer-specific backdrop.
+7. Workshop and achievements.
+8. Sign-in and leaderboard empty/loading/error states.
+9. 2D terrain and 3D surface/lighting coherence.
+10. DOM accessibility bridge and reduced-motion/UI-scale settings.

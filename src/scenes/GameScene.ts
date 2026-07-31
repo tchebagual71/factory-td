@@ -53,7 +53,7 @@ import {
   screenToBoard,
   zoomAbout,
 } from './boardCam';
-import { stripHit, topStrip } from './hudLayout';
+import { overlayHit, overlayZones, stripHit, topStrip } from './hudLayout';
 import { isHudObject } from './hudObjects';
 import { binding, GameAction, phaserKeyName } from './keymap';
 import { coachMessage } from './coach';
@@ -75,7 +75,7 @@ const LONG_PRESS_MS = 450;
 
 /** Upgrade-panel geometry. Authored small; scaled up bodily for fingers. */
 const PANEL_W = 258;
-const PANEL_SCALE = IS_TOUCH ? 1.4 : 1;
+const PANEL_SCALE = IS_TOUCH ? 1.2 : 1;
 
 /** Mk-pip / float-text tint per specialization path. */
 const PATH_COLORS: Record<PathId, number> = {
@@ -200,6 +200,8 @@ export class GameScene extends Phaser.Scene {
   /** live magazine readout; -1 forces the first paint */
   private panelMag!: Phaser.GameObjects.Text;
   private panelMagShown = -1;
+  /** Mirrors the panel lifecycle into UIScene's overlay priority. */
+  private inspectorOpen = false;
 
   constructor() {
     super('game');
@@ -306,6 +308,10 @@ export class GameScene extends Phaser.Scene {
     GameState.events.off('ui:sellmode').on('ui:sellmode', () => this.toggleSellMode());
     GameState.events.off('ui:view').on('ui:view', () => this.toggleIso());
     GameState.events.off('ui:pickcard').on('ui:pickcard', (id: string) => this.onPickCard(id));
+    GameState.events.off('towerfed').on('towerfed', () => this.emitCoach());
+    this.inspectorOpen = false;
+    GameState.events.emit('inspector', false);
+    GameState.events.emit('coachreset');
     GameState.events.off('levelup').on('levelup', () => this.offerCards());
     // Targeted off/on (other scenes listen to these events too; stable refs survive restarts)
     GameState.events.off('phase', this.onPhaseSave).on('phase', this.onPhaseSave);
@@ -608,9 +614,9 @@ export class GameScene extends Phaser.Scene {
     // transforms container children's hit areas along with their art, so the
     // targets grow with the panel.
     const s = PANEL_SCALE;
-    const strip = this.strip;
+    const zone = overlayZones(GAME_W, PLAYFIELD_H, this.strip.stats.y + this.strip.h, IS_TOUCH).inspector;
     this.panel = this.add
-      .container(GAME_W - 8 - PANEL_W * s, strip.stats.y + strip.h + 8)
+      .container(zone.x, zone.y)
       .setScale(s)
       .setDepth(40)
       .setVisible(false);
@@ -670,14 +676,14 @@ export class GameScene extends Phaser.Scene {
   private refreshPanel(): void {
     const b = this.selTower;
     if (!b || !isTower(b.type)) {
-      this.panel.setVisible(false);
+      this.setPanelVisible(false);
       return;
     }
     const cur = effStats(b.type, b.mk, b.path, GameState.mods);
     const LABELS: Record<string, string> = { cannon: 'CANNON', lancer: 'LANCER', cryo: 'CRYO FIELD' };
     const label = LABELS[b.type] ?? 'GUN TOWER';
     const pathName = b.path ? ` · ${pathOf(b.type, b.path).name}` : '';
-    this.panel.setVisible(true);
+    this.setPanelVisible(true);
     this.panelTitle.setText(`${label} Mk${b.mk}${pathName}`);
 
     const showA = (text: string) => {
@@ -724,6 +730,13 @@ export class GameScene extends Phaser.Scene {
       this.panelBtnA.setVisible(false);
       this.panelBtnAText.setVisible(false);
     }
+  }
+
+  private setPanelVisible(visible: boolean): void {
+    this.panel.setVisible(visible);
+    if (this.inspectorOpen === visible) return;
+    this.inspectorOpen = visible;
+    GameState.events.emit('inspector', visible);
   }
 
   private tryUpgrade(choice: 0 | 1 = 0): void {
@@ -1081,7 +1094,12 @@ export class GameScene extends Phaser.Scene {
    * scene-level pointer event regardless of what handled it first.
    */
   private overHud(x: number, y: number): boolean {
-    return this.overPanel(x, y) || stripHit(this.strip, x, y);
+    const zones = overlayZones(GAME_W, PLAYFIELD_H, this.strip.stats.y + this.strip.h, IS_TOUCH);
+    return this.overPanel(x, y) || stripHit(this.strip, x, y) || overlayHit(zones, x, y, {
+      objective: true,
+      coach: true,
+      inspector: this.inspectorOpen,
+    });
   }
 
   // ---------- belt drag-painting ----------
@@ -1511,6 +1529,7 @@ export class GameScene extends Phaser.Scene {
       'coach',
       coachMessage({
         buildings: this.grid.buildings.map((b) => b.type),
+        fedDefense: this.grid.buildings.some((b) => isTower(b.type) && b.fed > 0),
         selected: this.selected,
       }),
     );

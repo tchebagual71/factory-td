@@ -182,6 +182,44 @@ export function overlayZones(gameW: number, playfieldH: number, stripBottom: num
   return { objective, inspector, toast, coach };
 }
 
+/** The board's pointer guard uses the exact same overlay reservations as the HUD. */
+export function overlayHit(
+  zones: OverlayZones,
+  x: number,
+  y: number,
+  visible: Pick<Record<keyof OverlayZones, boolean>, 'objective' | 'coach' | 'inspector'>,
+): boolean {
+  return (visible.objective && contains(zones.objective, x, y)) ||
+    (visible.coach && contains(zones.coach, x, y)) ||
+    (visible.inspector && contains(zones.inspector, x, y));
+}
+
+/**
+ * A deterministic, font-agnostic guard for the small HUD cards. Phaser still
+ * does the final pixel wrapping, but this bounds a pathological long mission
+ * name or coach sentence before it can spill out of its reserved card.
+ */
+export function fitCardCopy(text: string, charsPerLine: number, maxLines: number): string {
+  const width = Math.max(1, Math.floor(charsPerLine));
+  const lines = Math.max(1, Math.floor(maxLines));
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  let line = '';
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (candidate.length <= width) {
+      line = candidate;
+      continue;
+    }
+    if (line) out.push(line);
+    if (out.length === lines) return `${out.slice(0, -1).join('\n')}${out.length > 1 ? '\n' : ''}${out.at(-1)!.slice(0, Math.max(1, width - 1))}…`;
+    line = word.length > width ? word.slice(0, Math.max(1, width - 1)) + '…' : word;
+  }
+  if (line && out.length < lines) out.push(line);
+  if (out.length <= lines) return out.join('\n');
+  return `${out.slice(0, lines - 1).join('\n')}${lines > 1 ? '\n' : ''}${out[lines - 1].slice(0, Math.max(1, width - 1))}…`;
+}
+
 /** Scale produced by Phaser's FIT-style canvas fitting. */
 export function fittedScale(canvasW: number, canvasH: number, viewportW: number, viewportH: number): number {
   if (![canvasW, canvasH, viewportW, viewportH].every(Number.isFinite) || canvasW <= 0 || canvasH <= 0 || viewportW < 0 || viewportH < 0) {

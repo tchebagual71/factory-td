@@ -15,7 +15,7 @@ import { progress } from '../state/progress';
 import { renderMode } from '../state/renderMode';
 import { BuildingType } from '../types';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
-import { HudLayout, hudLayout, overlayZones, slotContent, topStrip } from './hudLayout';
+import { fitCardCopy, HudLayout, hudLayout, overlayZones, slotContent, topStrip } from './hudLayout';
 import { overlayPlan } from './overlayPolicy';
 import type { CoachMessage } from './coach';
 import { binding, key } from './keymap';
@@ -84,6 +84,8 @@ export class UIScene extends Phaser.Scene {
   private toastCard: Phaser.GameObjects.Container | null = null;
   private queuedSummary: { wave: number; tally: WaveTally } | null = null;
   private terminalOpen = false;
+  private inspectorOpen = false;
+  private coachDismissed = false;
 
   constructor() {
     super('ui');
@@ -288,6 +290,14 @@ export class UIScene extends Phaser.Scene {
     ev.on('phase', () => this.refreshWaveBtn());
     ev.on('selected', (t: BuildingType | null) => this.refreshSelection(t));
     ev.on('coach', (message: CoachMessage) => this.refreshCoach(message));
+    ev.on('inspector', (open: boolean) => {
+      this.inspectorOpen = open;
+      this.applyOverlayPlan();
+    });
+    ev.on('coachreset', () => {
+      this.coachDismissed = false;
+      this.applyOverlayPlan();
+    });
     ev.on('gameover', () => {
       // A pending draw (or an open help panel) would otherwise sit on top of the
       // game-over buttons and keep the sim frozen with no way out.
@@ -346,8 +356,11 @@ export class UIScene extends Phaser.Scene {
     });
 
     ev.on('wavesummary', (wave: number, tally: WaveTally) => {
-      GameState.checkMissions({ wave, tally });
       this.queueWaveSummary(wave, tally);
+      // Establish the report first. Completing a mission synchronously queues
+      // its toast, which must wait behind this report rather than begin its
+      // tween invisibly underneath it.
+      GameState.checkMissions({ wave, tally });
     });
     ev.on('cards', (cards: ResearchCard[], level: number) => this.showCardDraw(cards, level));
 
@@ -557,8 +570,12 @@ export class UIScene extends Phaser.Scene {
         .setInteractive({ useHandCursor: true });
       frame.on('pointerdown', () => GameState.events.emit('ui:select', info.type));
       frame.on('pointerover', () => {
-        const hover = controlVisual('hover', cat.color);
-        frame.setFillStyle(hover.fill).setStrokeStyle(2, hover.stroke);
+        if (this.selectedType === info.type) {
+          frame.setFillStyle(UI_COLOR.surfaceRaised.hex).setStrokeStyle(3, UI_COLOR.money.hex, 1);
+        } else {
+          const hover = controlVisual('hover', cat.color);
+          frame.setFillStyle(hover.fill).setStrokeStyle(2, hover.stroke);
+        }
         this.showDesc(info.desc, cat.css);
       });
       frame.on('pointerout', () => {
@@ -731,16 +748,20 @@ export class UIScene extends Phaser.Scene {
       .setOrigin(0)
       .setStrokeStyle(2, UI_COLOR.research.hex, 0.72);
     const name = this.add.text(inset, IS_TOUCH ? 9 : 7, '', {
-      ...FONT, fontSize: IS_TOUCH ? '14px' : '12px', fontStyle: 'bold', color: UI_COLOR.text.css,
+      ...FONT, fontSize: IS_TOUCH ? '16px' : '12px', fontStyle: 'bold', color: UI_COLOR.text.css,
+      wordWrap: { width: zone.w - inset * 2 - (IS_TOUCH ? 104 : 82) },
     });
     const progress = this.add.text(inset, IS_TOUCH ? 31 : 26, '', {
-      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '13px' : '11px', color: UI_COLOR.textMuted.css,
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '14px' : '11px', color: UI_COLOR.textMuted.css,
+      wordWrap: { width: zone.w - inset * 2 },
     });
     const fill = this.add.rectangle(inset, zone.h - 5, 0, 3, UI_COLOR.research.hex, 0.9).setOrigin(0);
     const extra = this.add.text(zone.w - inset, IS_TOUCH ? 9 : 7, '', {
       ...FONT, fontSize: IS_TOUCH ? '11px' : '9px', color: UI_COLOR.research.css,
     }).setOrigin(1, 0);
     container.add([frame, name, progress, fill, extra]);
+    frame.setInteractive({ useHandCursor: true });
+    frame.on('pointerdown', () => GameState.cycleMissions());
     this.missionCard = { container, frame, name, progress, fill, extra };
   }
 
@@ -751,9 +772,11 @@ export class UIScene extends Phaser.Scene {
     const progress = mission && def ? `${def.desc} · ${missionProgress(mission, facts)}` : 'No active contract';
     const name = mission && def ? `CONTRACT · ${def.name}   +$${mission.payout}` : 'NO ACTIVE CONTRACT';
     const extra = GameState.missions.length > 1 ? `+${Math.max(0, GameState.missions.length - 1)} contracts` : '';
+    const fittedProgress = fitCardCopy(progress, IS_TOUCH ? 46 : 38, IS_TOUCH ? 2 : 1);
+    const fittedName = fitCardCopy(name, IS_TOUCH ? 28 : 24, 1);
     const ratio = mission ? this.missionRatio(missionProgress(mission, facts)) : 0;
-    if (this.missionCard.name.text !== name) this.missionCard.name.setText(name);
-    if (this.missionCard.progress.text !== progress) this.missionCard.progress.setText(progress);
+    if (this.missionCard.name.text !== fittedName) this.missionCard.name.setText(fittedName);
+    if (this.missionCard.progress.text !== fittedProgress) this.missionCard.progress.setText(fittedProgress);
     if (this.missionCard.extra.text !== extra) this.missionCard.extra.setText(extra);
     this.missionCard.fill.width = Math.round((this.missionCard.frame.width - (IS_TOUCH ? 24 : 16)) * ratio);
   }
@@ -780,19 +803,26 @@ export class UIScene extends Phaser.Scene {
       .text(inset + badgeSize / 2, zone.h / 2, '1', { ...FONT, fontSize: IS_TOUCH ? '19px' : '15px', fontStyle: 'bold', color: UI_COLOR.ink.css })
       .setOrigin(0.5);
     this.coachAction = this.add.text(inset + badgeSize + inset, IS_TOUCH ? 10 : 8, '', {
-      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '16px' : '13px', fontStyle: 'bold', color: UI_COLOR.text.css,
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '18px' : '13px', fontStyle: 'bold', color: UI_COLOR.text.css,
+      wordWrap: { width: zone.w - (inset + badgeSize + inset) - inset },
     });
     this.descText = this.add.text(inset + badgeSize + inset, IS_TOUCH ? 38 : 31, '', {
-      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '13px' : '10px', color: UI_COLOR.textMuted.css,
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '14px' : '10px', color: UI_COLOR.textMuted.css,
+      wordWrap: { width: zone.w - (inset + badgeSize + inset) - inset },
     });
     this.coachCard.add([frame, badge, this.coachStep, this.coachAction, this.descText]);
+    frame.setInteractive({ useHandCursor: true });
+    frame.on('pointerdown', () => {
+      this.coachDismissed = true;
+      this.applyOverlayPlan();
+    });
   }
 
   private refreshCoach(message: CoachMessage): void {
     this.coachStep.setText(String(message.step));
-    this.coachAction.setText(message.action);
-    this.coachContext = message.context;
-    this.showDesc(message.context);
+    this.coachAction.setText(fitCardCopy(message.action, IS_TOUCH ? 42 : 48, 1));
+    this.coachContext = fitCardCopy(message.context, IS_TOUCH ? 52 : 58, IS_TOUCH ? 2 : 1);
+    this.showDesc(this.coachContext);
   }
 
   /** Keep every gameplay overlay in the priority layer assigned by overlayPlan. */
@@ -802,10 +832,10 @@ export class UIScene extends Phaser.Scene {
       blocking: this.helpLayer.length > 0 || this.cardLayer.length > 0,
       report: this.summaryCard !== null,
       transient: this.toastActive,
-      inspector: false,
+      inspector: this.inspectorOpen,
     });
     this.missionCard.container.setVisible(plan.ambient);
-    this.coachCard.setVisible(plan.ambient);
+    this.coachCard.setVisible(plan.ambient && !this.coachDismissed);
     this.summaryCard?.setVisible(plan.report);
     this.toastCard?.setVisible(plan.transient);
   }
