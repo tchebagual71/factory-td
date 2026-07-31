@@ -44,10 +44,12 @@ src/
     hudLayout.ts        # pure HUD geometry: bottom bar (grouped palette/touch pad/wave cluster), top strip, slot contents, stripHit
     keymap.ts           # pure: every keyboard shortcut as data — the one place a key is claimed
     beltFrames.ts       # pure: the belt animation's texture keys (shared by BootScene and the 3D model table)
+    achievementLayout.ts # pure: paginated achievements grid — rows per page, cell positions, pager targets
   iso/                  # the 3D isometric view — mirrors the sim, never drives it
     isoMath.ts          # pure: true-isometric camera basis, frustum fitting, screen↔board projection & its exact inverse
     isoModels.ts        # pure: texture key → solid (shape/footprint/height/colour)
     IsoView.ts          # Three.js scene: terrain geometry, display-list mirror, overlay decals, bars
+    isoQuality.ts       # pure: quality tier from device capability + frame-time hysteresis (no Three.js/DOM)
   systems/
     GridSystem.ts       # tile grid: single source of truth for cell contents & placement rules
     ConveyorSystem.ts   # item movement on belts + machine insertion (press/tower intake), item restore
@@ -63,7 +65,8 @@ src/
     renderMode.ts       # flat vs isometric (ftd:view) — a device preference, never part of the save
     meta.ts             # Workshop wallet + owned levels (ftd:scrap/ftd:workshop), local-only
     progress.ts         # lifetime stats + unlocked achievements (ftd:stats/ftd:ach), emits 'achievement'
-    mergeProgress.ts    # pure local↔cloud merge rules (run LWW, achievements union, best max)
+    mergeProgress.ts    # pure local↔cloud merge rules (run LWW, achievements union, best/scrap/node-levels max)
+    saveQueue.ts        # pure single-writer queue: one cloud write in flight, newest-wins, savedAt guard
   services/             # ALL Supabase I/O lives here — pure modules never import services
     supabase.ts         # lazy client singleton (publishable key, PKCE); null if unavailable
     auth.ts             # Google OAuth / magic link / anonymous + linking, profile upsert
@@ -77,6 +80,8 @@ src/
     buildings.ts        # building stats & costs; UPGRADE_TREE (branching Mk paths) + effStats
     waves.ts            # wave scaling formulas (hp/count/speed/bounty, boss every 5th)
     achievements.ts     # achievement defs + pure unlock logic (ids match the DB CHECK regex)
+    missions.ts         # pure: the three live HUD objectives — defs, needs() gating, completion predicates, payout budget
+    score.ts            # pure: end-of-run grade (reach / throughput / routing efficiency) + the advice line
   utils/
     sfx.ts              # synthesized WebAudio blips (no audio assets) + master volume/mute
 ```
@@ -352,6 +357,24 @@ Implementation work is delegated to the Codex subagent wherever it is self-conta
 - **Verify the code, not the report.** Every returned run gets `tsc --noEmit` + `vitest run` re-run locally and the diff read. Two real defects have been caught this way *after* a green report: a cap that would have deleted saves (`outputCap` vs `outputCap + outputPer - 1`), and a rounding exploit surviving in the Lab call site.
 - **Watch for tests that pin a mirror of the code instead of the code.** A test that recomputes the model passes while the shipped call site is still broken. Pin behaviour at the real seam.
 - **Confirm a regression test fails without the fix.** Cheap, and it has repeatedly exposed tests that proved nothing (the first FPS-invariance test passed against the unfixed code).
+- **`vitest` and `vite build` do not typecheck.** Both strip types without checking them, so an agent can honestly report a green suite and a green build on code where `tsc --noEmit` fails. Always run `tsc` yourself; it has caught errors that neither of the other two saw.
+- **A completed *forwarder* is not a completed *job*.** The rescue subagent hands off to a longer-running Codex task and then exits, which fires a completion notification. Reading the working tree at that moment can catch a half-written directory. Wait for the tree to stop changing before judging anything — this cost one wrong "it shipped broken" verdict.
+- **Don't delegate small fixes.** Spawning an agent costs ~32k tokens; a two-line type annotation or a one-line guard is cheaper done directly. Delegate whole, self-contained *pieces of work*, not errands.
+- **A refused resume is silent.** Codex cannot resume a thread while its job is still active, and the follow-up is simply not delivered. Re-check the tree before re-sending, since the issue may already be gone.
+
+## Where to pick up
+
+Everything in the original ranked roadmap, the playability audit, and the post-audit backlog (32–39) is now shipped or explicitly partial — see the `[~]` entries above for exactly what remains inside each. The suite is **569 tests across 30 files**; `npm test`, `npm run typecheck` and `npm run build` are all green at the time of writing.
+
+Ranked by value, what is genuinely left:
+
+1. **Leaderboard integrity (38, second half)** — the browser can still upsert any `best_wave`. Ownership RLS stops you editing *someone else's* row but cannot establish that a score came from real play. **No client change can fix this**; it needs policy work in the database, plus an audit of `security_invoker` on the exposed `leaderboard` view and having the query state its own ordering rather than trusting the view's. Not verifiable from `src` — use the Supabase tooling.
+2. **The `profiles` jsonb column (39)** — cross-device Workshop sync is written and tested but **inert until that migration is applied**. Client side is done; this is one migration plus a `GRANT` (remember: since the 2026-04 change, new public tables are not auto-exposed to the Data API).
+3. **Board pan & pinch-zoom (30)** — the last real mobile gap. Read that entry's notes first: the flat-camera half interacts with the `Camera.ignore` bitmasks the isometric view depends on, so it is a poor candidate for a fenced agent that cannot see both sides.
+4. **Wave variety, remainder (35)** — map modifiers, difficulty modes, challenge goals, and an explicit endless milestone or victory condition. Currently a run just ends at the throughput wall.
+5. **A buffer/storage building (32)** — deliberately deferred; machines already buffer per input type, so this is convenience rather than a gap.
+
+Anything past that should come from **playtest feedback, not this list**. The list has now outlived two full audits; the next genuinely valuable thing is watching someone play.
 
 ## Deployment
 
