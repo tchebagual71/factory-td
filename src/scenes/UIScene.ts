@@ -17,8 +17,9 @@ import { BuildingType } from '../types';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
 import { HudLayout, hudLayout, slotContent, topStrip } from './hudLayout';
 import { binding, key } from './keymap';
+import { UI_COLOR, UI_FONT, UI_SPACE, controlVisual } from './uiTheme';
 
-const FONT = { fontFamily: 'monospace' };
+const FONT = { fontFamily: UI_FONT.mono };
 
 interface ToastNotice {
   name: string;
@@ -38,6 +39,8 @@ export class UIScene extends Phaser.Scene {
   private autoBtnText!: Phaser.GameObjects.Text;
   private paletteFrames = new Map<BuildingType, Phaser.GameObjects.Rectangle>();
   private paletteButtons = new Map<BuildingType, Phaser.GameObjects.Container>();
+  /** one reusable status line per slot; selection and affordability only repaint its text */
+  private paletteState = new Map<BuildingType, Phaser.GameObjects.Text>();
   /** each slot's category tint, so deselecting restores the right rim colour */
   private slotColor = new Map<BuildingType, number>();
   /** currently armed build type — drives the selection ring and the touch description */
@@ -74,47 +77,67 @@ export class UIScene extends Phaser.Scene {
     // ----- top status strip (pure geometry: see hudLayout.topStrip) -----
     const top = topStrip(GAME_W, IS_TOUCH);
     this.stripBottom = top.stats.y + top.h;
-    const chipFont = IS_TOUCH ? '19px' : '16px';
-    const cy = top.stats.y + top.h / 2;
+    const chipFont = IS_TOUCH ? UI_FONT.touchPrimary : UI_FONT.desktopPrimary;
+    const cellW = Math.floor((top.stats.w - UI_SPACE[1] * 2) / 3);
+    const statCells: [string, number][] = [
+      ['FUNDS', UI_COLOR.money.hex],
+      ['INTEGRITY', UI_COLOR.danger.hex],
+      ['WAVE', UI_COLOR.logistics.hex],
+    ];
 
-    this.add.rectangle(top.stats.x, top.stats.y, top.stats.w, top.h, 0x000000, 0.55).setOrigin(0).setDepth(0);
-    const chipX = (frac: number) => top.stats.x + 10 + Math.round((top.stats.w - 20) * frac);
+    this.add.rectangle(top.stats.x, top.stats.y, top.stats.w, top.h, UI_COLOR.surface.hex, 0.96).setOrigin(0).setDepth(0);
+    statCells.forEach(([label, accent], i) => {
+      const x = top.stats.x + UI_SPACE[1] + i * cellW;
+      this.add
+        .rectangle(x, top.stats.y + 2, cellW - UI_SPACE[0], top.h - UI_SPACE[0], UI_COLOR.surfaceRaised.hex, 0.98)
+        .setOrigin(0)
+        .setStrokeStyle(1, UI_COLOR.line.hex);
+      this.add
+        .text(x + UI_SPACE[0], top.stats.y + 4, label, {
+          fontFamily: UI_FONT.mono, fontSize: IS_TOUCH ? '8px' : '7px', fontStyle: 'bold', color: UI_COLOR.textMuted.css,
+        })
+        .setOrigin(0, 0);
+      this.add.rectangle(x + UI_SPACE[0], top.stats.y + top.h - 3, cellW - UI_SPACE[2], 1, accent, 0.9).setOrigin(0);
+    });
+    const valueX = (i: number) => top.stats.x + UI_SPACE[1] + i * cellW + UI_SPACE[0];
+    const valueY = top.stats.y + top.h - (IS_TOUCH ? 8 : 6);
     this.moneyText = this.add
-      .text(chipX(0), cy, '', { ...FONT, fontSize: chipFont, fontStyle: 'bold', color: '#ffe066' })
-      .setOrigin(0, 0.5);
+      .text(valueX(0), valueY, '', { fontFamily: UI_FONT.mono, fontSize: `${chipFont}px`, fontStyle: 'bold', color: UI_COLOR.money.css })
+      .setOrigin(0, 1);
     this.livesText = this.add
-      .text(chipX(0.36), cy, '', { ...FONT, fontSize: chipFont, fontStyle: 'bold', color: '#ff6b6b' })
-      .setOrigin(0, 0.5);
+      .text(valueX(1), valueY, '', { fontFamily: UI_FONT.mono, fontSize: `${chipFont}px`, fontStyle: 'bold', color: UI_COLOR.danger.css })
+      .setOrigin(0, 1);
     this.waveText = this.add
-      .text(chipX(0.65), cy, '', { ...FONT, fontSize: chipFont, fontStyle: 'bold', color: '#cdd6e4' })
-      .setOrigin(0, 0.5);
+      .text(valueX(2), valueY, '', { fontFamily: UI_FONT.mono, fontSize: `${chipFont}px`, fontStyle: 'bold', color: UI_COLOR.text.css })
+      .setOrigin(0, 1);
+    const cy = top.stats.y + top.h / 2;
 
     // ----- prospecting -----
     const prospectBtn = this.add
-      .rectangle(top.survey.x, top.survey.y, top.survey.w, top.h, 0x1e2233, 0.9)
+      .rectangle(top.survey.x, top.survey.y, top.survey.w, top.h, UI_COLOR.surface.hex, 0.98)
       .setOrigin(0)
-      .setStrokeStyle(2, 0x2b3040)
+      .setStrokeStyle(2, UI_COLOR.line.hex)
       .setInteractive({ useHandCursor: true });
     this.prospectText = this.add
       .text(top.survey.x + top.survey.w / 2, cy, '', {
-        ...FONT, fontSize: IS_TOUCH ? '14px' : '12px', fontStyle: 'bold', color: '#cdd6e4',
+        fontFamily: UI_FONT.mono, fontSize: IS_TOUCH ? '14px' : '12px', fontStyle: 'bold', color: UI_COLOR.text.css,
       })
       .setOrigin(0.5);
-    prospectBtn.on('pointerover', () => prospectBtn.setFillStyle(0x272c42, 0.9));
-    prospectBtn.on('pointerout', () => prospectBtn.setFillStyle(0x1e2233, 0.9));
+    prospectBtn.on('pointerover', () => prospectBtn.setFillStyle(controlVisual('hover').fill, 0.98));
+    prospectBtn.on('pointerout', () => prospectBtn.setFillStyle(controlVisual('idle').fill, 0.98));
     prospectBtn.on('pointerdown', () => GameState.events.emit('ui:prospect'));
     GameState.events.on('surveys', () => this.refreshStats());
     // Armed survey mode: the button stays lit until a site is picked or cancelled
     GameState.events.on('surveymode', (on: boolean) => {
       this.surveyArmed = on;
-      prospectBtn.setStrokeStyle(2, on ? 0x5ef078 : 0x2b3040);
+      prospectBtn.setStrokeStyle(2, on ? UI_COLOR.action.hex : UI_COLOR.line.hex);
       this.refreshStats();
     });
 
     // Which layout this run is on. UIScene sleeps rather than stopping, so this
     // is refreshed with the stats instead of being captured once at create().
     this.mapText = this.add
-      .text(top.map.x + top.map.w, cy, '', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#6b7689' })
+      .text(top.map.x + top.map.w, cy, '', { fontFamily: UI_FONT.mono, fontSize: '11px', fontStyle: 'bold', color: UI_COLOR.textMuted.css })
       .setOrigin(1, 0.5);
 
     // ----- research chip -----
@@ -123,14 +146,14 @@ export class UIScene extends Phaser.Scene {
     // nagged by an empty bar.
     const rr = top.research;
     const researchBox = this.add
-      .rectangle(rr.x, rr.y, rr.w, top.h, 0x1a1830, 0.9)
+      .rectangle(rr.x, rr.y, rr.w, top.h, UI_COLOR.surface.hex, 0.98)
       .setOrigin(0)
-      .setStrokeStyle(2, 0x474170)
+      .setStrokeStyle(2, UI_COLOR.line.hex)
       .setVisible(false);
     const barW = rr.w - 6;
-    this.researchBar = this.add.rectangle(rr.x + 3, rr.y + top.h - 3, 0, 4, 0x7cf7c4).setOrigin(0, 1).setVisible(false);
+    this.researchBar = this.add.rectangle(rr.x + 3, rr.y + top.h - 3, 0, 4, UI_COLOR.research.hex).setOrigin(0, 1).setVisible(false);
     this.researchText = this.add
-      .text(rr.x + 6, rr.y + 4, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#7cf7c4' })
+      .text(rr.x + 6, rr.y + 4, '', { fontFamily: UI_FONT.mono, fontSize: '12px', fontStyle: 'bold', color: UI_COLOR.research.css })
       .setVisible(false);
     GameState.events.on('research', (points: number, level: number) => {
       const need = researchForLevel(level + 1);
@@ -190,9 +213,6 @@ export class UIScene extends Phaser.Scene {
     // ----- bottom bar -----
     // Three zones, sized from UI_H so a 4:3 tablet spends its extra height on a
     // bigger HUD instead of letterbox bars: palette | touch controls | wave cluster.
-    this.add.rectangle(0, PLAYFIELD_H, GAME_W, UI_H, 0x141625).setOrigin(0);
-    this.add.rectangle(0, PLAYFIELD_H, GAME_W, 2, 0x2b3040).setOrigin(0);
-
     const layout = hudLayout({
       gameW: GAME_W,
       barY: PLAYFIELD_H,
@@ -201,6 +221,9 @@ export class UIScene extends Phaser.Scene {
       touch: IS_TOUCH,
       groups: buildGroupSizes(),
     });
+
+    this.add.rectangle(layout.deck.x, layout.deck.y, layout.deck.w, layout.deck.h, UI_COLOR.surface.hex).setOrigin(0);
+    this.add.rectangle(layout.deck.x, layout.deck.y, layout.deck.w, 2, UI_COLOR.lineBright.hex).setOrigin(0);
 
     this.buildPalette(layout);
     if (IS_TOUCH) this.buildTouchControls(layout);
@@ -284,10 +307,10 @@ export class UIScene extends Phaser.Scene {
       this.pumpToasts();
     });
     ev.on('missions', () => this.refreshMissionCards());
-    ev.on('speed', (s: number) => this.speedBtnText.setText(`×${s}`).setColor(s > 1 ? '#ffe066' : '#cdd6e4'));
+    ev.on('speed', (s: number) => this.speedBtnText.setText(`SPEED ×${s}`).setColor(s > 1 ? UI_COLOR.money.css : UI_COLOR.text.css));
     ev.on('auto', (on: boolean) => {
-      this.autoBtnText.setColor(on ? '#5ef078' : '#8892a6');
-      this.autoBtn.setStrokeStyle(2, on ? 0x5ef078 : 0x2b3040);
+      this.autoBtnText.setText(on ? 'AUTO ON' : 'AUTO OFF').setColor(on ? UI_COLOR.action.css : UI_COLOR.textMuted.css);
+      this.autoBtn.setStrokeStyle(2, on ? UI_COLOR.action.hex : UI_COLOR.line.hex);
     });
 
     // UIScene sleeps rather than stops, so anything still on screen when the
@@ -414,7 +437,17 @@ export class UIScene extends Phaser.Scene {
     }
 
     const closeY = y + H - 32;
-    const close = this.hudButton(GAME_W / 2 - 80, closeY - 18, 160, 36, 'CLOSE', 14, () => this.closeHelp(), 0x2e7d4f, 0x5ef078);
+    const close = this.hudButton(
+      GAME_W / 2 - 80,
+      closeY - 18,
+      160,
+      36,
+      'CLOSE',
+      14,
+      () => this.closeHelp(),
+      UI_COLOR.action.hex,
+      'active',
+    );
     close.frame.setDepth(82);
     close.label.setDepth(83).setColor('#ffffff');
     this.helpLayer.push(close.frame, close.label);
@@ -435,19 +468,20 @@ export class UIScene extends Phaser.Scene {
     text: string,
     fontSize: number,
     onClick: () => void,
-    fill = 0x1e2233,
-    stroke = 0x2b3040,
+    accent = UI_COLOR.action.hex,
+    state: 'idle' | 'active' | 'danger' = 'idle',
   ): { frame: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text } {
+    const visual = controlVisual(state, accent);
     const frame = this.add
-      .rectangle(x, y, w, h, fill)
+      .rectangle(x, y, w, h, visual.fill)
       .setOrigin(0)
-      .setStrokeStyle(2, stroke)
+      .setStrokeStyle(2, visual.stroke)
       .setInteractive({ useHandCursor: true });
     const label = this.add
-      .text(x + w / 2, y + h / 2, text, { ...FONT, fontSize: `${fontSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
+      .text(x + w / 2, y + h / 2, text, { ...FONT, fontSize: `${fontSize}px`, fontStyle: 'bold', color: UI_COLOR.text.css })
       .setOrigin(0.5);
-    frame.on('pointerover', () => frame.setFillStyle(0x272c42));
-    frame.on('pointerout', () => frame.setFillStyle(fill));
+    frame.on('pointerover', () => frame.setFillStyle(controlVisual('hover', accent).fill));
+    frame.on('pointerout', () => frame.setFillStyle(visual.fill));
     frame.on('pointerdown', onClick);
     return { frame, label };
   }
@@ -473,7 +507,7 @@ export class UIScene extends Phaser.Scene {
       // Fall back to the abbreviation only if the full word genuinely will not
       // fit — a bar reading "LOGI / PRODUCTION / DEFENSE" looks like a bug.
       const fits = cat.name.length * size * 0.62 + 12 <= h.w;
-      this.add.rectangle(h.x, h.y, h.w, h.h, cat.color, 0.14).setOrigin(0);
+      this.add.rectangle(h.x, h.y, h.w, h.h, UI_COLOR.surfaceRaised.hex, 0.98).setOrigin(0).setStrokeStyle(1, cat.color, 0.5);
       this.add.rectangle(h.x, h.y + h.h - 2, h.w, 2, cat.color, 0.6).setOrigin(0);
       this.add
         .text(h.x + h.w / 2, h.y + h.h / 2, fits ? cat.name : cat.short, {
@@ -488,17 +522,17 @@ export class UIScene extends Phaser.Scene {
       this.slotColor.set(info.type, cat.color);
       const container = this.add.container(x, y);
       const frame = this.add
-        .rectangle(0, 0, bw, bh, 0x1e2233)
+        .rectangle(0, 0, bw, bh, UI_COLOR.surfaceRaised.hex)
         .setOrigin(0)
         .setStrokeStyle(2, cat.color, 0.45)
         .setInteractive({ useHandCursor: true });
       frame.on('pointerdown', () => GameState.events.emit('ui:select', info.type));
       frame.on('pointerover', () => {
-        frame.setFillStyle(0x272c42);
+        frame.setFillStyle(controlVisual('hover', cat.color).fill);
         this.showDesc(info.desc, cat.css);
       });
       frame.on('pointerout', () => {
-        frame.setFillStyle(0x1e2233);
+        frame.setFillStyle(UI_COLOR.surfaceRaised.hex);
         this.showHint();
       });
       container.add([
@@ -515,12 +549,17 @@ export class UIScene extends Phaser.Scene {
             .setOrigin(0.5, 0),
         );
       }
+      const state = this.add
+        .text(bw / 2, 2, '', { ...FONT, fontSize: bh >= 62 ? '8px' : '7px', fontStyle: 'bold', color: UI_COLOR.warning.css })
+        .setOrigin(0.5, 0);
+      container.add(state);
       // the hotkey badge is noise on a device with no keyboard
       if (!IS_TOUCH) {
         container.add(this.add.text(4, 3, info.hotkey, { ...FONT, fontSize: '9px', color: '#8892a6' }));
       }
       this.paletteFrames.set(info.type, frame);
       this.paletteButtons.set(info.type, container);
+      this.paletteState.set(info.type, state);
     });
 
     this.descText = this.add
@@ -589,43 +628,44 @@ export class UIScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
+    const actionVisual = controlVisual('active', UI_COLOR.action.hex);
     this.waveBtn = this.add
-      .rectangle(send.x, send.y, send.w, send.h, 0x2e7d4f)
+      .rectangle(send.x, send.y, send.w, send.h, actionVisual.fill)
       .setOrigin(0)
-      .setStrokeStyle(2, 0x5ef078)
+      .setStrokeStyle(2, actionVisual.stroke)
       .setInteractive({ useHandCursor: true });
     this.waveBtnText = this.add
       .text(send.x + send.w / 2, send.y + send.h / 2 - 7, IS_TOUCH ? 'SEND WAVE' : `SEND WAVE [${key('sendWave')}]`, {
-        ...FONT, fontSize: ROOMY_UI ? '17px' : '14px', fontStyle: 'bold', color: '#ffffff',
+        ...FONT, fontSize: ROOMY_UI ? '17px' : '14px', fontStyle: 'bold', color: UI_COLOR.ink.css,
       })
       .setOrigin(0.5);
     // live early-send bonus, ticking down inside the button — the "go now" nudge
     this.earlyText = this.add
       .text(send.x + send.w / 2, send.y + send.h / 2 + 12, '', {
-        ...FONT, fontSize: ROOMY_UI ? '12px' : '11px', fontStyle: 'bold', color: '#c9f0ff',
+        ...FONT, fontSize: ROOMY_UI ? '12px' : '11px', fontStyle: 'bold', color: UI_COLOR.ink.css,
       })
       .setOrigin(0.5);
     this.waveBtn.on('pointerdown', () => GameState.events.emit('ui:startwave'));
 
     const [a, s, l, m] = toggles;
-    const auto = this.hudButton(a.x, a.y, a.w, a.h, 'AUTO', 13, () => GameState.toggleAuto());
+    const auto = this.hudButton(a.x, a.y, a.w, a.h, 'AUTO OFF', 13, () => GameState.toggleAuto());
     this.autoBtn = auto.frame;
     this.autoBtnText = auto.label.setColor('#8892a6');
 
-    const speed = this.hudButton(s.x, s.y, s.w, s.h, '×1', 15, () => GameState.cycleSpeed());
+    const speed = this.hudButton(s.x, s.y, s.w, s.h, 'SPEED ×1', 12, () => GameState.cycleSpeed());
     this.speedBtnText = speed.label;
 
-    const logi = this.hudButton(l.x, l.y, l.w, l.h, 'LOGI', 12, () => GameState.toggleOverlay());
+    const logi = this.hudButton(l.x, l.y, l.w, l.h, 'LOGISTICS OFF', 10, () => GameState.toggleOverlay());
     logi.label.setColor('#8892a6');
     GameState.events.on('overlay', (on: boolean) => {
-      logi.label.setColor(on ? '#6bd4ff' : '#8892a6');
-      logi.frame.setStrokeStyle(2, on ? 0x6bd4ff : 0x2b3040);
+      logi.label.setText(on ? 'LOGISTICS ON' : 'LOGISTICS OFF').setColor(on ? UI_COLOR.logistics.css : UI_COLOR.textMuted.css);
+      logi.frame.setStrokeStyle(2, on ? UI_COLOR.logistics.hex : UI_COLOR.line.hex);
     });
 
     const menu = this.hudButton(m.x, m.y, m.w, m.h, 'MENU', 12, () => {
       if (GameState.phase === 'wave' && !GameState.gameOver && !this.menuConfirm) {
         this.menuConfirm = true;
-        menu.label.setText('SURE?').setColor('#ff5555');
+        menu.label.setText('CONFIRM?').setColor(UI_COLOR.danger.css);
         this.time.delayedCall(2500, () => {
           this.menuConfirm = false;
           if (menu.label.active) menu.label.setText('MENU').setColor('#8892a6');
@@ -900,14 +940,16 @@ export class UIScene extends Phaser.Scene {
       const can = GameState.money >= info.cost;
       if (this.slotAffordable.get(info.type) === can) continue;
       this.slotAffordable.set(info.type, can);
-      this.paletteButtons.get(info.type)?.setAlpha(can ? 1 : 0.45);
+      this.paletteButtons.get(info.type)?.setAlpha(can ? 1 : 0.72);
+      const state = this.paletteState.get(info.type);
+      if (state && info.type !== this.selectedType) state.setText(can ? '' : `NEED $${info.cost - GameState.money}`);
     }
 
     const cost = prospectCost(GameState.surveys, GameState.surveyDiscount);
     const kind = prospectKind(GameState.surveys);
     this.prospectText
       .setText(this.surveyArmed ? `⛏ PICK A SITE  (ESC)` : `⛏ SURVEY ${kind.toUpperCase()}  $${cost}`)
-      .setColor(this.surveyArmed ? '#5ef078' : GameState.money >= cost ? (kind === 'ore' ? '#ff9f43' : '#6bd4ff') : '#8892a6');
+      .setColor(this.surveyArmed ? UI_COLOR.action.css : GameState.money >= cost ? (kind === 'ore' ? UI_COLOR.production.css : UI_COLOR.logistics.css) : UI_COLOR.textMuted.css);
   }
 
   /**
@@ -948,8 +990,8 @@ export class UIScene extends Phaser.Scene {
       this.summaryCard.destroy();
       this.summaryCard = null;
     }
-    this.waveBtn.setFillStyle(building ? 0x2e7d4f : 0x5c2530);
-    this.waveBtn.setStrokeStyle(2, building ? 0x5ef078 : 0xff5555);
+    this.waveBtn.setFillStyle(building ? UI_COLOR.action.hex : UI_COLOR.surfaceRaised.hex);
+    this.waveBtn.setStrokeStyle(2, building ? UI_COLOR.text.hex : UI_COLOR.danger.hex);
     // Never quote a keyboard shortcut on a device with no keyboard — this used
     // to re-stamp "[SPC]" over the touch label on the first phase change.
     this.waveBtnText.setText(building ? (IS_TOUCH ? 'SEND WAVE' : `SEND WAVE [${key('sendWave')}]`) : 'DEFEND!');
@@ -993,8 +1035,15 @@ export class UIScene extends Phaser.Scene {
   private refreshSelection(t: BuildingType | null): void {
     this.selectedType = t;
     for (const [type, frame] of this.paletteFrames) {
-      if (type === t) frame.setStrokeStyle(3, 0xffe066, 1);
-      else frame.setStrokeStyle(2, this.slotColor.get(type) ?? 0x2b3040, 0.45);
+      const state = this.paletteState.get(type);
+      if (type === t) {
+        frame.setStrokeStyle(3, UI_COLOR.money.hex, 1);
+        state?.setText('SELECTED').setColor(UI_COLOR.money.css);
+      } else {
+        frame.setStrokeStyle(2, this.slotColor.get(type) ?? UI_COLOR.line.hex, 0.45);
+        const info = BUILD_INFO.find((entry) => entry.type === type);
+        state?.setText(info && GameState.money < info.cost ? `NEED $${info.cost - GameState.money}` : '').setColor(UI_COLOR.warning.css);
+      }
     }
     this.showHint();
   }
