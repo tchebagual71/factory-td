@@ -56,6 +56,7 @@ import {
 import { stripHit, topStrip } from './hudLayout';
 import { isHudObject } from './hudObjects';
 import { binding, GameAction, phaserKeyName } from './keymap';
+import { coachMessage } from './coach';
 import { sfx } from '../utils/sfx';
 import type { IsoView } from '../iso/IsoView';
 import { renderMode, setRenderMode } from '../state/renderMode';
@@ -318,21 +319,6 @@ export class GameScene extends Phaser.Scene {
     // buildings and all.
     if (renderMode() === 'iso') void this.enableIso();
 
-    // Hangs off the status strip rather than a fixed y: on a phone the strip is
-    // taller, and a centred five-line block ran straight through it.
-    const hint = this.add
-      .text(
-        640,
-        topStrip(GAME_W, IS_TOUCH).h + 30,
-        'MINERS on ore → belt ore into a PRESS. Ammo feeds GUNS — and every deeper machine runs on it\nFORGE: 2 ammo → shell (CANNONS)  ·  ASSEMBLER: 2 ammo + 1 crystal → piercing (LANCERS)\nCHILLER: 1 ammo → 2 coolant, the cheapest line in the game (CRYO fields slow a choke point)\nTowers start pre-loaded but run dry fast — keep the supply chains flowing!\n' +
-          (IS_TOUCH
-            ? 'The build bar is split LOGISTICS · PRODUCTION · GUNS — tap [?] up top for the full reference at any time'
-            : 'The build bar is split LOGISTICS · PRODUCTION · GUNS — [SPACE] sends the wave · [L] logistics · [?] or [H] for help'),
-        { fontFamily: 'monospace', fontSize: '14px', color: '#cdd6e4', align: 'center', stroke: '#000', strokeThickness: 4 },
-      )
-      .setOrigin(0.5, 0)
-      .setDepth(30);
-    this.tweens.add({ targets: hint, alpha: 0, delay: 14000, duration: 1500, onComplete: () => hint.destroy() });
     // let the HUD's rotate button show the facing this run starts on
     this.sellMode = false;
     this.surveyMode = false;
@@ -341,6 +327,7 @@ export class GameScene extends Phaser.Scene {
     GameState.events.emit('sellmode', false);
     GameState.events.emit('surveymode', false);
     this.ready = true;
+    this.emitCoach();
   }
 
   update(_t: number, deltaMs: number): void {
@@ -925,6 +912,7 @@ export class GameScene extends Phaser.Scene {
     for (const si of save.items) {
       this.conveyor.restoreItem(si.t, si.cx, si.cy, si.px, si.py, si.a ?? 1);
     }
+    this.emitCoach();
   }
 
   // ---------- input & placement ----------
@@ -1292,6 +1280,7 @@ export class GameScene extends Phaser.Scene {
     if (type !== null && type === this.selected) type = null;
     this.selected = type;
     GameState.events.emit('selected', type);
+    this.emitCoach();
     if (type && this.surveyMode) {
       this.surveyMode = false;
       this.surveyGhost.clear();
@@ -1409,6 +1398,7 @@ export class GameScene extends Phaser.Scene {
     }
     progress.recordMax('biggestFactory', this.grid.buildings.length);
     this.requestSave();
+    this.emitCoach();
     return b;
   }
 
@@ -1508,6 +1498,18 @@ export class GameScene extends Phaser.Scene {
     progress.record('sold');
     this.lastSold = { type: b.type, x: b.x, y: b.y };
     this.requestSave();
+    this.emitCoach();
+  }
+
+  /** Refresh onboarding whenever placement facts or the armed build tool changes. */
+  private emitCoach(): void {
+    GameState.events.emit(
+      'coach',
+      coachMessage({
+        buildings: this.grid.buildings.map((b) => b.type),
+        selected: this.selected,
+      }),
+    );
   }
 
   private updateGhost(): void {

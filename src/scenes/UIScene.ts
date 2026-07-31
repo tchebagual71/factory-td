@@ -15,7 +15,9 @@ import { progress } from '../state/progress';
 import { renderMode } from '../state/renderMode';
 import { BuildingType } from '../types';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
-import { HudLayout, hudLayout, slotContent, topStrip } from './hudLayout';
+import { HudLayout, hudLayout, overlayZones, slotContent, topStrip } from './hudLayout';
+import { overlayPlan } from './overlayPolicy';
+import type { CoachMessage } from './coach';
 import { binding, key } from './keymap';
 import { UI_COLOR, UI_FONT, UI_SPACE, controlVisual } from './uiTheme';
 
@@ -67,7 +69,21 @@ export class UIScene extends Phaser.Scene {
   private comboText!: Phaser.GameObjects.Text;
   /** last streak count painted, so an unchanged streak costs no `setText` */
   private comboShown = 0;
-  private missionRows: { name: Phaser.GameObjects.Text; progress: Phaser.GameObjects.Text }[] = [];
+  private missionCard!: {
+    container: Phaser.GameObjects.Container;
+    frame: Phaser.GameObjects.Rectangle;
+    name: Phaser.GameObjects.Text;
+    progress: Phaser.GameObjects.Text;
+    fill: Phaser.GameObjects.Rectangle;
+    extra: Phaser.GameObjects.Text;
+  };
+  private coachCard!: Phaser.GameObjects.Container;
+  private coachStep!: Phaser.GameObjects.Text;
+  private coachAction!: Phaser.GameObjects.Text;
+  private coachContext = '';
+  private toastCard: Phaser.GameObjects.Container | null = null;
+  private queuedSummary: { wave: number; tally: WaveTally } | null = null;
+  private terminalOpen = false;
 
   constructor() {
     super('ui');
@@ -257,6 +273,7 @@ export class UIScene extends Phaser.Scene {
     // the same lane and briefly cover them, then reveal the replacement card;
     // objective -> payout -> new objective reads as one continuous beat.
     this.buildMissionCards();
+    this.buildCoach();
 
     // ----- state listeners -----
     const ev = GameState.events;
@@ -268,9 +285,14 @@ export class UIScene extends Phaser.Scene {
     });
     ev.on('phase', () => this.refreshWaveBtn());
     ev.on('selected', (t: BuildingType | null) => this.refreshSelection(t));
+    ev.on('coach', (message: CoachMessage) => this.refreshCoach(message));
     ev.on('gameover', () => {
       // A pending draw (or an open help panel) would otherwise sit on top of the
       // game-over buttons and keep the sim frozen with no way out.
+      this.terminalOpen = true;
+      this.queuedSummary = null;
+      this.dismissReport();
+      this.clearAllToasts();
       this.clearCards();
       this.closeHelp();
       GameState.finishDraw();
@@ -317,13 +339,13 @@ export class UIScene extends Phaser.Scene {
     // player leaves would be waiting for them when the next run starts.
     ev.on('ui:menu', () => {
       this.closeHelp();
-      this.summaryCard?.destroy();
-      this.summaryCard = null;
+      this.dismissReport();
+      this.clearAllToasts();
     });
 
     ev.on('wavesummary', (wave: number, tally: WaveTally) => {
       GameState.checkMissions({ wave, tally });
-      this.showWaveSummary(wave, tally);
+      this.queueWaveSummary(wave, tally);
     });
     ev.on('cards', (cards: ResearchCard[], level: number) => this.showCardDraw(cards, level));
 
@@ -331,6 +353,7 @@ export class UIScene extends Phaser.Scene {
     this.refreshPreview();
     this.refreshWaveBtn();
     this.refreshMissionCards();
+    this.applyOverlayPlan();
   }
 
   /**
@@ -347,6 +370,8 @@ export class UIScene extends Phaser.Scene {
     // The game-over overlay owns the screen, and a card draw is a decision the
     // player has to make before anything else happens.
     if (GameState.gameOver || GameState.awaitingCard) return;
+    this.dismissReport();
+    this.clearActiveToast();
     const W = 940;
     // Height follows the content instead of a guessed constant — the build
     // reference grows by a row whenever a building is added to the palette.
@@ -451,12 +476,14 @@ export class UIScene extends Phaser.Scene {
     close.frame.setDepth(82);
     close.label.setDepth(83).setColor('#ffffff');
     this.helpLayer.push(close.frame, close.label);
+    this.applyOverlayPlan();
   }
 
   private closeHelp(): void {
     this.helpLayer.forEach((o) => o.destroy());
     this.helpLayer = [];
     GameState.modalOpen = false;
+    this.restoreLowerOverlays();
   }
 
   /** Shared HUD button: a frame plus a centered label, with hover feedback. */
@@ -562,10 +589,6 @@ export class UIScene extends Phaser.Scene {
       this.paletteState.set(info.type, state);
     });
 
-    this.descText = this.add
-      .text(layout.groupHeaders[0].x + 2, PLAYFIELD_H - 20, '', {
-        ...FONT, fontSize: '11px', color: '#cdd6e4', stroke: '#000000', strokeThickness: 3,
-      });
     this.showHint();
   }
 
@@ -591,7 +614,7 @@ export class UIScene extends Phaser.Scene {
       this.showDesc(sel.desc, categoryOf(sel.type)?.css ?? '#cdd6e4');
       return;
     }
-    this.showDesc(this.paletteHint, '#cdd6e4');
+    this.showDesc(this.coachContext || this.paletteHint, '#cdd6e4');
   }
 
   /**
@@ -691,40 +714,129 @@ export class UIScene extends Phaser.Scene {
   }
 
   private buildMissionCards(): void {
-    const x = 8;
-    const y = this.stripBottom + 8;
-    const w = 276;
-    const rowH = 38;
-    this.add.text(x + 8, y, 'ACTIVE MISSIONS', {
-      ...FONT, fontSize: '10px', fontStyle: 'bold', color: '#7cf7c4',
-    }).setDepth(27);
-    for (let i = 0; i < 3; i++) {
-      const rowY = y + 15 + i * rowH;
-      this.add.rectangle(x, rowY, w, rowH - 3, 0x101522, 0.84)
-        .setOrigin(0)
-        .setStrokeStyle(1, 0x315468, 0.9)
-        .setDepth(26);
-      const name = this.add.text(x + 8, rowY + 5, '', {
-        ...FONT, fontSize: '10px', fontStyle: 'bold', color: '#cdd6e4',
-      }).setDepth(27);
-      const progressText = this.add.text(x + 8, rowY + 20, '', {
-        ...FONT, fontSize: '9px', color: '#8892a6',
-      }).setDepth(27);
-      this.missionRows.push({ name, progress: progressText });
-    }
+    const zone = overlayZones(GAME_W, PLAYFIELD_H, this.stripBottom, IS_TOUCH).objective;
+    const inset = IS_TOUCH ? 12 : 8;
+    const container = this.add.container(zone.x, zone.y).setDepth(26);
+    const frame = this.add
+      .rectangle(0, 0, zone.w, zone.h, UI_COLOR.surface.hex, 0.94)
+      .setOrigin(0)
+      .setStrokeStyle(2, UI_COLOR.research.hex, 0.72);
+    const name = this.add.text(inset, IS_TOUCH ? 9 : 7, '', {
+      ...FONT, fontSize: IS_TOUCH ? '14px' : '12px', fontStyle: 'bold', color: UI_COLOR.text.css,
+    });
+    const progress = this.add.text(inset, IS_TOUCH ? 31 : 26, '', {
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '13px' : '11px', color: UI_COLOR.textMuted.css,
+    });
+    const fill = this.add.rectangle(inset, zone.h - 5, 0, 3, UI_COLOR.research.hex, 0.9).setOrigin(0);
+    const extra = this.add.text(zone.w - inset, IS_TOUCH ? 9 : 7, '', {
+      ...FONT, fontSize: IS_TOUCH ? '11px' : '9px', color: UI_COLOR.research.css,
+    }).setOrigin(1, 0);
+    container.add([frame, name, progress, fill, extra]);
+    this.missionCard = { container, frame, name, progress, fill, extra };
   }
 
   private refreshMissionCards(): void {
     const facts = GameState.missionFacts();
-    for (let i = 0; i < this.missionRows.length; i++) {
-      const row = this.missionRows[i];
-      const mission = GameState.missions[i];
-      const def = mission ? missionDef(mission.id) : undefined;
-      const name = mission && def ? `${def.name}   +$${mission.payout}` : '—';
-      const progressText = mission && def ? missionProgress(mission, facts) : 'No eligible objective';
-      if (row.name.text !== name) row.name.setText(name);
-      if (row.progress.text !== progressText) row.progress.setText(progressText);
+    const mission = GameState.missions[0];
+    const def = mission ? missionDef(mission.id) : undefined;
+    const progress = mission && def ? `${def.desc} · ${missionProgress(mission, facts)}` : 'No active contract';
+    const name = mission && def ? `CONTRACT · ${def.name}   +$${mission.payout}` : 'NO ACTIVE CONTRACT';
+    const extra = GameState.missions.length > 1 ? `+${Math.max(0, GameState.missions.length - 1)} contracts` : '';
+    const ratio = mission ? this.missionRatio(missionProgress(mission, facts)) : 0;
+    if (this.missionCard.name.text !== name) this.missionCard.name.setText(name);
+    if (this.missionCard.progress.text !== progress) this.missionCard.progress.setText(progress);
+    if (this.missionCard.extra.text !== extra) this.missionCard.extra.setText(extra);
+    this.missionCard.fill.width = Math.round((this.missionCard.frame.width - (IS_TOUCH ? 24 : 16)) * ratio);
+  }
+
+  private missionRatio(progress: string): number {
+    const match = progress.match(/\$?(\d[\d,]*)\s*\/\s*\$?(\d[\d,]*)/);
+    if (!match) return 0;
+    const current = Number(match[1].replaceAll(',', ''));
+    const goal = Number(match[2].replaceAll(',', ''));
+    return goal > 0 ? Phaser.Math.Clamp(current / goal, 0, 1) : 0;
+  }
+
+  private buildCoach(): void {
+    const zone = overlayZones(GAME_W, PLAYFIELD_H, this.stripBottom, IS_TOUCH).coach;
+    const badgeSize = IS_TOUCH ? 36 : 28;
+    const inset = IS_TOUCH ? 14 : 10;
+    this.coachCard = this.add.container(zone.x, zone.y).setDepth(26);
+    const frame = this.add
+      .rectangle(0, 0, zone.w, zone.h, UI_COLOR.surface.hex, 0.95)
+      .setOrigin(0)
+      .setStrokeStyle(2, UI_COLOR.lineBright.hex, 0.85);
+    const badge = this.add.rectangle(inset, Math.floor((zone.h - badgeSize) / 2), badgeSize, badgeSize, UI_COLOR.logistics.hex, 0.95).setOrigin(0);
+    this.coachStep = this.add
+      .text(inset + badgeSize / 2, zone.h / 2, '1', { ...FONT, fontSize: IS_TOUCH ? '19px' : '15px', fontStyle: 'bold', color: UI_COLOR.ink.css })
+      .setOrigin(0.5);
+    this.coachAction = this.add.text(inset + badgeSize + inset, IS_TOUCH ? 10 : 8, '', {
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '16px' : '13px', fontStyle: 'bold', color: UI_COLOR.text.css,
+    });
+    this.descText = this.add.text(inset + badgeSize + inset, IS_TOUCH ? 38 : 31, '', {
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '13px' : '10px', color: UI_COLOR.textMuted.css,
+    });
+    this.coachCard.add([frame, badge, this.coachStep, this.coachAction, this.descText]);
+  }
+
+  private refreshCoach(message: CoachMessage): void {
+    this.coachStep.setText(String(message.step));
+    this.coachAction.setText(message.action);
+    this.coachContext = message.context;
+    this.showDesc(message.context);
+  }
+
+  /** Keep every gameplay overlay in the priority layer assigned by overlayPlan. */
+  private applyOverlayPlan(): void {
+    const plan = overlayPlan({
+      terminal: this.terminalOpen,
+      blocking: this.helpLayer.length > 0 || this.cardLayer.length > 0,
+      report: this.summaryCard !== null,
+      transient: this.toastActive,
+      inspector: false,
+    });
+    this.missionCard.container.setVisible(plan.ambient);
+    this.coachCard.setVisible(plan.ambient);
+    this.summaryCard?.setVisible(plan.report);
+    this.toastCard?.setVisible(plan.transient);
+  }
+
+  private dismissReport(): void {
+    if (!this.summaryCard) return;
+    this.tweens.killTweensOf(this.summaryCard);
+    this.summaryCard.destroy();
+    this.summaryCard = null;
+  }
+
+  private clearActiveToast(): void {
+    if (this.toastCard) this.tweens.killTweensOf(this.toastCard);
+    this.toastCard?.destroy();
+    this.toastCard = null;
+    this.toastActive = false;
+  }
+
+  private clearAllToasts(): void {
+    this.clearActiveToast();
+    this.toastQueue = [];
+  }
+
+  private queueWaveSummary(wave: number, tally: WaveTally): void {
+    if (this.terminalOpen || this.helpLayer.length > 0 || this.cardLayer.length > 0) {
+      this.queuedSummary = { wave, tally };
+      return;
     }
+    this.showWaveSummary(wave, tally);
+  }
+
+  private restoreLowerOverlays(): void {
+    this.applyOverlayPlan();
+    if (!this.terminalOpen && this.helpLayer.length === 0 && this.cardLayer.length === 0 && this.queuedSummary) {
+      const summary = this.queuedSummary;
+      this.queuedSummary = null;
+      this.showWaveSummary(summary.wave, summary.tally);
+      return;
+    }
+    this.pumpToasts();
   }
 
   /**
@@ -766,7 +878,7 @@ export class UIScene extends Phaser.Scene {
    * ore into two coolant would otherwise flatter a gun line that is starving.
    */
   private showWaveSummary(wave: number, t: WaveTally): void {
-    this.summaryCard?.destroy();
+    this.dismissReport();
     const W = 288;
     const H = 158;
     const c = this.add.container(GAME_W / 2 - W / 2, 372).setDepth(45).setAlpha(0);
@@ -817,6 +929,7 @@ export class UIScene extends Phaser.Scene {
     ];
     c.add(rows);
     this.summaryCard = c;
+    this.applyOverlayPlan();
     this.tweens.add({ targets: c, alpha: 1, y: 360, duration: 220, ease: 'Back.out' });
     this.tweens.add({
       targets: c,
@@ -825,7 +938,10 @@ export class UIScene extends Phaser.Scene {
       duration: 400,
       onComplete: () => {
         c.destroy();
-        if (this.summaryCard === c) this.summaryCard = null;
+        if (this.summaryCard === c) {
+          this.summaryCard = null;
+          this.restoreLowerOverlays();
+        }
       },
     });
   }
@@ -839,6 +955,8 @@ export class UIScene extends Phaser.Scene {
    * the choice landing at the moment your factory earned it is the whole point.
    */
   private showCardDraw(cards: ResearchCard[], level: number): void {
+    this.dismissReport();
+    this.clearActiveToast();
     this.clearCards();
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.72).setOrigin(0).setDepth(70).setInteractive();
     const title = this.add
@@ -907,11 +1025,13 @@ export class UIScene extends Phaser.Scene {
       this.cardKeyHandlers.push({ key: `keydown-${keys[i]}`, handler });
     });
     sfx.waveClear();
+    this.applyOverlayPlan();
   }
 
   private pickCard(id: string): void {
     this.clearCards(); // destroy first: GameScene may immediately deal the next level
     GameState.events.emit('ui:pickcard', id);
+    this.restoreLowerOverlays();
   }
 
   private clearCards(): void {
@@ -987,8 +1107,8 @@ export class UIScene extends Phaser.Scene {
     const building = GameState.phase === 'build';
     if (!building && this.summaryCard) {
       // the player moved on — get the card out of the playfield
-      this.summaryCard.destroy();
-      this.summaryCard = null;
+      this.dismissReport();
+      this.restoreLowerOverlays();
     }
     this.waveBtn.setFillStyle(building ? UI_COLOR.action.hex : UI_COLOR.surfaceRaised.hex);
     this.waveBtn.setStrokeStyle(2, building ? UI_COLOR.text.hex : UI_COLOR.danger.hex);
@@ -1000,30 +1120,35 @@ export class UIScene extends Phaser.Scene {
 
   /** Slide-in achievement and mission cards, one at a time, through one queue. */
   private pumpToasts(): void {
-    if (this.toastActive) return;
+    if (this.toastActive || this.terminalOpen || this.helpLayer.length > 0 || this.cardLayer.length > 0 || this.summaryCard) return;
     const def = this.toastQueue.shift();
     if (!def) return;
     this.toastActive = true;
-    // Top LEFT, under the stat chips. On the right it slid in over the map name
-    // and the help/mute buttons, and — once the upgrade panel moved down to
-    // clear the taller touch strip — straight across the panel you were reading.
-    const c = this.add.container(-280, this.stripBottom + 8).setDepth(60);
-    const bg = this.add.rectangle(0, 0, 262, 34, 0x141625, 0.95).setOrigin(0).setStrokeStyle(2, 0xffe066);
-    const name = this.add.text(10, 4, `★ ${def.name}`, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#ffe066' });
-    const desc = this.add.text(10, 20, def.desc, { ...FONT, fontSize: '9px', color: '#cdd6e4' });
+    const zone = overlayZones(GAME_W, PLAYFIELD_H, this.stripBottom, IS_TOUCH).toast;
+    const c = this.add.container(GAME_W + zone.w, zone.y).setDepth(60);
+    const bg = this.add.rectangle(0, 0, zone.w, zone.h, UI_COLOR.surface.hex, 0.96).setOrigin(0).setStrokeStyle(2, UI_COLOR.money.hex);
+    const name = this.add.text(10, IS_TOUCH ? 8 : 5, `★ ${def.name}`, {
+      ...FONT, fontSize: IS_TOUCH ? '14px' : '12px', fontStyle: 'bold', color: UI_COLOR.money.css,
+    });
+    const desc = this.add.text(10, IS_TOUCH ? 31 : 22, def.desc, {
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '12px' : '10px', color: UI_COLOR.text.css,
+    });
     c.add([bg, name, desc]);
+    this.toastCard = c;
+    this.applyOverlayPlan();
     sfx.coin();
-    this.tweens.add({ targets: c, x: 8, duration: 250, ease: 'Back.out' });
+    this.tweens.add({ targets: c, x: zone.x, duration: 250, ease: 'Back.out' });
     this.tweens.add({
       targets: c,
-      x: -280,
+      x: GAME_W + zone.w,
       delay: 3000,
       duration: 200,
       ease: 'Cubic.in',
       onComplete: () => {
         c.destroy();
+        if (this.toastCard === c) this.toastCard = null;
         this.toastActive = false;
-        this.pumpToasts();
+        this.restoreLowerOverlays();
       },
     });
   }
@@ -1049,6 +1174,11 @@ export class UIScene extends Phaser.Scene {
   }
 
   private showGameOver(newBest = false, scrapEarned = 0): void {
+    this.terminalOpen = true;
+    this.queuedSummary = null;
+    this.dismissReport();
+    this.clearAllToasts();
+    this.applyOverlayPlan();
     const score = gradeRun({ wave: GameState.wave, tally: GameState.tally });
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.7).setOrigin(0).setDepth(50);
     const title = this.add
@@ -1131,6 +1261,7 @@ export class UIScene extends Phaser.Scene {
     const clearOverlay = () => {
       this.overlay.forEach((o) => o.destroy());
       this.overlay = [];
+      this.terminalOpen = false;
     };
     btn.on('pointerdown', () => {
       clearOverlay();
