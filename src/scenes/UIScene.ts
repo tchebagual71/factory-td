@@ -2,15 +2,19 @@ import Phaser from 'phaser';
 import { GAME_H, GAME_W, IS_TOUCH, PLAYFIELD_H, ROOMY_UI, UI_H } from '../config';
 import { AchievementDef } from '../data/achievements';
 import { BUILD_CATEGORIES, BUILD_INFO, buildGroupSizes, categoryOf } from '../data/buildings';
+import { ComboState, comboColor, comboExpired, comboNow, comboTier } from '../data/combo';
 import { activeMap, prospectCost, prospectKind } from '../data/map';
 import { ResearchCard, researchForLevel } from '../data/research';
 import { earlySendBonus, waveDef, WAVE_KIND_LABEL } from '../data/waves';
 import { pushAchievements } from '../services/cloud';
 import { ammoDeficits, ammoTotal, GameState, WaveTally } from '../state/GameState';
+import { meta } from '../state/meta';
 import { progress } from '../state/progress';
+import { renderMode } from '../state/renderMode';
 import { BuildingType } from '../types';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
 import { HudLayout, hudLayout, slotContent, topStrip } from './hudLayout';
+import { binding, key } from './keymap';
 
 const FONT = { fontFamily: 'monospace' };
 
@@ -50,6 +54,9 @@ export class UIScene extends Phaser.Scene {
   private cardLayer: Phaser.GameObjects.GameObject[] = [];
   private cardKeyHandlers: { key: string; handler: () => void }[] = [];
   private summaryCard: Phaser.GameObjects.Container | null = null;
+  private comboText!: Phaser.GameObjects.Text;
+  /** last streak count painted, so an unchanged streak costs no `setText` */
+  private comboShown = 0;
 
   constructor() {
     super('ui');
@@ -134,14 +141,25 @@ export class UIScene extends Phaser.Scene {
       this.showHelp(),
     );
     help.label.setColor('#8892a6');
-    this.input.keyboard?.on('keydown-H', () => this.showHelp());
+    this.input.keyboard?.on(`keydown-${binding('help').key}`, () => this.showHelp());
 
     const mute = this.hudButton(top.mute.x, top.mute.y, top.mute.w, top.h, '', IS_TOUCH ? 20 : 16, () =>
       applyMute(toggleMute()),
     );
     const applyMute = (m: boolean) => mute.label.setText(m ? '✕' : '♪').setColor(m ? '#8892a6' : '#5ef078');
     applyMute(isMuted());
-    this.input.keyboard?.on('keydown-M', () => applyMute(toggleMute()));
+    this.input.keyboard?.on(`keydown-${binding('mute').key}`, () => applyMute(toggleMute()));
+
+    // 2D ↔ 3D. GameScene owns the renderer, so this only asks. It exists as a
+    // chip because the shortcut is keyboard-only and a phone has no keyboard —
+    // the 3D board was simply unreachable mid-run on touch.
+    const view = this.hudButton(top.view.x, top.view.y, top.view.w, top.h, '', IS_TOUCH ? 15 : 13, () =>
+      GameState.events.emit('ui:view'),
+    );
+    const applyView = (mode: string) =>
+      view.label.setText(mode === 'iso' ? '3D' : '2D').setColor(mode === 'iso' ? '#7cf7c4' : '#8892a6');
+    applyView(renderMode());
+    GameState.events.on('view', applyView);
     // ESC is the universal "get this off my screen" — GameScene also uses it to
     // clear the build selection, which is the right thing to happen either way.
     this.input.keyboard?.on('keydown-ESC', () => this.closeHelp());
@@ -149,7 +167,7 @@ export class UIScene extends Phaser.Scene {
     // ----- pause overlay -----
     const pauseDim = this.add.rectangle(0, 0, GAME_W, PLAYFIELD_H, 0x000000, 0.45).setOrigin(0).setDepth(40).setVisible(false);
     const pauseText = this.add
-      .text(GAME_W / 2, PLAYFIELD_H / 2, 'PAUSED\n[P] to resume', { ...FONT, fontSize: '36px', fontStyle: 'bold', color: '#ffe066', align: 'center', stroke: '#000', strokeThickness: 6 })
+      .text(GAME_W / 2, PLAYFIELD_H / 2, IS_TOUCH ? 'PAUSED\ntap ▶ to resume' : `PAUSED\n[${key('pause')}] to resume`, { ...FONT, fontSize: '36px', fontStyle: 'bold', color: '#ffe066', align: 'center', stroke: '#000', strokeThickness: 6 })
       .setOrigin(0.5)
       .setDepth(41)
       .setVisible(false);
@@ -188,6 +206,19 @@ export class UIScene extends Phaser.Scene {
       .setVisible(false);
     GameState.events.on('overlay', (on: boolean) => legend.setVisible(on));
 
+    // ----- kill streak meter -----
+    // Top RIGHT, hanging off the strip: top-left is the achievement toasts and
+    // top-centre is the logistics legend. Hidden below tier 1 (see combo.ts) so
+    // ordinary trickle kills never put chrome on screen.
+    this.comboText = this.add
+      .text(GAME_W - 10, this.stripBottom + 8, '', {
+        ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 4,
+      })
+      .setOrigin(1, 0)
+      .setDepth(30)
+      .setVisible(false);
+    GameState.events.on('combo', (c: ComboState) => this.refreshCombo(c));
+
     // ----- state listeners -----
     const ev = GameState.events;
     ev.on('money', () => this.refreshStats(true));
@@ -206,7 +237,17 @@ export class UIScene extends Phaser.Scene {
       GameState.finishDraw();
       const prevBest = progress.stats.bestWave;
       progress.recordMax('bestWave', GameState.wave);
-      this.showGameOver(prevBest > 0 && GameState.wave > prevBest);
+      const newBest = prevBest > 0 && GameState.wave > prevBest;
+      // Bank the run's ⚙ SCRAP before the card is drawn, so the number shown is
+      // the number already in the wallet — no "pending" state to get lost if the
+      // player closes the tab on the game-over screen.
+      const earned = meta.award({
+        wave: GameState.wave,
+        kills: GameState.runKills,
+        bestStreak: GameState.combo.best,
+        newBest,
+      });
+      this.showGameOver(newBest, earned);
     });
     ev.on('achievement', (def: AchievementDef) => {
       this.toastQueue.push(def);
@@ -285,15 +326,19 @@ export class UIScene extends Phaser.Scene {
           ['Upgrade', 'Tap a placed tower to open its upgrade panel.'],
           ['Wave', 'SEND WAVE. AUTO sends them back to back; ×1/×2/×3 is game speed.'],
           ['Logistics', 'LOGI shades belts by throughput and shows each tower’s ammo uptime.'],
+          ['View', 'The 2D/3D chip up top swaps the flat board for the isometric one.'],
         ]
       : [
-          ['Build', 'Pick from the three shelves in the bar, or use the hotkeys listed here. ESC cancels.'],
+          // Every key here is read from `keymap.ts`, so a rebind can never leave
+          // this reference quietly lying to the player.
+          ['Build', `Pick from the three shelves in the bar, or use the hotkeys listed here. ${key('cancel')} cancels.`],
           ['Belts', 'Hold and drag to paint a line; it turns corners with your drag.'],
-          ['Rotate', 'R turns whatever is under the cursor, or the pending build on bare ground.'],
+          ['Rotate', `${key('rotate')} turns whatever is under the cursor, or the pending build on bare ground.`],
           ['Sell', 'Right-click a building — refunds half. Expensive ones ask twice.'],
-          ['Upgrade', 'Click a placed tower, then U (or I for the second path at Mk3).'],
-          ['Wave', 'SPACE sends it · F cycles speed ×1/×2/×3 · P pauses.'],
-          ['Logistics', 'L shades belts by throughput and shows each tower’s ammo uptime · M mutes.'],
+          ['Upgrade', `Click a placed tower, then ${key('upgradeA')} (or ${key('upgradeB')} for the second path at Mk3).`],
+          ['Wave', `${key('sendWave')} sends it · ${key('speed')} cycles speed ×1/×2/×3 · ${key('pause')} pauses.`],
+          ['Logistics', `${key('overlay')} shades belts by throughput and shows each tower’s ammo uptime · ${key('mute')} mutes.`],
+          ['View', `${key('view')} swaps the flat board for the 3D isometric one, as does the 2D/3D chip.`],
         ];
     let cy = y + 66;
     for (const [head, body] of controls) {
@@ -449,7 +494,7 @@ export class UIScene extends Phaser.Scene {
   private get paletteHint(): string {
     return IS_TOUCH
       ? 'Tap a slot then tap the map · tap the slot again to cancel · ROTATE turns it · SELL then tap to refund 50% · tap a tower to upgrade · [?] help'
-      : 'Drag paints belts round corners · R turns what is under the cursor · right-click sells · click a tower to upgrade · [L] logistics · [H] help';
+      : `Drag paints belts round corners · ${key('rotate')} turns what is under the cursor · right-click sells · click a tower to upgrade · [${key('overlay')}] logistics · [${key('help')}] help`;
   }
 
   private showDesc(text: string, color = '#cdd6e4'): void {
@@ -510,7 +555,7 @@ export class UIScene extends Phaser.Scene {
       .setStrokeStyle(2, 0x5ef078)
       .setInteractive({ useHandCursor: true });
     this.waveBtnText = this.add
-      .text(send.x + send.w / 2, send.y + send.h / 2 - 7, IS_TOUCH ? 'SEND WAVE' : 'SEND WAVE [SPC]', {
+      .text(send.x + send.w / 2, send.y + send.h / 2 - 7, IS_TOUCH ? 'SEND WAVE' : `SEND WAVE [${key('sendWave')}]`, {
         ...FONT, fontSize: ROOMY_UI ? '17px' : '14px', fontStyle: 'bold', color: '#ffffff',
       })
       .setOrigin(0.5);
@@ -558,6 +603,42 @@ export class UIScene extends Phaser.Scene {
     const show = GameState.phase === 'build' && !GameState.gameOver;
     const bonus = show ? earlySendBonus(GameState.wave, GameState.buildElapsed) : 0;
     this.earlyText.setText(bonus > 0 ? `early bonus +$${bonus}` : '');
+    // The streak lapses on a clock, so nothing emits when it ends — the meter
+    // has to notice for itself.
+    if (this.comboShown > 0 && comboExpired(GameState.combo, comboNow())) this.hideCombo();
+  }
+
+  /**
+   * Kill-streak meter. Grows and warms as the streak climbs, which is the whole
+   * feedback: the number itself is worth nothing (`data/combo.ts` pays no
+   * money), so the escalation *is* the reward.
+   */
+  private refreshCombo(c: ComboState): void {
+    if (comboTier(c.count) === 0) {
+      this.hideCombo();
+      return;
+    }
+    if (c.count === this.comboShown) return;
+    this.comboShown = c.count;
+    this.comboText
+      .setText(`${c.count}× STREAK`)
+      .setColor(comboColor(c.count))
+      .setVisible(true)
+      .setAlpha(1);
+    // a small kick on every kill — the meter should feel struck, not updated
+    this.comboText.setScale(1.28);
+    this.tweens.add({ targets: this.comboText, scale: 1, duration: 130, ease: 'Quad.out' });
+  }
+
+  private hideCombo(): void {
+    if (this.comboShown === 0) return;
+    this.comboShown = 0;
+    this.tweens.add({
+      targets: this.comboText,
+      alpha: 0,
+      duration: 260,
+      onComplete: () => this.comboText.setVisible(false),
+    });
   }
 
   /**
@@ -722,7 +803,7 @@ export class UIScene extends Phaser.Scene {
       this.paletteButtons.get(info.type)?.setAlpha(can ? 1 : 0.45);
     }
 
-    const cost = prospectCost(GameState.surveys);
+    const cost = prospectCost(GameState.surveys, GameState.surveyDiscount);
     const kind = prospectKind(GameState.surveys);
     this.prospectText
       .setText(this.surveyArmed ? `⛏ PICK A SITE  (ESC)` : `⛏ SURVEY ${kind.toUpperCase()}  $${cost}`)
@@ -771,7 +852,7 @@ export class UIScene extends Phaser.Scene {
     this.waveBtn.setStrokeStyle(2, building ? 0x5ef078 : 0xff5555);
     // Never quote a keyboard shortcut on a device with no keyboard — this used
     // to re-stamp "[SPC]" over the touch label on the first phase change.
-    this.waveBtnText.setText(building ? (IS_TOUCH ? 'SEND WAVE' : 'SEND WAVE [SPC]') : 'DEFEND!');
+    this.waveBtnText.setText(building ? (IS_TOUCH ? 'SEND WAVE' : `SEND WAVE [${key('sendWave')}]`) : 'DEFEND!');
     this.refreshStats();
   }
 
@@ -818,7 +899,7 @@ export class UIScene extends Phaser.Scene {
     this.showHint();
   }
 
-  private showGameOver(newBest = false): void {
+  private showGameOver(newBest = false, scrapEarned = 0): void {
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.7).setOrigin(0).setDepth(50);
     const title = this.add
       .text(GAME_W / 2, 260, 'FACTORY DESTROYED', { ...FONT, fontSize: '48px', fontStyle: 'bold', color: '#ff5555', stroke: '#000', strokeThickness: 8 })
@@ -841,6 +922,32 @@ export class UIScene extends Phaser.Scene {
       best.setScale(0.5);
       this.tweens.add({ targets: best, scale: 1, duration: 300, ease: 'Back.out' });
     }
+    // The payout. Counts up rather than appearing: a number that ticks is the
+    // whole reason to look at a defeat screen, and this is the "one more run"
+    // hook — every run, however bad, moved the Workshop forward.
+    const scrap = this.add
+      .text(GAME_W / 2, 374, '', { ...FONT, fontSize: '17px', fontStyle: 'bold', color: '#7cf7c4' })
+      .setOrigin(0.5)
+      .setDepth(51);
+    const counter = { n: 0 };
+    scrap.setText(`⚙ +0 SCRAP   (${meta.scrap - scrapEarned} banked)`);
+    this.tweens.add({
+      targets: counter,
+      n: scrapEarned,
+      duration: 700,
+      delay: 350,
+      ease: 'Cubic.out',
+      onUpdate: () => {
+        const n = Math.round(counter.n);
+        scrap.setText(`⚙ +${n} SCRAP   (${meta.scrap - scrapEarned + n} banked)`);
+      },
+      onComplete: () => {
+        scrap.setText(`⚙ +${scrapEarned} SCRAP   (${meta.scrap} banked)`);
+        scrap.setScale(1.15);
+        this.tweens.add({ targets: scrap, scale: 1, duration: 160 });
+        sfx.coin();
+      },
+    });
     const btn = this.add
       .rectangle(GAME_W / 2 - 125, 400, 220, 52, 0x2e7d4f)
       .setStrokeStyle(2, 0x5ef078)
@@ -859,7 +966,7 @@ export class UIScene extends Phaser.Scene {
       .text(GAME_W / 2 + 125, 400, 'MENU', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(0.5)
       .setDepth(52);
-    this.overlay = [dim, title, sub, best, btn, btnText, menuBtn, menuBtnText];
+    this.overlay = [dim, title, sub, best, scrap, btn, btnText, menuBtn, menuBtnText];
     const clearOverlay = () => {
       this.overlay.forEach((o) => o.destroy());
       this.overlay = [];

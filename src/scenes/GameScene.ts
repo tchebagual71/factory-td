@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_W, GRID_H, GRID_W, IS_TOUCH, PLAYFIELD_H, TILE } from '../config';
+import { GAME_H, GAME_W, GRID_H, GRID_W, IS_TOUCH, PLAYFIELD_H, TILE } from '../config';
 import {
   BUILD_INFO,
   costOf,
@@ -29,6 +29,7 @@ import {
 import { cardById, draw, DrawContext, grantAmount } from '../data/research';
 import { clearSave, pushBest, pushSave } from '../services/cloud';
 import { GameState } from '../state/GameState';
+import { meta } from '../state/meta';
 import { clearLocal, consumePendingLoad, consumePendingMap, saveLocal } from '../state/persistence';
 import { progress } from '../state/progress';
 import { captureRun, SaveV1 } from '../state/serialize';
@@ -41,8 +42,23 @@ import { WaveSystem } from '../systems/WaveSystem';
 import { Building, BuildingType, Dir, PathId } from '../types';
 import { beltRun } from '../systems/beltPaint';
 import { BELT_FRAME_KEYS } from './BootScene';
-import { topStrip } from './hudLayout';
+import {
+  BoardCam,
+  boardToScreen,
+  clampCam,
+  clampZoom,
+  defaultCam,
+  isDefault,
+  panBy,
+  screenToBoard,
+  zoomAbout,
+} from './boardCam';
+import { stripHit, topStrip } from './hudLayout';
+import { isHudObject } from './hudObjects';
+import { binding, GameAction, phaserKeyName } from './keymap';
 import { sfx } from '../utils/sfx';
+import type { IsoView } from '../iso/IsoView';
+import { renderMode, setRenderMode } from '../state/renderMode';
 
 /** Concurrent floating-text objects allowed before new ones are dropped. */
 const MAX_FLOATERS = 24;
@@ -56,13 +72,6 @@ const BELT_ANIM = 'belt-run';
 /** Upgrade-panel geometry. Authored small; scaled up bodily for fingers. */
 const PANEL_W = 258;
 const PANEL_SCALE = IS_TOUCH ? 1.4 : 1;
-
-/** Phaser spells its digit keys out; letters are themselves. */
-const DIGIT_KEYS = ['ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
-
-function phaserKeyName(hotkey: string): string {
-  return /^[0-9]$/.test(hotkey) ? DIGIT_KEYS[Number(hotkey)] : hotkey.toUpperCase();
-}
 
 /** Mk-pip / float-text tint per specialization path. */
 const PATH_COLORS: Record<PathId, number> = {
@@ -92,6 +101,8 @@ export class GameScene extends Phaser.Scene {
   private surveyMode = false;
   private surveyGhost!: Phaser.GameObjects.Graphics;
   /** a costly building right-clicked once, awaiting the confirming second click */
+  /** The most recent sale, so rebuilding the same thing on the same tile is detectable. */
+  private lastSold: { type: BuildingType; x: number; y: number } | null = null;
   private sellArmed: Building | null = null;
   private sellArmedAt = 0;
   /** long-press bookkeeping — the touch stand-in for right-click-to-sell */
@@ -118,6 +129,32 @@ export class GameScene extends Phaser.Scene {
   private paintCell: { x: number; y: number } | null = null;
   /** cells laid down in this stroke; only these may be re-aimed as the drag turns a corner */
   private paintStroke = new Set<string>();
+
+  /**
+   * The isometric renderer, when the player has asked for it. Null in flat
+   * mode, and null for one extra beat after that while its (code-split) module
+   * loads — every read of it is guarded, and the 2D game is fully playable
+   * throughout, so there is nothing to wait on.
+   */
+  private iso: IsoView | null = null;
+  /** guards against a second load being kicked off while the first is in flight */
+  private isoLoading = false;
+
+  /** Top-strip geometry — the panel hangs off it, and the board ignores clicks on it. */
+  private strip = topStrip(GAME_W, IS_TOUCH);
+
+  /**
+   * Board zoom/pan, shared by both renderers. A view setting, never part of a
+   * save: it is a per-device comfort control like `ftd:view`, and restoring a
+   * run zoomed into a corner would be baffling.
+   */
+  private cam: BoardCam = defaultCam();
+  /** Camera the HUD-ish GameScene objects draw on — never zoomed. */
+  private uiCam!: Phaser.Cameras.Scene2D.Camera;
+  /** Live pinch: the two pointers' spread and midpoint at the last sample. */
+  private pinch: { dist: number; mx: number; my: number } | null = null;
+  /** Middle-button (or two-finger) pan anchor, in canvas px. */
+  private panFrom: { x: number; y: number } | null = null;
 
   private selTower: Building | null = null;
   private selRing!: Phaser.GameObjects.Rectangle;
@@ -188,9 +225,21 @@ export class GameScene extends Phaser.Scene {
       .setDepth(9);
 
     this.createUpgradePanel();
+    // Before setupInput so the classifier has already sorted everything built
+    // above onto the right camera.
+    this.cam = defaultCam();
+    this.setupCameras();
+    // Set here rather than only on an iso toggle: a flat run that never touches
+    // the 3D view still zooms, and the overlay's labels have to follow it.
+    this.logistics.project = (x, y) => this.project(x, y);
+    this.applyCam();
     this.setupInput();
 
     if (pending) {
+      // A restored run already banked whatever it was granted at the start;
+      // re-applying the money and lives here would pay it out a second time.
+      // The *mods* still have to be reinstated, since those are never saved.
+      GameState.applyMeta({ ...meta.effects(), startMoney: 0, startLives: 0 });
       this.applySave(pending);
     } else {
       // achievement unlock perks apply to fresh runs only (capped ≤ $100 by test)
@@ -198,6 +247,15 @@ export class GameScene extends Phaser.Scene {
       if (bonus > 0) {
         GameState.addMoney(bonus);
         this.floatText(640, 200, `+$${bonus} veteran bonus`, '#ffe066');
+      }
+      // Workshop grants, capped by `metaTree.test.ts` (see "The Workshop")
+      const m = meta.effects();
+      GameState.applyMeta(m);
+      if (m.startMoney > 0 || m.startLives > 0) {
+        const parts = [m.startMoney > 0 ? `+$${m.startMoney}` : '', m.startLives > 0 ? `+${m.startLives}♥` : '']
+          .filter(Boolean)
+          .join('  ');
+        this.floatText(640, 230, `${parts} workshop`, '#7cf7c4');
       }
     }
 
@@ -208,6 +266,7 @@ export class GameScene extends Phaser.Scene {
     GameState.events.off('ui:prospect').on('ui:prospect', () => this.toggleSurveyMode());
     GameState.events.off('ui:rotate').on('ui:rotate', () => this.rotateBuildDir());
     GameState.events.off('ui:sellmode').on('ui:sellmode', () => this.toggleSellMode());
+    GameState.events.off('ui:view').on('ui:view', () => this.toggleIso());
     GameState.events.off('ui:pickcard').on('ui:pickcard', (id: string) => this.onPickCard(id));
     GameState.events.off('levelup').on('levelup', () => this.offerCards());
     // Targeted off/on (other scenes listen to these events too; stable refs survive restarts)
@@ -215,7 +274,16 @@ export class GameScene extends Phaser.Scene {
     GameState.events.off('gameover', this.onGameOverClear).on('gameover', this.onGameOverClear);
     window.removeEventListener('beforeunload', this.onBeforeUnload);
     window.addEventListener('beforeunload', this.onBeforeUnload);
-    this.events.once('shutdown', () => window.removeEventListener('beforeunload', this.onBeforeUnload));
+    this.events.once('shutdown', () => {
+      window.removeEventListener('beforeunload', this.onBeforeUnload);
+      // The 3D canvas is a DOM sibling of Phaser's, so it outlives the scene
+      // unless we take it down with us.
+      this.disableIso();
+    });
+
+    // Built last so it masks a fully populated scene in one pass, restored
+    // buildings and all.
+    if (renderMode() === 'iso') void this.enableIso();
 
     // Hangs off the status strip rather than a fixed y: on a phone the strip is
     // taller, and a centred five-line block ran straight through it.
@@ -243,11 +311,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_t: number, deltaMs: number): void {
-    if (GameState.gameOver) return;
+    if (GameState.gameOver) {
+      this.iso?.render(this);
+      return;
+    }
     if (GameState.frozen) {
       // Pause still lets you plan and build; a frozen ghost would just lie
       // about where the next click lands. (A pending card draw freezes too.)
       this.updateGhost();
+      this.iso?.render(this);
       return;
     }
     if (this.saveDirty && GameState.phase === 'build') {
@@ -272,6 +344,7 @@ export class GameScene extends Phaser.Scene {
       this.depositsDirty = false;
       this.depositsTimer = 1;
       this.drawDeposits();
+      this.iso?.syncTerrain(); // the 3D ground thins out on the same cadence
     }
 
     const st = this.selTower;
@@ -302,7 +375,117 @@ export class GameScene extends Phaser.Scene {
         if (tier) this.tintAfford(this.panelBtnA, this.panelBtnAText, st, tier);
       }
     }
+
+    // Last, so the isometric view mirrors a settled frame — exactly the rule
+    // LogisticsSystem follows for the same reason.
+    this.iso?.render(this);
   }
+
+  // ---------- the isometric view ----------
+
+  /**
+   * Swap the playfield between the flat and isometric renderers. The simulation
+   * is untouched either way: the 3D view mirrors GameScene's own display list,
+   * so a run can be switched mid-wave and nothing skips a beat.
+   *
+   * Three.js is a heavy dependency for a player who never asks for 3D, so it is
+   * imported dynamically and Vite splits it into its own chunk.
+   */
+  private async enableIso(): Promise<void> {
+    if (this.iso || this.isoLoading) return;
+    this.isoLoading = true;
+    try {
+      const { IsoView } = await import('../iso/IsoView');
+      // The scene can be torn down while the chunk is in flight.
+      if (!this.scene.isActive() || this.iso) return;
+      const view = new IsoView(this.game, this.grid);
+      view.setSources(() => this.waveSystem.enemies);
+      view.attach(this);
+      this.iso = view;
+      // Same projection GameScene uses, so the overlay's labels can never sit
+      // somewhere the floating bounties don't.
+      this.logistics.project = (x, y) => this.project(x, y);
+      this.depositsDirty = true;
+      // Carry the shared zoom/pan into the renderer that just took over. Both
+      // views are built from `this.cam`, so a toggle must never be a way to
+      // leave the camera state and what is on screen disagreeing.
+      this.applyCam();
+    } catch (err) {
+      console.warn('[factory-td] isometric view unavailable, staying flat', err);
+      setRenderMode('2d');
+      // Correct the HUD chip: toggleIso flipped it optimistically before the
+      // chunk had even landed, and we are not going to 3D after all.
+      GameState.events.emit('view', '2d');
+      this.floatText(640, 240, '3D UNAVAILABLE', '#ff8b8b');
+    } finally {
+      this.isoLoading = false;
+    }
+  }
+
+  private disableIso(): void {
+    if (!this.iso) return;
+    this.iso.detach(this);
+    this.iso.destroy();
+    this.iso = null;
+    this.logistics.project = (x, y) => this.project(x, y);
+    this.applyCam(); // hand the zoom back to the flat camera
+
+  }
+
+  private toggleIso(): void {
+    if (this.iso) {
+      this.disableIso();
+      setRenderMode('2d');
+      this.floatText(640, 240, '2D VIEW', '#cdd6e4');
+    } else {
+      setRenderMode('iso');
+      this.floatText(640, 240, '3D ISOMETRIC', '#7cf7c4');
+      void this.enableIso();
+    }
+    // The HUD chip mirrors the renderer rather than tracking it independently,
+    // so a failed WebGL init that falls back to flat can't leave it reading 3D.
+    GameState.events.emit('view', renderMode());
+    sfx.place();
+  }
+
+  /**
+   * The grid cell under a point in canvas/design pixels. In flat mode that is
+   * the tile the point sits in; in isometric it is an exact inverse of the
+   * projection onto the ground plane. Every placement, rotation, sale and ghost
+   * goes through here, so the two views can never disagree about what the
+   * player is pointing at.
+   */
+  private tileAt(px: number, py: number): { tx: number; ty: number } {
+    const b = this.boardAt(px, py);
+    return { tx: Math.floor(b.x / TILE), ty: Math.floor(b.y / TILE) };
+  }
+
+  /**
+   * Board px under a canvas point, in whichever renderer is live and at
+   * whatever zoom. The single place screen→board is decided, so picking can
+   * never drift from drawing (`project` is its exact inverse).
+   */
+  private boardAt(px: number, py: number): { x: number; y: number } {
+    if (this.iso) return this.iso.boardAt(px, py);
+    return screenToBoard(this.cam, px, py, GAME_W, PLAYFIELD_H);
+  }
+
+  /**
+   * The inverse of `tileAt`: a board position → where it lands on the canvas.
+   *
+   * Phaser Text is never mirrored into 3D — it keeps rendering on the
+   * transparent canvas above, which is what makes the HUD, the wave banner and
+   * every floating bounty work unchanged. The cost is that anything anchored to
+   * a *place on the board* has to be projected on the way in, or it will sit at
+   * flat coordinates over an isometric world.
+   */
+  project = (x: number, y: number): { x: number; y: number } => {
+    // Flat mode is no longer the identity: the world camera zooms and pans
+    // while HUD Text does not, so anything anchored to the board has to be
+    // brought into screen space here or a floating bounty would land nowhere
+    // near the kill that earned it.
+    return this.iso ? this.iso.project(x, y) : boardToScreen(this.cam, x, y, GAME_W, PLAYFIELD_H);
+  };
 
   private tintAfford(btn: Phaser.GameObjects.Rectangle, label: Phaser.GameObjects.Text, b: Building, tier: UpgradeTier): void {
     const needFed = isTower(b.type) ? fedRequired(b.type, b.mk + 1) : 0;
@@ -319,9 +502,12 @@ export class GameScene extends Phaser.Scene {
    * cap the numbers are an unreadable pile anyway, so dropping them costs the
    * player nothing and keeps the frame rate honest.
    */
-  floatText(x: number, y: number, msg: string, color: string): void {
+  floatText(bx: number, by: number, msg: string, color: string): void {
     if (this.floaters >= MAX_FLOATERS) return;
     this.floaters += 1;
+    // Callers give a place on the board; the drift upwards from there is screen
+    // space in both views, which is exactly what a floating number should do.
+    const { x, y } = this.project(bx, by);
     const t = this.add
       .text(x, y, msg, { fontFamily: 'monospace', fontSize: '14px', fontStyle: 'bold', color, stroke: '#000', strokeThickness: 3 })
       .setOrigin(0.5)
@@ -386,7 +572,7 @@ export class GameScene extends Phaser.Scene {
     // transforms container children's hit areas along with their art, so the
     // targets grow with the panel.
     const s = PANEL_SCALE;
-    const strip = topStrip(GAME_W, IS_TOUCH);
+    const strip = this.strip;
     this.panel = this.add
       .container(GAME_W - 8 - PANEL_W * s, strip.stats.y + strip.h + 8)
       .setScale(s)
@@ -597,6 +783,7 @@ export class GameScene extends Phaser.Scene {
     else if (card.instant === 'cash') GameState.addMoney(grantAmount(GameState.wave));
     GameState.takeCard(id);
     progress.record('researchTaken');
+    progress.recordMax('bestResearchLevel', GameState.researchLevel);
 
     this.bigText(card.name);
     this.burst(640, 300, 0x7cf7c4, 26);
@@ -698,35 +885,55 @@ export class GameScene extends Phaser.Scene {
     for (const info of BUILD_INFO) {
       kb.on(`keydown-${phaserKeyName(info.hotkey)}`, () => this.select(info.type));
     }
-    kb.on('keydown-U', () => this.tryUpgrade(0));
-    kb.on('keydown-I', () => this.tryUpgrade(1));
-    // Factorio's rule: R turns whatever is under the cursor, or the thing you
-    // are about to build when the cursor is over bare ground.
-    kb.on('keydown-R', () => {
+    // Global shortcuts come off `keymap.ts` for the same reason the palette's
+    // do: a hand-written `keydown-` string is how the view toggle silently
+    // ended up sharing `V` with the cryo tower. `keymap.test.ts` fails if any
+    // key is ever claimed twice.
+    const on = (action: GameAction, fn: () => void) => kb.on(`keydown-${binding(action).key}`, fn);
+
+    on('upgradeA', () => this.tryUpgrade(0));
+    on('upgradeB', () => this.tryUpgrade(1));
+    on('rotate', () => {
       const p = this.input.activePointer;
-      const b = p.y < PLAYFIELD_H ? this.grid.cellAt(Math.floor(p.x / TILE), Math.floor(p.y / TILE))?.building : null;
-      if (b && !isTower(b.type) && !this.selected) this.rotateBuilding(b);
-      else this.rotateBuildDir();
+      this.rotateAt(p.x, p.y, 1);
     });
-    kb.on('keydown-ESC', () => {
+
+    on('zoomIn', () => this.zoomAt(1.25, GAME_W / 2, PLAYFIELD_H / 2));
+    on('zoomOut', () => this.zoomAt(1 / 1.25, GAME_W / 2, PLAYFIELD_H / 2));
+    on('zoomReset', () => this.resetCam());
+
+    // The scroll wheel is the other half of Factorio's muscle memory: it turns
+    // the same thing R turns, and it turns *back*, which R cannot. Ignored over
+    // the HUD so spinning the wheel while reading the build bar does nothing.
+    //
+    // Holding a modifier zooms instead. Plain wheel stays rotate because that
+    // is what this game's palette is built around — a belt's facing is the
+    // thing you adjust constantly, and zoom is not.
+    this.input.on('wheel', (p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
+      if (dy === 0 || p.y >= PLAYFIELD_H || this.overHud(p.x, p.y)) return;
+      const e = p.event as WheelEvent | undefined;
+      if (e?.ctrlKey || e?.shiftKey || e?.metaKey) this.zoomAt(dy > 0 ? 1 / 1.15 : 1.15, p.x, p.y);
+      else this.rotateAt(p.x, p.y, dy > 0 ? 1 : -1);
+    });
+    on('cancel', () => {
       if (this.surveyMode) this.toggleSurveyMode();
       else this.select(null);
     });
-    kb.on('keydown-SPACE', () => this.waveSystem.start());
-    kb.on('keydown-F', () => GameState.cycleSpeed());
-    kb.on('keydown-P', () => GameState.togglePause());
-    kb.on('keydown-L', () => GameState.toggleOverlay());
+    on('sendWave', () => this.waveSystem.start());
+    on('speed', () => GameState.cycleSpeed());
+    on('pause', () => GameState.togglePause());
+    on('overlay', () => GameState.toggleOverlay());
+    on('view', () => this.toggleIso());
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       // Phaser fires GameObject handlers first and then this scene-level one
       // regardless, so without this guard clicking UPGRADE would immediately
       // deselect the tower underneath and shut the panel it lives in.
-      if (p.y >= PLAYFIELD_H || this.overPanel(p.x, p.y)) return;
+      if (p.y >= PLAYFIELD_H || this.overHud(p.x, p.y)) return;
       this.pressAt = this.time.now;
       this.pressX = p.x;
       this.pressY = p.y;
-      const tx = Math.floor(p.x / TILE);
-      const ty = Math.floor(p.y / TILE);
+      const { tx, ty } = this.tileAt(p.x, p.y);
       if (p.rightButtonDown()) {
         const b = this.grid.cellAt(tx, ty)?.building;
         if (b) this.requestSell(b);
@@ -760,25 +967,53 @@ export class GameScene extends Phaser.Scene {
     // never refund the belt you just laid down.
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
       this.endStroke();
-      if (p.y >= PLAYFIELD_H || this.selected || this.sellMode || this.overPanel(p.x, p.y)) return;
+      if (p.y >= PLAYFIELD_H || this.selected || this.sellMode || this.overHud(p.x, p.y)) return;
       const held = this.time.now - this.pressAt;
       const moved = Math.hypot(p.x - this.pressX, p.y - this.pressY);
       if (held < 450 || moved > 12) return;
-      const b = this.grid.cellAt(Math.floor(p.x / TILE), Math.floor(p.y / TILE))?.building;
+      const t = this.tileAt(p.x, p.y);
+      const b = this.grid.cellAt(t.tx, t.ty)?.building;
       if (b) this.requestSell(b);
     });
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      // A live pinch or pan owns the board; painting during one would lay a
+      // trail of belts across everything the gesture passes over.
+      if (this.updateGesture()) return;
+      if (this.panFrom && p.middleButtonDown()) {
+        this.panScreen(p.x - this.panFrom.x, p.y - this.panFrom.y);
+        this.panFrom = { x: p.x, y: p.y };
+        return;
+      }
       // drag-paint belts (touch drags report no button, so accept either)
       if (this.selected === 'belt' && p.isDown && !p.rightButtonDown() && p.y < PLAYFIELD_H) {
-        this.paintBeltTo(Math.floor(p.x / TILE), Math.floor(p.y / TILE));
+        const t = this.tileAt(p.x, p.y);
+        this.paintBeltTo(t.tx, t.ty);
       }
+    });
+
+    // Middle-drag pans, the way it does in every map and every editor.
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (p.middleButtonDown()) this.panFrom = { x: p.x, y: p.y };
+    });
+    this.input.on('pointerup', () => {
+      this.panFrom = null;
     });
   }
 
   /** Is this canvas point over the open upgrade panel? */
   private overPanel(x: number, y: number): boolean {
     return this.panel.visible && Phaser.Geom.Rectangle.Contains(this.panelBg.getBounds(), x, y);
+  }
+
+  /**
+   * Anything the board must not react to, even though it is inside the
+   * playfield: the open upgrade panel, and the HUD chips floating over the top
+   * of the board. Both are UI drawn above the world, and Phaser delivers the
+   * scene-level pointer event regardless of what handled it first.
+   */
+  private overHud(x: number, y: number): boolean {
+    return this.overPanel(x, y) || stripHit(this.strip, x, y);
   }
 
   // ---------- belt drag-painting ----------
@@ -831,8 +1066,127 @@ export class GameScene extends Phaser.Scene {
     this.requestSave();
   }
 
-  private rotateBuildDir(): void {
-    this.buildDir = ((this.buildDir + 1) % 4) as Dir;
+  /**
+   * Factorio's rule, shared by `R` and the scroll wheel: turn whatever is under
+   * the cursor, or the thing you are about to build when the cursor is over
+   * bare ground. Towers have no facing, so they are never turned.
+   */
+  private rotateAt(x: number, y: number, step: number): void {
+    const t = this.tileAt(x, y);
+    const b = y < PLAYFIELD_H ? this.grid.cellAt(t.tx, t.ty)?.building : null;
+    if (b && !isTower(b.type) && !this.selected) this.rotateBuilding(b, step);
+    else this.rotateBuildDir(step);
+  }
+
+  // ---------- board zoom & pan ----------
+
+  /**
+   * Split the scene across two cameras: the world zooms, the HUD does not.
+   *
+   * Without this, zooming in would also magnify the upgrade panel and throw
+   * every floating bounty off screen — they live in GameScene, not UIScene.
+   * The world/HUD rule is shared with the isometric mask (`hudObjects.ts`) so
+   * the two can never classify an object differently.
+   *
+   * The world camera is clipped to the playfield so a zoomed board cannot
+   * spill over the build bar.
+   */
+  private setupCameras(): void {
+    const main = this.cameras.main;
+    main.setViewport(0, 0, GAME_W, PLAYFIELD_H);
+    this.uiCam = this.cameras.add(0, 0, GAME_W, GAME_H, false, 'ui');
+
+    const classify = (obj: Phaser.GameObjects.GameObject) => {
+      if (isHudObject(obj)) main.ignore(obj);
+      else this.uiCam.ignore(obj);
+    };
+    for (const obj of this.children.list) classify(obj);
+    this.events.on(Phaser.Scenes.Events.ADDED_TO_SCENE, classify);
+    this.events.once('shutdown', () => this.events.off(Phaser.Scenes.Events.ADDED_TO_SCENE, classify));
+  }
+
+  /** Push the shared camera state into whichever renderer is live. */
+  private applyCam(): void {
+    if (this.iso) this.iso.setView(this.cam.zoom, this.cam.x, this.cam.y);
+    else {
+      this.cameras.main.setZoom(this.cam.zoom);
+      this.cameras.main.centerOn(this.cam.x, this.cam.y);
+    }
+    GameState.events.emit('zoom', this.cam.zoom);
+  }
+
+  /**
+   * Zoom about a fixed screen point, so whatever is under the cursor or the
+   * pinch midpoint stays there. In isometric the pan is solved in one step:
+   * panning translates the board under a fixed pixel by exactly the pan delta
+   * (pinned in `isoMath.test.ts`), so no iteration is needed.
+   */
+  private zoomAt(factor: number, sx: number, sy: number): void {
+    if (this.iso) {
+      const before = this.iso.boardAt(sx, sy);
+      const zoom = clampZoom(this.cam.zoom * factor);
+      this.cam = clampCam({ zoom, x: this.cam.x, y: this.cam.y }, GAME_W, PLAYFIELD_H);
+      this.iso.setView(this.cam.zoom, this.cam.x, this.cam.y);
+      const after = this.iso.boardAt(sx, sy);
+      this.cam = clampCam(
+        { zoom: this.cam.zoom, x: this.cam.x + (before.x - after.x), y: this.cam.y + (before.y - after.y) },
+        GAME_W,
+        PLAYFIELD_H,
+      );
+    } else {
+      this.cam = zoomAbout(this.cam, factor, sx, sy, GAME_W, PLAYFIELD_H);
+    }
+    this.applyCam();
+  }
+
+  /**
+   * Two-finger pinch-zoom and pan — the gesture every phone user already knows,
+   * and the reason this feature exists at all: at zoom 1 a 32px tile is about
+   * 15 css px on a phone in landscape, roughly a third of a fingertip.
+   *
+   * Returns true while a gesture owns the board, so the caller knows to skip
+   * belt painting. `main.ts` raises `activePointers` to 2 for this; the first
+   * pointer's in-flight stroke is abandoned the moment a second finger lands,
+   * which is what keeps the original "a second finger must never start a rival
+   * stroke" guarantee intact.
+   */
+  private updateGesture(): boolean {
+    const [a, b] = this.input.manager.pointers.filter((p) => p.isDown && p.y < PLAYFIELD_H);
+    if (!a || !b) {
+      this.pinch = null;
+      return false;
+    }
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    if (this.pinch) {
+      // Pan by the midpoint's travel and zoom by the spread's ratio, both in
+      // the same frame — that combination is what makes a pinch feel direct.
+      this.panScreen(mx - this.pinch.mx, my - this.pinch.my);
+      if (this.pinch.dist > 8 && dist > 8) this.zoomAt(dist / this.pinch.dist, mx, my);
+    } else {
+      // A gesture just began: throw away whatever the first finger was drawing.
+      this.endStroke();
+    }
+    this.pinch = { dist, mx, my };
+    return true;
+  }
+
+  private panScreen(dx: number, dy: number): void {
+    this.cam = panBy(this.cam, dx, dy, GAME_W, PLAYFIELD_H);
+    this.applyCam();
+  }
+
+  private resetCam(): void {
+    if (isDefault(this.cam)) return;
+    this.cam = defaultCam();
+    this.applyCam();
+    this.floatText(GAME_W / 2, 240, 'VIEW RESET', '#cdd6e4');
+  }
+
+  /** `step` of -1 turns anticlockwise — the scroll wheel's other direction. */
+  private rotateBuildDir(step = 1): void {
+    this.buildDir = (((this.buildDir + step) % 4) + 4) % 4 as Dir;
     GameState.events.emit('builddir', this.buildDir);
     sfx.place();
   }
@@ -908,7 +1262,9 @@ export class GameScene extends Phaser.Scene {
       crafting: false,
       inputs: {},
       outputBuf: 0,
-      ammo: tower ? TOWERS[type].startAmmo : 0,
+      // Preloaded Mags never overfills the magazine — a tower that opened above
+      // its own cap would read as a broken ammo bar.
+      ammo: tower ? Math.min(TOWERS[type].ammoCap, TOWERS[type].startAmmo + GameState.startAmmoBonus) : 0,
       fed: 0,
       cooldown: 0,
       mk: 1,
@@ -964,13 +1320,22 @@ export class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: b.sprite, scale: 1, duration: 130, ease: 'Back.out' });
     sfx.place();
     if (type === 'tunnel') progress.record('tunnelsBuilt');
+    if (type === 'belt') progress.record('beltsBuilt');
+    // "Sold it, then put the same thing straight back" — the move every
+    // factory player makes ten times a run. Only the most recent sale counts,
+    // so this can't be farmed by selling a row and rebuilding it later.
+    if (this.lastSold && this.lastSold.type === type && this.lastSold.x === tx && this.lastSold.y === ty) {
+      this.lastSold = null;
+      progress.record('rebuilds');
+    }
+    progress.recordMax('biggestFactory', this.grid.buildings.length);
     this.requestSave();
     return b;
   }
 
   /** Turn a placed belt/machine 90°. Free and reversible — four clicks is a full circle. */
-  private rotateBuilding(b: Building): void {
-    b.dir = ((b.dir + 1) % 4) as Dir;
+  private rotateBuilding(b: Building, step = 1): void {
+    b.dir = (((b.dir + step) % 4) + 4) % 4 as Dir;
     b.sprite.setRotation((b.dir * Math.PI) / 2);
     this.tweens.add({ targets: b.sprite, scale: 1.12, duration: 70, yoyo: true });
     sfx.place();
@@ -1022,28 +1387,36 @@ export class GameScene extends Phaser.Scene {
     this.floatText(b.x * TILE + 16, b.y * TILE + 8, `+$${refund}`, '#9aa7bd');
     this.burst(b.x * TILE + 16, b.y * TILE + 16, 0x9aa7bd, 8);
     sfx.sell();
+    progress.record('sold');
+    this.lastSold = { type: b.type, x: b.x, y: b.y };
     this.requestSave();
   }
 
   private updateGhost(): void {
     const p = this.input.activePointer;
-    const tx = Math.floor(p.x / TILE);
-    const ty = Math.floor(p.y / TILE);
+    const { tx, ty } = this.tileAt(p.x, p.y);
 
     // Survey mode owns the cursor: show the footprint you are about to buy.
     if (this.surveyMode) {
       this.ghost.setAlpha(0);
       this.rangeCircle.setVisible(false);
       const g = this.surveyGhost.clear();
-      if (p.y >= PLAYFIELD_H) return;
+      if (p.y >= PLAYFIELD_H) {
+        this.iso?.setSurvey(null);
+        return;
+      }
       const s = this.surveyOrigin(tx, ty);
       const ok = this.grid.isClearArea(s.x, s.y, s.w, s.h);
+      // The footprint is a Graphics fill, which has no 3D counterpart to mirror
+      // — the isometric view paints it on the ground itself.
+      this.iso?.setSurvey(s, ok);
       g.fillStyle(ok ? 0x5ef078 : 0xff5555, 0.18);
       g.fillRect(s.x * TILE, s.y * TILE, s.w * TILE, s.h * TILE);
       g.lineStyle(2, ok ? 0x5ef078 : 0xff5555, 0.9);
       g.strokeRect(s.x * TILE, s.y * TILE, s.w * TILE, s.h * TILE);
       return;
     }
+    this.iso?.setSurvey(null);
 
     if (!this.selected || p.y >= PLAYFIELD_H) {
       this.ghost.setAlpha(0);
@@ -1080,6 +1453,7 @@ export class GameScene extends Phaser.Scene {
   /** A tile just ran dry: repaint it, and make sure the player notices. */
   private onTileDepleted(x: number, y: number): void {
     this.depositsDirty = true;
+    progress.record('patchesDrained');
     const cx = x * TILE + TILE / 2;
     const cy = y * TILE + TILE / 2;
     this.floatText(cx, cy - 10, 'DEPLETED', '#ff9f43');
@@ -1100,7 +1474,7 @@ export class GameScene extends Phaser.Scene {
     if (this.surveyMode) {
       this.select(null);
       if (this.sellMode) this.toggleSellMode();
-      const cost = prospectCost(GameState.surveys);
+      const cost = prospectCost(GameState.surveys, GameState.surveyDiscount);
       if (GameState.money < cost) {
         this.surveyMode = false;
         sfx.error();
@@ -1126,7 +1500,7 @@ export class GameScene extends Phaser.Scene {
   private placeSurvey(tx: number, ty: number): void {
     if (GameState.gameOver) return;
     const kind = prospectKind(GameState.surveys);
-    const cost = prospectCost(GameState.surveys);
+    const cost = prospectCost(GameState.surveys, GameState.surveyDiscount);
     const spot = this.surveyOrigin(tx, ty);
     const { w, h } = spot;
 
@@ -1141,6 +1515,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    progress.record('surveysBought');
     this.surveyMode = false;
     this.surveyGhost.clear();
     GameState.events.emit('surveymode', false);

@@ -24,6 +24,43 @@ describe('achievement definitions', () => {
     expect(startMoneyBonus(all)).toBeGreaterThan(0);
     expect(startMoneyBonus(new Set())).toBe(0);
   });
+
+  it('gives every achievement a name and a description', () => {
+    for (const a of ACHIEVEMENTS) {
+      expect(a.name.length, `${a.id} name`).toBeGreaterThan(0);
+      expect(a.desc.length, `${a.id} desc`).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * A tiered family (10 → 25 → 50 streak, 1 → 26 rebuilds) must climb, or the
+   * higher tier unlocks in the same instant as the lower one and the ladder
+   * stops meaning anything.
+   */
+  it('keeps every tiered family strictly ascending', () => {
+    const byStat = new Map<string, number[]>();
+    for (const a of ACHIEVEMENTS) {
+      byStat.set(a.stat, [...(byStat.get(a.stat) ?? []), a.goal]);
+    }
+    for (const [stat, goals] of byStat) {
+      const sorted = [...goals].sort((x, y) => x - y);
+      expect(new Set(sorted).size, `${stat} has two achievements at the same goal`).toBe(sorted.length);
+    }
+  });
+
+  it('unlocks the streak ladder one rung at a time', () => {
+    const at = (bestStreak: number) =>
+      newlyUnlocked(new Set(), { ...emptyStats(), bestStreak }).map((a) => a.id);
+    expect(at(9)).toEqual([]);
+    expect(at(10)).toEqual(['on_a_roll']);
+    expect(at(25)).toEqual(['on_a_roll', 'assembly_line']);
+    expect(at(50)).toEqual(['on_a_roll', 'assembly_line', 'mass_production']);
+  });
+
+  it('does not hand out the rebuild achievement for merely selling things', () => {
+    expect(newlyUnlocked(new Set(), { ...emptyStats(), sold: 99 }).map((a) => a.id)).not.toContain('measure_twice');
+    expect(newlyUnlocked(new Set(), { ...emptyStats(), rebuilds: 1 }).map((a) => a.id)).toContain('measure_twice');
+  });
 });
 
 describe('newlyUnlocked', () => {

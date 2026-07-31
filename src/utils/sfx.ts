@@ -104,10 +104,15 @@ function gated(key: string, gapMs: number): boolean {
 export const sfx = {
   shoot: () => gated('shoot', 45) && blip(760, 0.06, 'square', 0.025, 240),
   hit: () => gated('hit', 55) && blip(200, 0.05, 'sawtooth', 0.04),
-  coin: () => {
+  /**
+   * Kill blip. `pitch` is the kill-streak multiplier (see `data/combo.ts`): a
+   * streak audibly climbs, which is most of why it feels like a streak at all.
+   * The gate stays, so the rise is legible instead of a wall of chirps.
+   */
+  coin: (pitch = 1) => {
     if (!gated('coin', 70)) return;
-    blip(988, 0.06, 'square', 0.05);
-    setTimeout(() => blip(1319, 0.09, 'square', 0.05), 55);
+    blip(988 * pitch, 0.06, 'square', 0.05);
+    setTimeout(() => blip(1319 * pitch, 0.09, 'square', 0.05), 55);
   },
   /** cryo pulse: a soft downward sine puff, distinct from the percussive weapons */
   chill: () => gated('chill', 130) && blip(880, 0.22, 'sine', 0.05, 330),

@@ -196,6 +196,8 @@ export interface TopStripLayout {
   map: Rect;
   help: Rect;
   mute: Rect;
+  /** flat ↔ 3D isometric. A chip rather than keyboard-only: touch has no `G`. */
+  view: Rect;
 }
 
 export function topStrip(gameW: number, touch: boolean): TopStripLayout {
@@ -206,17 +208,42 @@ export function topStrip(gameW: number, touch: boolean): TopStripLayout {
 
   const mute: Rect = { x: gameW - pad - h, y, w: h, h };
   const help: Rect = { x: mute.x - gap - h, y, w: h, h };
+  // Wider than the square icon buttons because it carries a word ("2D"/"3D"),
+  // and it is the one chip a touch player has no keyboard fallback for.
+  const viewW = touch ? 56 : 44;
+  const view: Rect = { x: help.x - gap - viewW, y, w: viewW, h };
   const mapW = touch ? 130 : 150;
-  const map: Rect = { x: help.x - gap - mapW, y, w: mapW, h };
+  const map: Rect = { x: view.x - gap - mapW, y, w: mapW, h };
 
   const stats: Rect = { x: pad, y, w: touch ? 396 : 356, h };
   const survey: Rect = { x: stats.x + stats.w + gap, y, w: touch ? 250 : 196, h };
   const researchX = survey.x + survey.w + gap;
   const research: Rect = { x: researchX, y, w: Math.min(236, map.x - gap - researchX), h };
 
-  return { h, stats, survey, research, map, help, mute };
+  return { h, stats, survey, research, map, help, mute, view };
 }
 
 export function overlaps(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+export function contains(r: Rect, x: number, y: number): boolean {
+  return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+/**
+ * Is this point over a *clickable* chip in the top strip?
+ *
+ * The strip floats over the playfield, and the board's own pointer handler only
+ * excluded the bottom bar (`y >= PLAYFIELD_H`). So with a building armed, going
+ * for SURVEY or `?` or the mute toggle also planted that building on the tile
+ * underneath — a $160 cryo tower for a mis-aimed tap at the help button, in the
+ * top-right corner where nobody was looking.
+ *
+ * Only the interactive chips count. The money/lives/wave readouts and the map
+ * name are labels, and blocking those would carve two unbuildable rows out of
+ * the top of the board for no reason.
+ */
+export function stripHit(s: TopStripLayout, x: number, y: number): boolean {
+  return [s.survey, s.help, s.mute, s.view].some((r) => contains(r, x, y));
 }

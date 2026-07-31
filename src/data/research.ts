@@ -182,9 +182,17 @@ export function cardById(id: string): ResearchCard | undefined {
   return CARDS.find((c) => c.id === id);
 }
 
-/** Rebuild a run's modifiers from the cards it has taken. Order-independent by construction. */
-export function modsFrom(taken: Record<string, number>): Mods {
-  const m = emptyMods();
+/**
+ * Rebuild a run's modifiers from the cards it has taken. Order-independent by
+ * construction.
+ *
+ * `base` is the Workshop's permanent grant (`data/metaTree.ts`), folded in
+ * underneath so meta progression and research picks stack *multiplicatively*
+ * rather than one overwriting the other. It defaults to nothing, so every
+ * existing caller and test is unchanged.
+ */
+export function modsFrom(taken: Record<string, number>, base: Partial<Mods> = {}): Mods {
+  const m = { ...emptyMods(), ...base };
   for (const card of CARDS) {
     if (!card.apply) continue;
     const n = Math.max(0, Math.min(taken[card.id] ?? 0, card.max));

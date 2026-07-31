@@ -19,7 +19,28 @@ export type StatKey =
   | 'skewers'
   | 'tunnelsBuilt'
   /** research cards taken across all runs */
-  | 'researchTaken';
+  | 'researchTaken'
+  // ---- added with the Workshop batch ----
+  /** longest kill streak ever reached (high-water) */
+  | 'bestStreak'
+  /** buildings sold */
+  | 'sold'
+  /** sold a building and rebuilt the same type on the same tile — the "wait, no" move */
+  | 'rebuilds'
+  /** belts placed */
+  | 'beltsBuilt'
+  /** waves cleared without a single leak */
+  | 'flawlessWaves'
+  /** resource tiles mined until they reverted to grass */
+  | 'patchesDrained'
+  /** surveys commissioned */
+  | 'surveysBought'
+  /** highest research level reached in a run (high-water) */
+  | 'bestResearchLevel'
+  /** towers that ran dry mid-wave — a badge of dishonour, and a real teaching moment */
+  | 'starvedTowers'
+  /** buildings standing at once (high-water) */
+  | 'biggestFactory';
 
 export type Stats = Record<StatKey, number>;
 
@@ -38,6 +59,16 @@ export function emptyStats(): Stats {
     skewers: 0,
     tunnelsBuilt: 0,
     researchTaken: 0,
+    bestStreak: 0,
+    sold: 0,
+    rebuilds: 0,
+    beltsBuilt: 0,
+    flawlessWaves: 0,
+    patchesDrained: 0,
+    surveysBought: 0,
+    bestResearchLevel: 0,
+    starvedTowers: 0,
+    biggestFactory: 0,
   };
 }
 
@@ -88,6 +119,46 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'shish_kebab', name: 'Shish Kebab', desc: 'Skewer 3+ enemies with a single lance, 15 times', stat: 'skewers', goal: 15 },
   { id: 'tunnel_rat', name: 'Tunnel Rat', desc: 'Build 10 tunnels', stat: 'tunnelsBuilt', goal: 10 },
   { id: 'tycoon', name: 'Tycoon', desc: 'Earn $10,000 across all runs', stat: 'moneyEarned', goal: 10000 },
+
+  // ---------------------------------------------------------------------
+  // The Workshop batch. These reward *playing like a factory engineer* —
+  // rebuilding, scaling, running clean — rather than just accumulating kills,
+  // which is what the original fifteen all measured. Perks stay modest: the
+  // combined start-money ceiling is pinned by `metaTree.test.ts`.
+  // ---------------------------------------------------------------------
+
+  // -- the streak ladder (data/combo.ts) --
+  { id: 'on_a_roll', name: 'On A Roll', desc: 'Reach a 10-kill streak', stat: 'bestStreak', goal: 10 },
+  { id: 'assembly_line', name: 'Assembly Line', desc: 'Reach a 25-kill streak', stat: 'bestStreak', goal: 25 },
+  {
+    id: 'mass_production', name: 'Mass Production', desc: 'Reach a 50-kill streak', stat: 'bestStreak', goal: 50,
+    unlock: { kind: 'badge', label: 'Streak badge' },
+  },
+
+  // -- the fun ones --
+  {
+    id: 'measure_twice', name: 'Measure Twice', desc: 'Sell a building and rebuild the same thing on the same tile',
+    stat: 'rebuilds', goal: 1,
+  },
+  { id: 'second_guesser', name: 'Second Guesser', desc: 'Do it 25 more times. We all do it', stat: 'rebuilds', goal: 26 },
+  { id: 'demolition', name: 'Demolition Day', desc: 'Sell 100 buildings', stat: 'sold', goal: 100 },
+  { id: 'spaghetti', name: 'Spaghetti Junction', desc: 'Lay 500 belts', stat: 'beltsBuilt', goal: 500 },
+  {
+    id: 'not_a_drop', name: 'Not A Drop', desc: 'Clear 10 waves without leaking a single enemy',
+    stat: 'flawlessWaves', goal: 10,
+    // A badge, not money: the Workshop's Seed Capital is now where starting
+    // money is bought, and two systems quietly granting the same thing is
+    // exactly how a difficulty curve erodes. The $100 achievement cap holds.
+    unlock: { kind: 'badge', label: 'Flawless badge' },
+  },
+  { id: 'strip_mine', name: 'Strip Mine', desc: 'Mine 10 deposits completely dry', stat: 'patchesDrained', goal: 10 },
+  { id: 'wildcatter', name: 'Wildcatter', desc: 'Commission 15 surveys', stat: 'surveysBought', goal: 15 },
+  { id: 'white_coats', name: 'White Coats', desc: 'Reach research level 10 in one run', stat: 'bestResearchLevel', goal: 10 },
+  { id: 'sprawl', name: 'Urban Sprawl', desc: 'Have 120 buildings standing at once', stat: 'biggestFactory', goal: 120 },
+  {
+    id: 'logistics_problem', name: 'A Logistics Problem', desc: 'Let 50 towers run dry mid-wave. The factory is the bottleneck',
+    stat: 'starvedTowers', goal: 50,
+  },
 ];
 
 /** Achievements newly satisfied by `stats` that are not already in `prev`. Pure. */

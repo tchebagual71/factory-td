@@ -10,7 +10,10 @@ const game = new Phaser.Game({
   width: GAME_W,
   height: GAME_H,
   parent: 'app',
-  backgroundColor: '#0e0f1a',
+  // Transparent rather than opaque: the isometric renderer draws to a canvas
+  // stacked *behind* this one, and Phaser has to let it through. The page
+  // background is the same `#0e0f1a`, so the flat view is unchanged.
+  transparent: true,
   pixelArt: true, // crisp nearest-neighbor upscaling — embraces the chunky procedural art
   scene: [BootScene, MenuScene, GameScene, UIScene],
   scale: {
@@ -20,8 +23,11 @@ const game = new Phaser.Game({
     autoRound: true,
   },
   input: {
-    // belts are drag-painted; a second finger must never start a rival stroke
-    activePointers: 1,
+    // Two, for pinch-zoom. Belts are still drag-painted and a second finger
+    // must still never start a rival stroke — GameScene.updateGesture abandons
+    // the in-flight stroke the instant a second pointer lands, and owns the
+    // board for as long as the gesture lasts.
+    activePointers: 2,
     touch: { capture: true },
   },
   // the browser must not treat the canvas as a scrollable document

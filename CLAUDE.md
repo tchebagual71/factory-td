@@ -38,10 +38,16 @@ src/
   types.ts              # Dir, ItemType, Building, ItemEnt, Enemy interfaces
   scenes/
     BootScene.ts        # procedural texture generation, then starts menu
-    MenuScene.ts        # title: continue/new-run, map picker, volume, achievements, leaderboard, account/sign-in modals
+    MenuScene.ts        # title: continue/new-run, map picker, volume, achievements, leaderboard, account/sign-in modals, 2D/3D toggle
     GameScene.ts        # gameplay orchestration, input/placement, save/restore, juice helpers (floatText/burst/bigText)
     UIScene.ts          # HUD overlay running in parallel (stat chips, build palette, wave button, toasts, help, game over)
-    hudLayout.ts        # pure HUD geometry: bottom bar (grouped palette/touch pad/wave cluster), top strip, slot contents
+    hudLayout.ts        # pure HUD geometry: bottom bar (grouped palette/touch pad/wave cluster), top strip, slot contents, stripHit
+    keymap.ts           # pure: every keyboard shortcut as data — the one place a key is claimed
+    beltFrames.ts       # pure: the belt animation's texture keys (shared by BootScene and the 3D model table)
+  iso/                  # the 3D isometric view — mirrors the sim, never drives it
+    isoMath.ts          # pure: true-isometric camera basis, frustum fitting, screen↔board projection & its exact inverse
+    isoModels.ts        # pure: texture key → solid (shape/footprint/height/colour)
+    IsoView.ts          # Three.js scene: terrain geometry, display-list mirror, overlay decals, bars
   systems/
     GridSystem.ts       # tile grid: single source of truth for cell contents & placement rules
     ConveyorSystem.ts   # item movement on belts + machine insertion (press/tower intake), item restore
@@ -54,6 +60,8 @@ src/
     GameState.ts        # shared singleton (money/lives/wave/phase) + EventEmitter for scene comms
     serialize.ts        # SaveV1 run format: pure captureRun/validateSave (versioned, strict validation)
     persistence.ts      # localStorage run slot (ftd:run) + pendingLoad handshake menu→game
+    renderMode.ts       # flat vs isometric (ftd:view) — a device preference, never part of the save
+    meta.ts             # Workshop wallet + owned levels (ftd:scrap/ftd:workshop), local-only
     progress.ts         # lifetime stats + unlocked achievements (ftd:stats/ftd:ach), emits 'achievement'
     mergeProgress.ts    # pure local↔cloud merge rules (run LWW, achievements union, best max)
   services/             # ALL Supabase I/O lives here — pure modules never import services
@@ -61,6 +69,8 @@ src/
     auth.ts             # Google OAuth / magic link / anonymous + linking, profile upsert
     cloud.ts            # fire-and-forget save/score/achievement sync, leaderboard fetch, syncOnSignIn
   data/
+    combo.ts            # pure: kill-streak state, tiers, milestones, pitch — escalating feedback that pays no money
+    metaTree.ts         # pure: the Workshop — ⚙ SCRAP payout, perk nodes, costs, capped effect bag
     mods.ts             # pure: run-scoped modifier bag granted by research (shared by buildings.ts + research.ts)
     research.ts         # pure: lab item values, XP curve, weighted card pool, seeded draw, modsFrom
     map.ts              # fixed path waypoints + ore/crystal patch rectangles
@@ -145,6 +155,20 @@ A **Lab** consumes finished goods (never raw ore — research must always cost y
 
 **Stall reporting**: each system sets `Building.stalled` where it already knows the answer — ConveyorSystem when a resting item fails every transfer, ProductionSystem when a machine is short an input or its output is backed up. `LogisticsSystem` only reads those flags (and derives belt idleness from `item` so a stale flag can't lie), which is why the overlay costs the simulation nothing
 
+### The 3D isometric view (`src/iso/`)
+
+The isometric build is **the same game, not a fork**. Nothing in `src/systems` or `src/data` knows it exists, and the simulation is byte-for-byte identical in both views — which is the whole reason it can be toggled mid-wave (`V` in game, or the VIEW chip on the title screen; persisted in `ftd:view`).
+
+- **It mirrors the display list.** Every frame `IsoView.render` walks `GameScene.children.list` and extrudes what it finds: a sprite's texture key is looked up in `isoModels.ts` and becomes a solid at the same board coordinates. Belts, machines, towers, barrels, enemies, items, projectiles and the build ghost all appear in 3D *because the 2D game drew them*, with no per-entity wiring to keep in sync. Belt lids even animate for free — each frame of the chevron loop is its own texture key, so the mirror picks it up.
+- **Phaser's canvas goes transparent and stacks on top** (`transparent: true` in `main.ts`). The flat world is hidden with `Camera.ignore`'s bitmask rather than `visible` flags, so code elsewhere stays free to show and hide things for its own reasons. Text and Containers are deliberately *not* masked: the HUD, the upgrade panel, the wave banner and floating bounties keep rendering above the 3D world, unchanged.
+- **Two things are rebuilt rather than mirrored**, because mirroring them would be worse:
+  - *terrain* — grass becomes instanced slabs standing proud of a sunken road, so the unbuildable path reads as a canyon; deposits become rock clusters that visibly thin as reserves drain (`syncTerrain`, same 1s cadence as the 2D ore layer);
+  - *bars and pips* — a 2D bar is placed by a **screen-space** offset ("16px above the enemy"), and an isometric camera turns any such offset into a shove sideways. Given the entity, `syncBars` puts them directly overhead.
+- **Anything anchored to a place on the board but drawn as Phaser Text must be projected** on the way in — `GameScene.project` and `LogisticsSystem.project` do this. That is why `floatText` takes *board* coordinates and projects them itself; the drift upwards afterwards is screen space in both views, which is what a floating number should do.
+- **`isoMath.ts` is pure and the camera is built from it**, not alongside it. `screenToBoard` is an exact algebraic inverse of the projection (orthographic, so there is no perspective divide) rather than a raycast, and the test suite round-trips all 800 cell centres through screen space. If picking and drawing ever disagree, one of them stopped using this module.
+- **`overlayCell` in `LogisticsSystem` is shared**: the flat view paints it with a Graphics, the isometric one lays the same colours on the ground as decals. Neither view owns the meaning of "amber outline" — add a rule there and both gain it.
+- Three.js is **dynamically imported**, so it lands in its own chunk (~137KB gzipped) and a player who never asks for 3D never downloads it. Every read of `this.iso` is guarded, so the 2D game is fully playable while that chunk is in flight, and a WebGL failure falls back to flat rather than breaking the run.
+
 ### Scene communication
 - Scenes never reference each other directly; both import the `GameState` singleton (`state/GameState.ts`)
 - All cross-scene signals go through `GameState.events`: `money`/`lives`/`wave`/`phase`/`gameover` (state→UI), `ui:select`/`ui:startwave` (UI→game), `selected` (game→UI), `achievement` (progress→UI toast)
@@ -157,6 +181,41 @@ A **Lab** consumes finished goods (never raw ore — research must always cost y
 - Selecting the armed slot again cancels it — on touch there is no ESC and no right-click, so that toggle is the only way out of build mode
 - `[?]` in the top strip (or `H`) opens an in-game controls & building reference. On touch the tapped slot's description also stays on the hint line, because there is no hover tooltip
 - Compact bars quote no keyboard shortcuts and grow no hotkey badges; the touch bar additionally gets the rotate/sell/pause pad that stands in for `R`/right-click/`P`
+- **The top strip floats over the playfield, so the board must ignore it.** `stripHit` (pure, in `hudLayout.ts`) answers "is this point on a clickable chip", and `GameScene.overHud` consults it alongside the upgrade panel. Without it, arming a building and then reaching for SURVEY / `?` / mute / the view chip *also* planted that building on the tile underneath. Only the interactive chips are shielded — the money/lives/wave readouts and the map name are labels, and shielding those would carve two unbuildable rows off the top of the board
+
+### Keybindings are data (`scenes/keymap.ts`)
+
+Every non-palette shortcut lives in one exported list, and `keymap.test.ts` fails if any Phaser key is claimed twice across `KEYS` **and** `BUILD_INFO`.
+
+This exists because hand-written `kb.on('keydown-X', …)` calls spread over two scenes have no way to notice a collision: the isometric view toggle was bound to `V` while `V` was already the cryo tower, Phaser happily registered both listeners, and one press armed a $160 tower *and* flipped the renderer — so the next board click planted a tower nobody asked for. The view toggle is now `G`; **`ZXCV` stays the four guns under one hand and a renderer toggle does not get to break that.**
+
+- UI strings read their keys through `key(action)`, so a rebind can never leave the help modal, the hint line or the SEND WAVE button quoting a stale letter
+- `ESC` is deliberately shared (GameScene clears the build selection, UIScene closes help) — both firing is correct, so it is listed once
+- The card draw's `1`/`2`/`3` are *not* a collision: `GameState.awaitingCard` makes `select()` ignore hotkeys, so a number picks a card rather than also arming a building behind the modal
+
+### The 2D/3D toggle is a HUD chip, not just a key
+
+The isometric view was reachable in-game only by keyboard, which meant it was unreachable on a phone. It is now a chip in the top strip next to `?` and `♪` (`topStrip.view`, test-pinned to a 44px finger target on touch). GameScene still owns the renderer — the chip only emits `ui:view` — and `toggleIso` broadcasts a `view` event that the chip mirrors, so a WebGL failure that falls back to flat cannot leave the chip reading 3D.
+
+### Kill streaks (`data/combo.ts`) — escalation that pays nothing
+
+Every kill already had immediate feedback, but the hundredth kill of a wave felt exactly like the first. The streak supplies the missing *escalation*: consecutive kills inside a 2.6s window raise a tier that warms the bounty text, climbs the coin blip's pitch (capped — an uncapped ramp becomes a dog whistle on a swift wave), and fires a sparse, widening milestone banner.
+
+- **It deliberately pays no money.** Throughput is the economy; a streak bonus would be combat skill funding the factory and would soften the income-vs-threat invariants in `waves.test.ts`. `combo.test.ts` pins that the state is exactly `{count, best, last}` and that the module exports nothing payout-shaped, so a future caller can't quietly start cashing it
+- **A leak breaks it.** That is what makes it a factory mechanic rather than an aim mechanic: the only way to hold a streak is to keep every tower fed
+- **It carries its own clock** (`comboNow`, monotonic). Kills are stamped in WaveSystem (GameScene's clock) but expiry is noticed by the meter in UIScene, and those are different Phaser clocks — UIScene only sleeps while GameScene is restarted outright on REBUILD, so a scene clock would make every streak look stale after one restart
+- Never serialized: it is a moment-to-moment feel mechanic worth nothing, so restoring mid-streak would be meaningless
+
+### The Workshop: ⚙ SCRAP and permanent progression
+
+A second currency, **SCRAP**, is paid out at the end of every run and spent between runs in the **WORKSHOP** on the title screen. Rules are pure in `data/metaTree.ts`; the wallet and owned levels live in `state/meta.ts` (localStorage `ftd:scrap` / `ftd:workshop`) — the same pure/storage split as `achievements.ts` / `progress.ts`.
+
+- **It buys throughput, not skins.** Cosmetics are dopamine with no strategy, and the pillar is that throughput *is* the economy — so the tree is weighted to LOGISTICS and PRODUCTION. DEFENSE is deliberately the thinnest branch (test-pinned): combat power is what the in-run research draw and the Mk tree already sell
+- **Everything is capped, and the caps are tested.** The difficulty curve is load-bearing (the throughput wall at wave ~33 is on purpose) and unbounded meta progression is exactly what deletes it. `metaTree.test.ts` pins the fully-bought totals *and* checks the combined opening against the achievements' own $100 cap. **Two systems must never both grant starting money** — that is why `not_a_drop` is a badge: the Workshop's Seed Capital is now the only place start money is bought
+- `effectsFrom(owned)` rebuilds the whole bag from levels, never incrementally, and `levelsOf` clamps to each node's `max` — so a tampered `ftd:workshop` cannot overstack, exactly like `modsFrom` for research
+- Mods fold in *underneath* research picks: `modsFrom(taken, base)` seeds the bag from the Workshop so the two stack multiplicatively rather than one clobbering the other
+- **A restored save re-applies the mods but not the money or lives** (`GameScene` passes `startMoney: 0, startLives: 0`) — the save already banked those, and granting them again on every load would pay out forever
+- `scrapEarned` is dominated by waves survived, and **always pays at least 1**: a currency that can pay zero teaches players a bad run was wasted time. Pacing is test-pinned at 10–60 good runs to max the tree
 
 ### Save/resume & cloud sync
 - `state/serialize.ts` is the contract: pure `captureRun`/`validateSave`, versioned (`SAVE_VERSION`, currently **2**); saves happen only in build phase so enemies/bullets never serialize. Never trust stored/cloud JSON — everything re-validates through `validateSave`
@@ -214,14 +273,14 @@ Ranked for fun/strategy impact. Mark `[x]` with a one-line note when shipped.
 12. `[x]` **Difficulty/economy rebalance** — shipped: see "The difficulty curve" above. The wall moved from ~wave 20 (where it was unwinnable *arithmetically*, not by skill) to ~33
 13. `[x]` **Belt drag that behaves like a conveyor** — shipped: `systems/beltPaint.ts` resolves a drag into an L-shaped run, filling cells a fast flick skipped and aiming each belt at the next. Only belts laid in the current stroke are re-aimed, so dragging across the factory can never re-plumb an existing line
 14. `[x]` **Targeted prospecting** — shipped: `⛏ SURVEY` arms a mode and the player clicks the site (footprint ghost, green/red validity); money is only taken on commit. It used to drop the patch on a random clear tile
-15. `[x]` **Rotate in place** — shipped: clicking a placed belt/machine turns it, and `R` turns whatever is under the cursor (Factorio's rule). Re-aiming used to mean selling and rebuilding
+15. `[x]` **Rotate in place** — shipped: clicking a placed belt/machine turns it, and `R` turns whatever is under the cursor (Factorio's rule). Re-aiming used to mean selling and rebuilding. The **scroll wheel** now turns the same thing and turns it *back*, which `R` cannot — both go through `rotateAt`, so the two input paths can never disagree about what is under the cursor
 16. `[x]` **How to play** — shipped: a five-step modal on the title screen. Onboarding was a four-line hint that faded after 14s
 17. `[x]` **Per-ammo-type wave report** — shipped: the report card judges supply per ammo type and names the starved line. Grand totals let a chiller's 2-coolant-per-ore hide a starving gun line behind a healthy-looking sum
 18. `[x]` **Presentation** — shipped: belts run a scrolling chevron loop (all belts share one animation, started on a random frame), enemies rotate to their heading and carry a nose, guns recoil and flash from a fixed pool, swift enemies went teal so they can't be mistaken for the near-white frost tint
 20. `[x]` **Full production chain** — shipped: everything past the press runs on ammo, at unchanged ore cost per output. See "Production chain" above. Save format → v2 with a v1 migration
 21. `[x]` **Lab + research + level-up draw** — shipped: belt finished goods into a Lab, pick 1 of 3 stacking upgrades per level. See "Research" above
-22. `[ ]` **Blueprints: the permanent between-runs tree** — planned: a second currency earned per run, spent in a MenuScene tree (`state/meta.ts` + pure `data/metaTree.ts`, localStorage-only; cloud sync would need a `jsonb` column on `profiles`)
-23. `[ ]` **Achievements expansion + collection screen** — planned: tiered families past the current 15, browsable grid with progress. No DB migration needed (ids only have to match `^[a-z0-9_]{1,40}$`)
+22. `[x]` **The Workshop: the permanent between-runs tree** — shipped as ⚙ SCRAP + a 10-node perk tree on the title screen (`state/meta.ts` + pure `data/metaTree.ts`, localStorage-only). See "The Workshop" above. Cloud sync would still need a `jsonb` column on `profiles` and a merge rule (max per node) in `mergeProgress.ts`
+23. `[x]` **Achievements expansion** — shipped: 15 → 28. The new batch rewards playing like a factory engineer (rebuild-in-place, flawless waves, draining deposits, biggest factory, research level) rather than only accumulating kills, plus a tiered streak ladder off `data/combo.ts`. A browsable collection grid is still open — the existing list modal handles 28 but will not handle 50
 24. `[ ]` **In-run mission cards** — planned: three active objectives with immediate payouts, reusing `UIScene.pumpToasts`
 25. `[ ]` **End-of-run score card** — planned: pure `data/score.ts` grading wave/throughput/efficiency, shown on the game-over overlay
 
@@ -230,7 +289,20 @@ Ranked for fun/strategy impact. Mark `[x]` with a one-line note when shipped.
     - touch: finger-sized help/mute/survey chips (they were 16px glyphs on a canvas the phone scales *down*), a 1.4× upgrade panel, tap-the-slot-again to cancel, the tapped building's description pinned to the hint line, and no keyboard shortcuts quoted anywhere
     - fixed: `SEND WAVE [SPC]` re-stamped over the touch label on every phase change; the two-line wave preview spilling over the send button on the 80px bar; achievement toasts sliding in over the upgrade panel; the intro hint running through the status strip; the logistics legend doing the same
     - frame cost: `effStats` memoised per Mods bag (it ran per tower per frame), particle emitters and the enemy hit-flash pooled instead of allocating an emitter and a `delayedCall` per kill/hit, recipe input lists resolved once, enemy list compacted only when something died, and tower tint / logistics labels written only on change
+27. `[x]` **3D isometric view** — shipped: a true-isometric Three.js renderer that mirrors GameScene's display list instead of forking the game, so the simulation is untouched and the view toggles mid-run (`G`, the 2D/3D chip in the HUD, or the VIEW chip on the title screen). See "The 3D isometric view" above. Terrain and bars are rebuilt rather than mirrored; the `[L]` overlay's colours are now a shared pure function (`overlayCell`) both views draw from
 19. `[x]` **Bugs & perf** — shipped: the upgrade panel no longer closes itself when clicked (Phaser fires GameObject handlers *and then* the scene-level `pointerdown` regardless — guard the panel bounds); the build ghost updates while paused; ambient SFX are voice-gated and floating text is capped, so a 100-kill swift wave at ×3 speed no longer asks for ~100 oscillators a second; costly buildings confirm before selling
+28. `[x]` **Input-collision audit + kill streaks** — shipped:
+    - `scenes/keymap.ts` makes every shortcut data and test-pins that no key is claimed twice; fixed `V` arming the cryo tower *and* toggling the 3D view (the view toggle is now `G`). See "Keybindings are data"
+    - fixed the top strip double-acting as the board: with a building armed, tapping SURVEY / `?` / mute planted it on the tile underneath (`stripHit` + `GameScene.overHud`)
+    - the 2D/3D toggle is now a HUD chip, so the isometric view is reachable on touch at all
+    - `data/combo.ts`: kill streaks that escalate colour, pitch and milestone banners and pay nothing. See "Kill streaks"
+    - silenced the `PCFSoftShadowMap` deprecation warning Three.js logged on every boot
+29. `[x]` **Workshop, expanded achievements, wheel-rotate, themed title screen** — shipped:
+    - ⚙ SCRAP + the WORKSHOP perk tree (see "The Workshop"); the game-over card counts the payout up, which is the "one more run" hook
+    - achievements 15 → 28, including the streak ladder and rebuild-in-place; `not_a_drop` is a badge because the Workshop now owns starting money
+    - the scroll wheel rotates (and un-rotates) whatever `R` would
+    - **the title screen dresses itself as the selected renderer**: 2D CLASSIC gets the flat tile grid and the prop row, 3D ISOMETRIC gets a ground lattice and extruded solids projected through `isoMath.toView` — the game's real camera basis, so the menu sits at the same angle as the board. Toggling re-dresses the screen live. Backdrop is depth −1 over a −2 background, because it is rebuilt on toggle and cannot rely on insertion order
+30. `[ ]` **Board pan & pinch-zoom** — the top remaining mobile gap: on a phone landscape a 32px tile renders ~15 css px, which is half a fingertip. The seam is narrow and clean — `tileAt`/`project` are the only board↔canvas converters and both already dispatch on `this.iso`, and in isometric a zoom is just a scale on `fitCam`'s half-extents (picking stays exact for free, since `screenToBoard` derives from the same `IsoCam`). The work is on the *flat* side: Phaser's main camera also renders GameScene's upgrade panel and floating text, so zooming it needs a second camera and interacts with the `Camera.ignore` bitmasks the iso view already uses. Raising `activePointers` above 1 for pinch also needs a guard so a second finger can't start a rival belt stroke
 
 ## Deployment
 

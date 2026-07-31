@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BUILD_CATEGORIES, BUILD_INFO, buildGroupSizes } from '../data/buildings';
-import { hudLayout, HudLayoutOpts, overlaps, Rect, slotContent, topStrip } from './hudLayout';
+import { hudLayout, HudLayoutOpts, overlaps, Rect, slotContent, stripHit, topStrip } from './hudLayout';
 
 const GAME_W = 1280;
 const BAR_Y = 640;
@@ -244,6 +244,7 @@ describe('top status strip', () => {
       ['map', s.map],
       ['help', s.help],
       ['mute', s.mute],
+      ['view', s.view],
     ];
 
     it(`fits inside the canvas on ${name}`, () => {
@@ -269,7 +270,9 @@ describe('top status strip', () => {
 
   it('sizes the icon buttons for fingers on touch', () => {
     const s = topStrip(GAME_W, true);
-    for (const r of [s.help, s.mute, s.survey]) {
+    // The view chip is included deliberately: on touch there is no `G` key, so
+    // this chip is the *only* way to reach the 3D board mid-run.
+    for (const r of [s.help, s.mute, s.survey, s.view]) {
       expect(r.h).toBeGreaterThanOrEqual(44);
       expect(r.w).toBeGreaterThanOrEqual(44);
     }
@@ -277,6 +280,48 @@ describe('top status strip', () => {
 
   it('stays compact on pointer devices, where hover and a keyboard exist', () => {
     expect(topStrip(GAME_W, false).h).toBeLessThan(topStrip(GAME_W, true).h);
+  });
+
+  /**
+   * The strip floats over the playfield, so the board's pointer handler has to
+   * know to keep its hands off. Without this, arming a building and then going
+   * for SURVEY / `?` / mute / the view chip *also* planted that building on the
+   * tile underneath — $160 of cryo tower for a tap on the help button.
+   */
+  describe('does not let a chip double as a board click', () => {
+    for (const touch of [false, true]) {
+      const s = topStrip(GAME_W, touch);
+      const name = touch ? 'touch' : 'pointer';
+
+      it(`shields every interactive chip on ${name}`, () => {
+        for (const [label, r] of [
+          ['survey', s.survey],
+          ['help', s.help],
+          ['mute', s.mute],
+          ['view', s.view],
+        ] as [string, Rect][]) {
+          // all four corners and the centre, so a near-miss at an edge counts too
+          for (const [x, y] of [
+            [r.x, r.y],
+            [r.x + r.w - 1, r.y],
+            [r.x, r.y + r.h - 1],
+            [r.x + r.w - 1, r.y + r.h - 1],
+            [r.x + r.w / 2, r.y + r.h / 2],
+          ]) {
+            expect(stripHit(s, x, y), `${label} at ${x},${y} is not shielded`).toBe(true);
+          }
+        }
+      });
+
+      it(`leaves the board clickable everywhere else on ${name}`, () => {
+        // labels must NOT be shielded: doing so would carve unbuildable rows
+        // out of the top of the board for no reason
+        expect(stripHit(s, s.stats.x + 4, s.stats.y + 4), 'stats readout').toBe(false);
+        expect(stripHit(s, s.map.x + 4, s.map.y + 4), 'map name').toBe(false);
+        // and nothing below the strip is shielded at all
+        expect(stripHit(s, s.help.x + 2, s.stats.y + s.h + 1), 'below the strip').toBe(false);
+      });
+    }
   });
 });
 

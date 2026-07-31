@@ -1,3 +1,4 @@
+import { breakCombo, comboColor, comboMilestone, comboNow, comboPitch, comboTier, registerKill } from '../data/combo';
 import { pathPx } from '../data/map';
 import { earlySendBonus, resistMult, waveClearBonus, waveDef, WaveDef } from '../data/waves';
 import { cloneTally, emptyTally, GameState } from '../state/GameState';
@@ -128,15 +129,29 @@ export class WaveSystem {
     this.reap = true;
     GameState.addMoney(e.bounty);
     GameState.tally.kills += 1;
+    GameState.runKills += 1;
     progress.record('kills');
     if (e.kind === 'armored') progress.record('killsArmored');
     else if (e.kind === 'swift') progress.record('killsSwift');
     else if (e.kind === 'boss') progress.record('killsBoss');
     progress.record('moneyEarned', e.bounty);
-    this.scene.floatText(e.x, e.y - 10, `+$${e.bounty}`, '#ffe066');
+
+    // Kill streak: escalates the feedback, pays nothing. See `data/combo.ts` —
+    // throughput stays the economy, this just makes a good wave *feel* good.
+    const combo = registerKill(GameState.combo, comboNow());
+    GameState.combo = combo;
+    GameState.events.emit('combo', combo);
+    const tier = comboTier(combo.count);
+
+    this.scene.floatText(e.x, e.y - 10, `+$${e.bounty}`, tier > 0 ? comboColor(combo.count) : '#ffe066');
     this.scene.burst(e.x, e.y, 0xff5555, e.leak > 1 ? 26 : 12);
     if (e.leak > 1) this.scene.cameras.main.shake(150, 0.005);
-    sfx.coin();
+    const milestone = comboMilestone(combo.count);
+    if (milestone) {
+      this.scene.bigText(`${combo.count}× ${milestone}`);
+      this.scene.cameras.main.shake(120, 0.003);
+    }
+    sfx.coin(comboPitch(combo.count));
     e.sprite.destroy();
     e.hpBar.destroy();
   }
@@ -145,6 +160,10 @@ export class WaveSystem {
     e.dead = true;
     this.reap = true;
     GameState.tally.leaked += 1;
+    // A leak ends the streak. That is what ties the meter to the factory rather
+    // than to aim: the only way to keep it alive is to keep every tower fed.
+    GameState.combo = breakCombo(GameState.combo);
+    GameState.events.emit('combo', GameState.combo);
     GameState.loseLives(e.leak);
     this.scene.floatText(e.x - 20, e.y, `-${e.leak}♥`, '#ff5555');
     this.scene.cameras.main.shake(180, 0.006);
@@ -233,6 +252,9 @@ export class WaveSystem {
     sfx.waveClear();
     progress.record('wavesCleared');
     progress.record('moneyEarned', bonus);
+    // Flawless: the wave ended with nothing having got past the guns.
+    if (GameState.tally.leaked === 0) progress.record('flawlessWaves');
+    progress.recordMax('bestStreak', GameState.combo.best);
     // Card first, so it reports the wave that just ended, not the next one
     GameState.events.emit('wavesummary', GameState.wave, cloneTally(GameState.tally));
     GameState.nextWave();

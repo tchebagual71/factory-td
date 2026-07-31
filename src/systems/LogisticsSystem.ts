@@ -18,6 +18,58 @@ function isCarrier(b: Building): boolean {
   return b.type === 'belt' || b.type === 'splitter' || b.type === 'tunnel';
 }
 
+/** Share of the measurement window this building spent doing its job. */
+export function uptimeOf(b: Building): number {
+  return b.utilTotal > 0 ? b.utilBusy / b.utilTotal : 0;
+}
+
+/**
+ * How one cell of the overlay reads. Pure, and deliberately expressed as tints
+ * rather than draw calls: the flat view paints these with a Graphics and the
+ * isometric one lays them on the ground as decals, and neither should own the
+ * meaning of "amber outline". Add a rule here and both views gain it.
+ */
+export interface OverlayCell {
+  /** whole-tile wash — carriers, shaded by throughput */
+  fill?: { color: number; alpha: number };
+  /** tile outline — producers and towers */
+  stroke?: { color: number; alpha: number };
+  /** 0–1 magazine fill drawn under a tower */
+  mag?: number;
+  /** tower uptime readout; null once a tower exists but has no data yet */
+  label?: string | null;
+  /** colour for `label` */
+  labelColor?: string;
+}
+
+/**
+ * @param pulse 0–1 oscillator, so a starved producer throbs. Passed in rather
+ *   than read from a clock, which is what keeps this testable.
+ */
+export function overlayCell(b: Building, pulse: number): OverlayCell {
+  if (isCarrier(b)) {
+    const jammed = !!b.item && b.stalled;
+    return { fill: { color: jammed ? 0xff5555 : 0x5ef078, alpha: jammed ? 0.5 : 0.1 + uptimeOf(b) * 0.5 } };
+  }
+  if (isMachine(b.type) || b.type === 'miner') {
+    const starved = b.stalled;
+    const throb = 0.35 + 0.25 * pulse;
+    return { stroke: { color: starved ? 0xff9f43 : 0x5ef078, alpha: starved ? throb + 0.35 : 0.4 } };
+  }
+  if (isTower(b.type)) {
+    const up = uptimeOf(b);
+    // No data yet (built after the wave started) reads as "—", not a false 0%
+    const measured = b.utilTotal > 0;
+    return {
+      stroke: { color: b.ammo > 0 ? 0x5ef078 : 0xff5555, alpha: 0.5 },
+      mag: b.ammo / TOWERS[b.type].ammoCap,
+      label: measured ? `${Math.round(up * 100)}%` : '—',
+      labelColor: measured ? uptimeColor(up) : '#8892a6',
+    };
+  }
+  return {};
+}
+
 /**
  * Measures how well the factory actually served the guns, and draws it on
  * demand (the [L] overlay). Telemetry accumulates only during the wave phase
@@ -31,6 +83,13 @@ function isCarrier(b: Building): boolean {
 export class LogisticsSystem {
   private g: Phaser.GameObjects.Graphics;
   private labels = new Map<Building, Phaser.GameObjects.Text>();
+
+  /**
+   * Board px → canvas px. Identity in the flat view; the isometric one supplies
+   * its projection, because these labels are Phaser Text drawn on the 2D canvas
+   * over the 3D world and would otherwise sit nowhere near their tower.
+   */
+  project: (x: number, y: number) => { x: number; y: number } = (x, y) => ({ x, y });
 
   constructor(
     private scene: Phaser.Scene,
@@ -74,53 +133,37 @@ export class LogisticsSystem {
     }
   }
 
-  /** Share of the window this building spent doing its job. */
-  private uptime(b: Building): number {
-    return b.utilTotal > 0 ? b.utilBusy / b.utilTotal : 0;
-  }
-
   private draw(): void {
     this.g.setVisible(true).clear();
     const live = new Set<Building>();
+    const pulse = Math.sin(this.scene.time.now / 140);
 
     for (const b of this.grid.buildings) {
       const px = b.x * TILE;
       const py = b.y * TILE;
+      const cell = overlayCell(b, pulse);
 
-      if (isCarrier(b)) {
-        // Throughput: how much of the window this cell actually carried something
-        const load = this.uptime(b);
-        const jammed = !!b.item && b.stalled;
-        this.g.fillStyle(jammed ? 0xff5555 : 0x5ef078, jammed ? 0.5 : 0.1 + load * 0.5);
+      if (cell.fill) {
+        this.g.fillStyle(cell.fill.color, cell.fill.alpha);
         this.g.fillRect(px + 2, py + 2, TILE - 4, TILE - 4);
-        continue;
       }
-
-      const starved = b.stalled;
-      if (isMachine(b.type) || b.type === 'miner') {
-        // Starved or backed-up producers pulse so they are findable at a glance
-        const pulse = 0.35 + 0.25 * Math.sin(this.scene.time.now / 140);
-        this.g.lineStyle(2, starved ? 0xff9f43 : 0x5ef078, starved ? pulse + 0.35 : 0.4);
+      if (cell.stroke) {
+        this.g.lineStyle(2, cell.stroke.color, cell.stroke.alpha);
         this.g.strokeRect(px + 1, py + 1, TILE - 2, TILE - 2);
-        continue;
       }
-
-      if (isTower(b.type)) {
-        const up = this.uptime(b);
+      if (cell.mag !== undefined) {
+        // magazine fill, so "80% uptime but currently empty" is visible too
+        this.g.fillStyle(0x6bd4ff, 0.5);
+        this.g.fillRect(px + 3, py + TILE - 6, Math.round((TILE - 6) * cell.mag), 3);
+      }
+      if (cell.label !== undefined) {
         const label = this.labelFor(b);
         live.add(b);
-        // No data yet (built after the wave started) reads as "—", not a false 0%
-        const measured = b.utilTotal > 0;
+        const at = this.project(px + TILE / 2, py - 4);
+        label.setPosition(at.x, at.y);
         // Every setText re-rasterises a canvas texture; the percentage only
         // moves a few times a second, so skip the frames where it hasn't.
-        const shown = measured ? `${Math.round(up * 100)}%` : '—';
-        if (label.text !== shown) label.setText(shown).setColor(measured ? uptimeColor(up) : '#8892a6');
-        this.g.lineStyle(2, b.ammo > 0 ? 0x5ef078 : 0xff5555, 0.5);
-        this.g.strokeRect(px + 1, py + 1, TILE - 2, TILE - 2);
-        // magazine fill, so "80% uptime but currently empty" is visible too
-        const mag = b.ammo / TOWERS[b.type].ammoCap;
-        this.g.fillStyle(0x6bd4ff, 0.5);
-        this.g.fillRect(px + 3, py + TILE - 6, Math.round((TILE - 6) * mag), 3);
+        if (label.text !== cell.label) label.setText(cell.label ?? '').setColor(cell.labelColor ?? '#ffffff');
       }
     }
 
@@ -135,8 +178,9 @@ export class LogisticsSystem {
   private labelFor(b: Building): Phaser.GameObjects.Text {
     let text = this.labels.get(b);
     if (!text) {
+      // Positioned by the caller each frame — see `project`.
       text = this.scene.add
-        .text(b.x * TILE + TILE / 2, b.y * TILE - 4, '', {
+        .text(0, 0, '', {
           fontFamily: 'monospace',
           fontSize: '11px',
           fontStyle: 'bold',

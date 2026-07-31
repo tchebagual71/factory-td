@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { START_LIVES, START_MONEY } from '../config';
+import { ComboState, emptyCombo } from '../data/combo';
+import { MetaEffects } from '../data/metaTree';
 import { emptyMods, Mods } from '../data/mods';
 import { modsFrom, researchForLevel } from '../data/research';
 import type { ItemType } from '../types';
@@ -85,6 +87,24 @@ class GameStateClass {
   overlay = false;
   /** surveys bought this run — each one costs more than the last */
   surveys = 0;
+  /**
+   * Kill streak. Never serialized: it is a moment-to-moment feel mechanic that
+   * pays nothing, so restoring a run mid-streak would be meaningless.
+   */
+  combo: ComboState = emptyCombo();
+
+  /**
+   * Permanent Workshop grants (`data/metaTree.ts`), folded in underneath the
+   * research picks. Not serialized: it is rederived from the player's account
+   * on every run, so an old save can never carry a stale Workshop with it.
+   */
+  baseMods: Partial<Mods> = {};
+  /** extra rounds every tower is placed with — the Preloaded Mags perk */
+  startAmmoBonus = 0;
+  /** kills across the whole run (the tally is per-wave) — feeds the scrap payout */
+  runKills = 0;
+  /** fraction off the survey price — the Prospector perk */
+  surveyDiscount = 0;
 
   // ---------- research ----------
   /** research banked toward the next level */
@@ -128,7 +148,7 @@ class GameStateClass {
   /** Record a taken card and recompute the run's modifiers from scratch. */
   takeCard(id: string): void {
     this.taken[id] = (this.taken[id] ?? 0) + 1;
-    this.mods = modsFrom(this.taken);
+    this.mods = modsFrom(this.taken, this.baseMods);
     this.pendingLevels = Math.max(0, this.pendingLevels - 1);
     this.events.emit('mods', this.mods);
   }
@@ -163,6 +183,27 @@ class GameStateClass {
   toggleAuto(): void {
     this.auto = !this.auto;
     this.events.emit('auto', this.auto);
+  }
+
+  /**
+   * Fold the Workshop's permanent grants into a *fresh* run. Called after
+   * `reset()` and never for a restored save — a save already banked the money
+   * and lives it was given, so re-granting them on load would pay twice.
+   *
+   * Mods are rebuilt rather than multiplied in, so calling this twice is
+   * harmless.
+   */
+  applyMeta(e: MetaEffects): void {
+    this.baseMods = e.mods;
+    this.startAmmoBonus = e.startAmmo;
+    this.surveyDiscount = e.surveyDiscount;
+    this.mods = modsFrom(this.taken, this.baseMods);
+    this.events.emit('mods', this.mods);
+    if (e.startLives > 0) {
+      this.lives += e.startLives;
+      this.events.emit('lives', this.lives);
+    }
+    if (e.startMoney > 0) this.addMoney(e.startMoney, false);
   }
 
   /** `earned` false for sell refunds — recycling your own cash is not wave income. */
@@ -221,7 +262,7 @@ class GameStateClass {
     this.research = s.research ?? 0;
     this.researchLevel = s.researchLevel ?? 0;
     this.taken = { ...(s.taken ?? {}) };
-    this.mods = modsFrom(this.taken);
+    this.mods = modsFrom(this.taken, this.baseMods);
     this.pendingLevels = 0;
     this.awaitingCard = false;
     this.money = s.money;
@@ -256,6 +297,7 @@ class GameStateClass {
     this.paused = false;
     this.buildElapsed = 0;
     this.tally = emptyTally();
+    this.combo = emptyCombo();
     this.overlay = false;
     this.surveys = 0;
     this.research = 0;
@@ -263,6 +305,10 @@ class GameStateClass {
     this.pendingLevels = 0;
     this.awaitingCard = false;
     this.taken = {};
+    this.baseMods = {};
+    this.startAmmoBonus = 0;
+    this.runKills = 0;
+    this.surveyDiscount = 0;
     this.mods = emptyMods();
     this.events.emit('paused', false);
     this.events.emit('overlay', false);

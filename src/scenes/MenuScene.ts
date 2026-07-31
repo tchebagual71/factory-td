@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
-import { GAME_H, GAME_W, IS_TOUCH } from '../config';
+import { GAME_H, GAME_W, IS_TOUCH, TILE } from '../config';
+import { BOARD_CX, BOARD_CZ, toView } from '../iso/isoMath';
 import { ACHIEVEMENTS } from '../data/achievements';
 import {
   accountLabel,
@@ -15,9 +16,12 @@ import {
   signOut,
 } from '../services/auth';
 import { DEFAULT_MAP_ID, MAPS } from '../data/map';
+import { META_CATEGORIES, META_NODES } from '../data/metaTree';
 import { fetchLeaderboard, syncOnSignIn } from '../services/cloud';
+import { meta } from '../state/meta';
 import { clearLocal, lastPickedMap, loadLocal, setPendingLoad, setPendingMap } from '../state/persistence';
 import { progress } from '../state/progress';
+import { isoSupported, renderMode, toggleRenderMode } from '../state/renderMode';
 import { anchorInput } from '../utils/htmlInput';
 import { getVolume, isMuted, setVolume, sfx, toggleMute } from '../utils/sfx';
 
@@ -36,6 +40,9 @@ export class MenuScene extends Phaser.Scene {
   private unsubAuth?: () => void;
   /** everything belonging to the open modal — Phaser objects and anchored HTML inputs alike */
   private modal: Array<{ destroy: () => void }> = [];
+  /** Mode-specific decoration, torn down and rebuilt when the view is toggled. */
+  private backdrop: Phaser.GameObjects.GameObject[] = [];
+  private subtitle!: Phaser.GameObjects.Text;
 
   constructor() {
     super('menu');
@@ -44,23 +51,28 @@ export class MenuScene extends Phaser.Scene {
   create(): void {
     this.confirmingNewRun = false;
     this.modal = [];
-    this.add.rectangle(0, 0, GAME_W, GAME_H, 0x0e0f1a).setOrigin(0);
+    // Depth -2 so the mode backdrop (-1) sits above it and the buttons (0)
+    // above that. The backdrop is rebuilt on toggle, so it cannot rely on
+    // display-list insertion order to stay behind the UI.
+    this.add.rectangle(0, 0, GAME_W, GAME_H, 0x0e0f1a).setOrigin(0).setDepth(-2);
     // The canvas grows on boxier screens, so the whole title screen is laid out
     // relative to a vertical origin rather than pinned to a 720px-tall canvas.
     const TOP = Math.round((GAME_H - 720) / 2);
-    for (let i = 0; i < 14; i++) {
-      this.add
-        .image(60 + i * 90, GAME_H - 100 + (i % 2) * 24, i % 3 === 0 ? 'tower' : 'belt')
-        .setAlpha(0.12)
-        .setScale(1.4);
-    }
+    this.buildBackdrop();
     const title = this.add
       .text(GAME_W / 2, TOP + 130, 'FACTORY TD', { ...FONT, fontSize: '64px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 10 })
       .setOrigin(0.5);
     this.tweens.add({ targets: title, scale: 1.03, yoyo: true, repeat: -1, duration: 1600, ease: 'Sine.inOut' });
-    this.add
-      .text(GAME_W / 2, TOP + 185, 'Build the factory. Feed the guns. Hold the line.', { ...FONT, fontSize: '15px', color: '#cdd6e4' })
+    this.subtitle = this.add
+      .text(GAME_W / 2, TOP + 185, '', { ...FONT, fontSize: '15px', color: '#cdd6e4' })
       .setOrigin(0.5);
+    this.paintSubtitle();
+
+    // ----- renderer chip (top-left) -----
+    // Deliberately not in the button stack: that column already runs to the
+    // bottom of the shortest canvas we support, and this is a preference rather
+    // than a thing you come to the title screen to do.
+    this.buildViewToggle();
 
     // ----- account chip (top-right) -----
     const chip = this.add
@@ -130,7 +142,19 @@ export class MenuScene extends Phaser.Scene {
       GAME_W / 2 + half / 2 + 4,
     );
     y += 62;
-    this.button(y, 'LEADERBOARD', 0x1e2233, 0x2b3040, () => void this.showLeaderboard());
+    this.button(y, 'LEADERBOARD', 0x1e2233, 0x2b3040, () => void this.showLeaderboard(), half, halfX);
+    // Lit whenever something is actually affordable — an unspent wallet is the
+    // one thing on this screen the player should not walk past.
+    const canSpend = META_NODES.some((n) => meta.canBuy(n.id));
+    this.button(
+      y,
+      `⚙ WORKSHOP · ${meta.scrap}`,
+      canSpend ? 0x2f6f5c : 0x1e2233,
+      canSpend ? 0x7cf7c4 : 0x2b3040,
+      () => this.showWorkshop(),
+      half,
+      GAME_W / 2 + half / 2 + 4,
+    );
 
     // Stack the rest sequentially so adding a row can never silently collide
     // with the one below it (the canvas height is no longer a fixed 720).
@@ -175,6 +199,139 @@ export class MenuScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-ESC', () => this.closeModal());
     // anchored HTML inputs live on document.body — never leak them past this scene
     this.events.once('shutdown', () => this.closeModal());
+  }
+
+  /**
+   * Flat or isometric. The choice is a device preference, so it lives in
+   * localStorage rather than the save — a run started in 3D on a desktop
+   * continues in 2D on a phone if that is what the phone is set to.
+   */
+  /**
+   * The title screen dresses itself as whichever renderer is selected, so the
+   * choice is visible *before* you commit to a run rather than being a label
+   * that claims something the screen doesn't show.
+   *
+   * The isometric backdrop is projected through `isoMath.toView` — the game's
+   * actual camera basis, not a hand-rolled 2:1 diamond — so the lattice on the
+   * title screen sits at the same angle as the board you are about to play on.
+   */
+  private buildBackdrop(): void {
+    this.backdrop.forEach((o) => o.destroy());
+    this.backdrop = [];
+    const iso = renderMode() === 'iso';
+    const g = this.add.graphics().setDepth(-1);
+    this.backdrop.push(g);
+
+    if (!iso) {
+      // 2D CLASSIC: the flat tile grid, and the prop row along the bottom.
+      g.lineStyle(1, 0x1c2030, 0.9);
+      for (let x = 0; x <= GAME_W; x += TILE) g.lineBetween(x, 0, x, GAME_H);
+      for (let y = 0; y <= GAME_H; y += TILE) g.lineBetween(0, y, GAME_W, y);
+      for (let i = 0; i < 14; i++) {
+        this.backdrop.push(
+          this.add
+            .image(60 + i * 90, GAME_H - 100 + (i % 2) * 24, i % 3 === 0 ? 'tower' : 'belt')
+            .setAlpha(0.12)
+            .setScale(1.4)
+            .setDepth(-1),
+        );
+      }
+      return;
+    }
+
+    // 3D ISOMETRIC: a ground lattice at the true camera angle, with a few
+    // extruded solids standing on it — the same read as the real board.
+    const S = 0.66;
+    const CX = GAME_W / 2;
+    const CY = GAME_H - 168;
+    const pt = (bx: number, by: number, h = 0) => {
+      const v = toView(bx, h, by);
+      return { x: CX + v.x * S, y: CY - v.y * S };
+    };
+    const HALF_X = 460;
+    const HALF_Y = 300;
+    g.lineStyle(1, 0x232a3d, 0.9);
+    for (let x = -HALF_X; x <= HALF_X; x += 64) {
+      const a = pt(BOARD_CX + x, BOARD_CZ - HALF_Y);
+      const b = pt(BOARD_CX + x, BOARD_CZ + HALF_Y);
+      g.lineBetween(a.x, a.y, b.x, b.y);
+    }
+    for (let y = -HALF_Y; y <= HALF_Y; y += 64) {
+      const a = pt(BOARD_CX - HALF_X, BOARD_CZ + y);
+      const b = pt(BOARD_CX + HALF_X, BOARD_CZ + y);
+      g.lineBetween(a.x, a.y, b.x, b.y);
+    }
+
+    // The camera sits at +x/+y/+z (see CAM_EYE), so the faces you can see are
+    // the ones at max x and max z. Drawing the other two would z-fight nothing
+    // and just muddy the silhouette.
+    const solid = (bx: number, by: number, w: number, h: number, tint: number) => {
+      const top = [pt(bx, by, h), pt(bx + w, by, h), pt(bx + w, by + w, h), pt(bx, by + w, h)];
+      const xFace = [pt(bx + w, by, h), pt(bx + w, by + w, h), pt(bx + w, by + w, 0), pt(bx + w, by, 0)];
+      const zFace = [pt(bx, by + w, h), pt(bx + w, by + w, h), pt(bx + w, by + w, 0), pt(bx, by + w, 0)];
+      g.fillStyle(tint, 0.26);
+      g.fillPoints(top, true);
+      g.fillStyle(tint, 0.17);
+      g.fillPoints(xFace, true);
+      g.fillStyle(tint, 0.1);
+      g.fillPoints(zFace, true);
+    };
+    // A little skyline: towers tall and narrow, machines low and wide.
+    const props: [number, number, number, number, number][] = [
+      [-352, -128, 56, 74, 0xc0504d],
+      [-224, 32, 64, 34, 0xd98c3a],
+      [-96, -192, 56, 96, 0xc0504d],
+      [-32, 96, 64, 30, 0x4a90d9],
+      [96, -64, 56, 60, 0xd98c3a],
+      [224, 96, 64, 40, 0x4a90d9],
+      [320, -160, 56, 84, 0xc0504d],
+    ];
+    for (const [dx, dy, w, h, tint] of props) solid(BOARD_CX + dx, BOARD_CZ + dy, w, h, tint);
+  }
+
+  private paintSubtitle(): void {
+    const iso = renderMode() === 'iso';
+    this.subtitle
+      .setText(
+        iso
+          ? 'Build the factory. Feed the guns. Hold the line.  ·  3D'
+          : 'Build the factory. Feed the guns. Hold the line.',
+      )
+      .setColor(iso ? '#7cf7c4' : '#cdd6e4');
+  }
+
+  private buildViewToggle(): void {
+    const supported = isoSupported();
+    const label = this.add
+      .text(16, 16, 'VIEW', { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#8892a6' })
+      .setOrigin(0, 0);
+    label.setVisible(supported);
+    if (!supported) return;
+
+    const frame = this.add
+      .rectangle(16, 42, 150, 30, 0x1e2233)
+      .setOrigin(0, 0)
+      .setStrokeStyle(2, 0x2b3040)
+      .setInteractive({ useHandCursor: true });
+    const text = this.add
+      .text(91, 57, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(0.5);
+    const paint = () => {
+      const iso = renderMode() === 'iso';
+      text.setText(iso ? '3D ISOMETRIC' : '2D CLASSIC').setColor(iso ? '#7cf7c4' : '#cdd6e4');
+      frame.setStrokeStyle(2, iso ? 0x2f6f5c : 0x2b3040);
+    };
+    paint();
+    frame.on('pointerover', () => frame.setFillStyle(0x28304a));
+    frame.on('pointerout', () => frame.setFillStyle(0x1e2233));
+    frame.on('pointerdown', () => {
+      sfx.place();
+      toggleRenderMode();
+      paint();
+      // The whole screen re-dresses, not just this chip — that is the point.
+      this.buildBackdrop();
+      this.paintSubtitle();
+    });
   }
 
   private button(
@@ -276,6 +433,131 @@ export class MenuScene extends Phaser.Scene {
     });
     this.modal.push(frame, label);
     return label;
+  }
+
+  /**
+   * The Workshop: spend ⚙ SCRAP on permanent perks.
+   *
+   * Rebuilt wholesale after every purchase rather than patched in place — the
+   * screen is small, a redraw is cheap, and it means the wallet, the pips, the
+   * prices and the affordability tints can never disagree with each other.
+   */
+  private showWorkshop(): void {
+    const H = 620;
+    const W = 1000;
+    this.openModal(H, W);
+    const top = this.modalTop(H);
+    const left = GAME_W / 2 - W / 2;
+
+    this.modalTitle('WORKSHOP', H);
+    this.modal.push(
+      this.add
+        .text(GAME_W / 2, top + 60, `⚙ ${meta.scrap} SCRAP` , {
+          ...FONT, fontSize: '19px', fontStyle: 'bold', color: '#7cf7c4',
+        })
+        .setOrigin(0.5)
+        .setDepth(12),
+      this.add
+        .text(GAME_W / 2, top + 84, 'Earned every run — deeper runs pay more. Perks are permanent and apply to every new run.', {
+          ...FONT, fontSize: '11px', color: '#8892a6',
+        })
+        .setOrigin(0.5)
+        .setDepth(12),
+    );
+
+    // Two columns of category blocks. Categories are kept whole: a block never
+    // straddles the gutter, for the same reason the build bar's don't.
+    const colW = (W - 90) / 2;
+    const cols: { x: number; y: number }[] = [
+      { x: left + 30, y: top + 112 },
+      { x: left + 60 + colW, y: top + 112 },
+    ];
+    const COL_OF: Record<string, number> = { logistics: 0, production: 0, defense: 1, economy: 1 };
+
+    for (const cat of META_CATEGORIES) {
+      const col = cols[COL_OF[cat.id]];
+      this.modal.push(
+        this.add.rectangle(col.x, col.y, colW, 20, cat.color, 0.16).setOrigin(0).setDepth(12),
+        this.add
+          .text(col.x + 8, col.y + 10, cat.name, { ...FONT, fontSize: '11px', fontStyle: 'bold', color: cat.css })
+          .setOrigin(0, 0.5)
+          .setDepth(13),
+      );
+      col.y += 26;
+
+      for (const node of META_NODES.filter((n) => n.cat === cat.id)) {
+        const have = meta.levels(node.id);
+        const price = meta.priceOf(node.id);
+        const maxed = price === null;
+        const afford = meta.canBuy(node.id);
+        const rowY = col.y;
+
+        this.modal.push(
+          this.add
+            .rectangle(col.x, rowY, colW, 48, 0x1a1d2e, 0.9)
+            .setOrigin(0)
+            .setStrokeStyle(1, maxed ? cat.color : 0x2b3040, maxed ? 0.7 : 0.5)
+            .setDepth(12),
+          this.add
+            .text(col.x + 10, rowY + 9, node.name, { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#e8edf5' })
+            .setDepth(13),
+          this.add
+            .text(col.x + 10, rowY + 28, node.desc, { ...FONT, fontSize: '10px', color: '#8892a6' })
+            .setDepth(13),
+        );
+
+        // Level pips — the at-a-glance "how far in am I" read
+        for (let i = 0; i < node.max; i++) {
+          this.modal.push(
+            this.add
+              // Far enough left that a 3-pip node clears the buy button —
+              // the third pip used to be drawn underneath it.
+              .rectangle(col.x + colW - 176 + i * 13, rowY + 14, 9, 9, i < have ? cat.color : 0x2b3040)
+              .setOrigin(0)
+              .setDepth(13),
+          );
+        }
+
+        if (maxed) {
+          this.modal.push(
+            this.add
+              .text(col.x + colW - 66, rowY + 24, 'MAX', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: cat.css })
+              .setOrigin(0.5)
+              .setDepth(13),
+          );
+        } else {
+          const bx = col.x + colW - 118;
+          const frame = this.add
+            .rectangle(bx, rowY + 8, 108, 32, afford ? 0x2e7d4f : 0x23273a)
+            .setOrigin(0)
+            .setStrokeStyle(2, afford ? 0x5ef078 : 0x2b3040)
+            .setDepth(13);
+          const label = this.add
+            .text(bx + 54, rowY + 24, `⚙ ${price}`, {
+              ...FONT, fontSize: '13px', fontStyle: 'bold', color: afford ? '#ffffff' : '#6b7689',
+            })
+            .setOrigin(0.5)
+            .setDepth(14);
+          if (afford) {
+            frame.setInteractive({ useHandCursor: true });
+            frame.on('pointerover', () => frame.setFillStyle(0x3a9463));
+            frame.on('pointerout', () => frame.setFillStyle(0x2e7d4f));
+            frame.on('pointerdown', () => {
+              if (!meta.buy(node.id)) return;
+              sfx.waveClear();
+              // Reopen so the wallet and every row repaint together, and refresh
+              // the title screen's WORKSHOP button behind it.
+              this.showWorkshop();
+            });
+          }
+          this.modal.push(frame, label);
+        }
+        col.y += 54;
+      }
+      col.y += 10;
+    }
+
+    this.modalClose(H);
   }
 
   /**

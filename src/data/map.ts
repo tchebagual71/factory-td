@@ -196,8 +196,10 @@ export function prospectKind(surveys: number): 'ore' | 'crystal' {
  */
 export const PROSPECT_GROWTH = 1.3;
 
-export function prospectCost(surveys: number): number {
-  return Math.round(250 * Math.pow(PROSPECT_GROWTH, surveys));
+/** `discount` is the Workshop's Prospector perk, 0..1 off the price. */
+export function prospectCost(surveys: number, discount = 0): number {
+  const d = Math.min(0.9, Math.max(0, discount));
+  return Math.round(250 * Math.pow(PROSPECT_GROWTH, surveys) * (1 - d));
 }
 
 /** Set of "x,y" keys for every tile the given route crosses (unbuildable). */

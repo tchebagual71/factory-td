@@ -1,10 +1,9 @@
 import Phaser from 'phaser';
+import { BELT_FRAMES } from './beltFrames';
 
-/** Frames in the scrolling belt loop. Texture keys are `belt`, `belt1`…`belt3`. */
-export const BELT_FRAMES = 4;
-
-/** Texture keys of the belt loop, in play order. */
-export const BELT_FRAME_KEYS = Array.from({ length: BELT_FRAMES }, (_, i) => (i === 0 ? 'belt' : `belt${i}`));
+// Re-exported so every existing importer keeps its one-stop `BootScene` import,
+// while the definitions themselves stay in a Phaser-free module.
+export { BELT_FRAMES, BELT_FRAME_KEYS } from './beltFrames';
 
 /** Generates every texture procedurally — zero asset files. */
 export class BootScene extends Phaser.Scene {

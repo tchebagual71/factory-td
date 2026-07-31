@@ -105,6 +105,9 @@ export class CombatSystem {
         if (starved) {
           b.sprite.setTint(0x8a8a8a);
           b.barrel?.setTint(0x8a8a8a);
+          // Counted only on the transition, and only mid-wave: a tower sitting
+          // empty through the build phase is a supply plan, not a failure.
+          if (GameState.phase === 'wave') progress.record('starvedTowers');
         } else {
           b.sprite.clearTint();
           b.barrel?.clearTint();
