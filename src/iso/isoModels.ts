@@ -9,7 +9,7 @@ import { BELT_FRAME_KEYS } from '../scenes/beltFrames';
  * a 32px tile is a 32×32 footprint and heights read against it directly.
  */
 export type Shape =
-  /** flush with the ground: belts, splitters, tunnels */
+  /** flush with the ground: belts, splitters, sorters, tunnels */
   | 'slab'
   /** a machine: extruded box with the sprite laid on its lid */
   | 'block'
@@ -56,6 +56,7 @@ const def = (shape: Shape, w: number, d: number, h: number, side: number, lift =
 const MODELS: Record<string, Model> = {
   // --- logistics: flush with the ground so a factory reads as plumbing ---
   splitter: def('slab', 32, 32, 5, 0x2b3244),
+  sorter: def('slab', 32, 32, 5, 0x344052),
   tunnel: def('slab', 32, 32, 7, 0x1b2030),
 
   // --- production: boxes tall enough to throw a shadow and cast a silhouette ---

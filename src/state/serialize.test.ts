@@ -114,6 +114,17 @@ describe('captureRun → validateSave round trip', () => {
     expect(back.items[0].a).toBeCloseTo(0.35);
     expect(back.items[0].px).toBe(10 * 32 + 20);
   });
+
+  it('round-trips a configured sorter and the item resting on it', () => {
+    const sorter = makeBuilding('sorter', 11, 4);
+    sorter.filter = 'crystal';
+    const it = itemOn(sorter);
+    const save = captureRun([sorter], [it], SNAPSHOT);
+    const back = validateSave(JSON.parse(JSON.stringify(save)))!;
+    expect(back).not.toBeNull();
+    expect(back.buildings[0]).toMatchObject({ t: 'sorter', filter: 'crystal' });
+    expect(back.items[0]).toMatchObject({ t: 'ammo', cx: 11, cy: 4 });
+  });
 });
 
 describe('v1 → v2 migration', () => {
@@ -206,6 +217,16 @@ describe('validateSave rejects corrupt input', () => {
 
   it('accepts its own untouched output', () => {
     expect(validateSave(base())).not.toBeNull();
+  });
+
+  it('rejects a bogus filter or a filter attached to anything but a sorter', () => {
+    const invalid = [
+      { t: 'sorter', x: 1, y: 1, d: 0, inv: 25, filter: 'gold' },
+      { t: 'belt', x: 1, y: 1, d: 0, inv: 5, filter: 'ore' },
+    ];
+    for (const building of invalid) {
+      expect(validateSave({ ...base(), buildings: [building] })).toBeNull();
+    }
   });
 });
 

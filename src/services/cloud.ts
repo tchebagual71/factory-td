@@ -1,6 +1,7 @@
 import { loadLocal, saveLocal } from '../state/persistence';
 import { mergeAchievements, mergeBest, newerRun } from '../state/mergeProgress';
 import { progress } from '../state/progress';
+import { LatestSaveQueue } from '../state/saveQueue';
 import { SaveV1, validateSave } from '../state/serialize';
 import { currentUser, ensureProfile, isAnonymous } from './auth';
 import { getClient } from './supabase';
@@ -19,12 +20,24 @@ export interface LeaderboardRow {
   user_id: string;
 }
 
-export async function pushSave(save: SaveV1): Promise<void> {
+/**
+ * Authentication lookup is part of the queued write so two pushSave calls can
+ * never reach the saves row concurrently. A missing client or session remains
+ * a successful no-op, exactly like every other best-effort cloud path.
+ */
+async function writeSave(save: SaveV1): Promise<void> {
   const c = getClient();
   const u = await currentUser();
   if (!c || !u) return;
   const { error } = await c.from('saves').upsert({ user_id: u.id, data: save, wave: save.wave });
   if (error) console.warn('[cloud] pushSave:', error.message);
+}
+
+const saveQueue = new LatestSaveQueue<SaveV1>(writeSave);
+
+/** Queue the newest cloud mirror without making gameplay wait for the network. */
+export function pushSave(save: SaveV1): void {
+  saveQueue.request(save);
 }
 
 export async function pullSave(): Promise<{ save: SaveV1; updatedAt: number } | null> {

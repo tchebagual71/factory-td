@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import * as THREE from 'three';
-import { GAME_H, GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
+import { GAME_H, GRID_H, GRID_W, IS_TOUCH, PLAYFIELD_H, TILE } from '../config';
 import { isTower, TOWERS } from '../data/buildings';
 import { computePathCells, pathWaypoints, RESERVES } from '../data/map';
 import { GameState } from '../state/GameState';
@@ -19,6 +19,14 @@ import {
   worldToScreen,
 } from './isoMath';
 import { GROUND_Y, Model, modelFor } from './isoModels';
+import {
+  createIsoQualityState,
+  initialIsoQuality,
+  ISO_QUALITY_PRESETS,
+  IsoQualityState,
+  IsoRenderQuality,
+  sampleIsoFrame,
+} from './isoQuality';
 
 /**
  * The isometric 3D view.
@@ -110,8 +118,15 @@ export class IsoView {
 
   private canvas: HTMLCanvasElement;
   private renderer: THREE.WebGLRenderer;
+  private quality: IsoRenderQuality;
+  private qualityState: IsoQualityState;
+  private lastFrameAt: number | null = null;
+  private lastDrawAt = -Infinity;
+  private fallbackPending = false;
+  private destroyed = false;
   private world = new THREE.Scene();
   private camera: THREE.OrthographicCamera;
+  private sun!: THREE.DirectionalLight;
 
   private proxies = new Map<Phaser.GameObjects.GameObject, Proxy>();
   private arcs = new Map<Phaser.GameObjects.GameObject, ArcProxy>();
@@ -151,23 +166,13 @@ export class IsoView {
     game.canvas.style.position = 'relative';
     game.canvas.style.zIndex = '1';
 
-    this.canvas = document.createElement('canvas');
-    this.canvas.style.position = 'absolute';
-    this.canvas.style.zIndex = '0';
-    this.canvas.style.pointerEvents = 'none';
-    // The 3D image is smooth, not chunky — the global `image-rendering: pixelated`
-    // would alias every edge of it.
-    this.canvas.style.imageRendering = 'auto';
+    this.quality = initialIsoQuality({ isTouch: IS_TOUCH, devicePixelRatio: window.devicePixelRatio || 1 });
+    this.qualityState = createIsoQualityState(this.quality);
+    this.canvas = this.makeCanvas();
     parent.appendChild(this.canvas);
-
-    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.autoClear = false;
-    this.renderer.shadowMap.enabled = true;
-    // PCFSoftShadowMap is deprecated and silently downgrades to this anyway,
-    // with a console warning on every boot — so ask for what we actually get.
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.canvas.addEventListener('webglcontextlost', this.onContextLost);
+    this.renderer = this.makeRenderer(ISO_QUALITY_PRESETS[this.quality].antialias);
+    this.configureRenderer(this.quality);
 
     this.cam = fitCam(0, 0, GRID_W * TILE, PLAYFIELD_H);
     this.camera = new THREE.OrthographicCamera(
@@ -201,6 +206,33 @@ export class IsoView {
     this.world.add(this.survey);
 
     this.layout();
+  }
+
+  /** Build the DOM layer once, and again only if antialiasing must change. */
+  private makeCanvas(): HTMLCanvasElement {
+    const canvas = document.createElement('canvas');
+    canvas.style.position = 'absolute';
+    canvas.style.zIndex = '0';
+    canvas.style.pointerEvents = 'none';
+    // The 3D image is smooth, not chunky — the global `image-rendering: pixelated`
+    // would alias every edge of it.
+    canvas.style.imageRendering = 'auto';
+    return canvas;
+  }
+
+  private makeRenderer(antialias: boolean): THREE.WebGLRenderer {
+    return new THREE.WebGLRenderer({ canvas: this.canvas, antialias, alpha: false });
+  }
+
+  private configureRenderer(level: IsoRenderQuality): void {
+    const preset = ISO_QUALITY_PRESETS[level];
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, preset.dprCap));
+    this.renderer.autoClear = false;
+    this.renderer.shadowMap.enabled = preset.shadows;
+    // PCFSoftShadowMap is deprecated and silently downgrades to this anyway,
+    // with a console warning on every boot — so ask for what we actually get.
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
   }
 
   /** Where the bars come from. Called by GameScene once the systems exist. */
@@ -284,9 +316,11 @@ export class IsoView {
     this.world.add(new THREE.AmbientLight(0xffffff, 0.35));
 
     const sun = new THREE.DirectionalLight(0xfff2d5, 2.0);
+    this.sun = sun;
     sun.position.set(BOARD_CX - 700, 1150, BOARD_CZ - 520);
     sun.target.position.set(BOARD_CX, 0, BOARD_CZ);
-    sun.castShadow = true;
+    const preset = ISO_QUALITY_PRESETS[this.quality];
+    sun.castShadow = preset.shadows;
     // Tight ortho shadow frustum around the board: any slack here is resolution
     // thrown away, and belt-height detail is exactly what the shadows sell.
     const s = sun.shadow.camera;
@@ -296,7 +330,7 @@ export class IsoView {
     s.bottom = -620;
     s.near = 200;
     s.far = 2400;
-    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.mapSize.set(preset.shadowMapSize, preset.shadowMapSize);
     sun.shadow.bias = -0.0012;
     sun.shadow.normalBias = 1.2;
     this.world.add(sun);
@@ -515,9 +549,89 @@ export class IsoView {
     (this.survey.material as THREE.MeshBasicMaterial).color.setHex(ok ? 0x5ef078 : 0xff5555);
   }
 
+  // ---------- adaptive rendering quality ----------
+
+  /**
+   * Apply a pure-policy transition to Three.js. Antialiasing is a WebGL context
+   * attribute, so reaching low replaces only the rendering canvas/context; the
+   * mirrored scene remains intact and lazily uploads into the cheaper context.
+   */
+  private applyQuality(level: IsoRenderQuality): void {
+    const before = ISO_QUALITY_PRESETS[this.quality];
+    const after = ISO_QUALITY_PRESETS[level];
+
+    if (before.antialias !== after.antialias) {
+      const oldCanvas = this.canvas;
+      const oldRenderer = this.renderer;
+      const parent = oldCanvas.parentElement;
+      const nextCanvas = this.makeCanvas();
+      if (parent) parent.insertBefore(nextCanvas, oldCanvas);
+      oldCanvas.removeEventListener('webglcontextlost', this.onContextLost);
+      oldRenderer.dispose();
+      oldCanvas.remove();
+      this.canvas = nextCanvas;
+      this.canvas.addEventListener('webglcontextlost', this.onContextLost);
+      this.renderer = this.makeRenderer(after.antialias);
+    }
+
+    this.quality = level;
+    this.configureRenderer(level);
+    this.sun.castShadow = after.shadows;
+    if (this.sun.shadow.mapSize.width !== after.shadowMapSize) {
+      this.sun.shadow.map?.dispose();
+      this.sun.shadow.map = null;
+      this.sun.shadow.mapSize.set(after.shadowMapSize, after.shadowMapSize);
+    }
+    this.layout();
+    this.lastDrawAt = -Infinity;
+  }
+
+  /**
+   * Runtime failures take the same route as the HUD chip. GameScene owns that
+   * path: it detaches and destroys this mirror, persists `2d`, and broadcasts
+   * the `view` event which corrects the chip. The microtask avoids destroying
+   * the renderer from inside its current render/context callback.
+   */
+  private requestFlatFallback(): void {
+    if (this.fallbackPending || this.destroyed) return;
+    this.fallbackPending = true;
+    queueMicrotask(() => {
+      if (!this.destroyed) GameState.events.emit('ui:view');
+    });
+  }
+
+  private onContextLost = (event: Event): void => {
+    event.preventDefault();
+    this.qualityState = { level: 'flat', samples: [], badAverages: 0 };
+    this.requestFlatFallback();
+  };
+
   // ---------- per-frame mirror ----------
 
   render(scene: Phaser.Scene): void {
+    // Measure the real main-loop cadence before applying the mirror-only cap.
+    // Returning here skips no Phaser update and changes no simulation clock;
+    // it merely lets the 3D reflection reuse its previous frame.
+    const frameAt = performance.now();
+    if (this.lastFrameAt !== null) {
+      const next = sampleIsoFrame(this.qualityState, frameAt - this.lastFrameAt);
+      if (next.level !== this.qualityState.level) {
+        this.qualityState = next;
+        if (next.level === 'flat') {
+          this.requestFlatFallback();
+          return;
+        }
+        this.applyQuality(next.level);
+      } else {
+        this.qualityState = next;
+      }
+    }
+    this.lastFrameAt = frameAt;
+
+    const interval = ISO_QUALITY_PRESETS[this.quality].minRenderIntervalMs;
+    if (frameAt - this.lastDrawAt < interval) return;
+    this.lastDrawAt = frameAt;
+
     this.seen.clear();
     this.barsUsed = 0;
     let particleCount = 0;
@@ -1002,6 +1116,8 @@ export class IsoView {
   }
 
   destroy(): void {
+    this.destroyed = true;
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
     for (const t of this.textures.values()) t.dispose();
     for (const m of this.materials.values()) m.dispose();
     for (const g of this.geometries.values()) g.dispose();

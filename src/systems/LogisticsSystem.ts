@@ -28,7 +28,7 @@ const STALL_LABEL: Record<NonNullable<Building['stallReason']>, string> = {
 
 /** Belt-likes are the throughput carriers; everything else is a producer or consumer. */
 function isCarrier(b: Building): boolean {
-  return b.type === 'belt' || b.type === 'splitter' || b.type === 'tunnel';
+  return b.type === 'belt' || b.type === 'splitter' || b.type === 'sorter' || b.type === 'tunnel';
 }
 
 /** Share of the measurement window this building spent doing its job. */

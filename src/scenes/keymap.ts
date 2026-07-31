@@ -72,11 +72,11 @@ export const KEYS: KeyBinding[] = [
   { action: 'upgradeB', label: 'I', key: 'I', owner: 'game' },
   { action: 'help', label: 'H', key: 'H', owner: 'ui' },
   { action: 'mute', label: 'M', key: 'M', owner: 'ui' },
-  // Board zoom. `0` is free because the palette only claims 1–9, and "0 resets
-  // the view" is the convention every map and design tool already uses.
+  // Board zoom. HOME is the standard "return to the whole view" key; the
+  // palette now needs all ten digits for its ten factory buildings.
   { action: 'zoomIn', label: '+', key: 'PLUS', owner: 'game' },
   { action: 'zoomOut', label: '-', key: 'MINUS', owner: 'game' },
-  { action: 'zoomReset', label: '0', key: 'ZERO', owner: 'game' },
+  { action: 'zoomReset', label: 'HOME', key: 'HOME', owner: 'game' },
 ];
 
 const BY_ACTION = new Map(KEYS.map((k) => [k.action, k]));

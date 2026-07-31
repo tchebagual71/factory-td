@@ -150,6 +150,73 @@ describe('splitter round-robin', () => {
   });
 });
 
+describe('sorter filtering', () => {
+  let sorter: Building;
+  let straight: Building;
+  let left: Building;
+  let right: Building;
+
+  beforeEach(() => {
+    sorter = placeBuilding(grid, 'sorter', 7, 18, 0); // facing east
+    straight = placeBuilding(grid, 'belt', 8, 18, 0);
+    left = placeBuilding(grid, 'belt', 7, 17, 3);
+    right = placeBuilding(grid, 'belt', 7, 19, 1);
+  });
+
+  function dispatchOnce(type: 'ore' | 'ammo'): Building | null {
+    const it = addItem(conv, sorter, type);
+    conv.update(DT);
+    for (const out of [straight, left, right]) {
+      if (out.item === it) {
+        out.item = null;
+        conv.destroyItem(it);
+        return out;
+      }
+    }
+    return null;
+  }
+
+  it('sends a matching item straight', () => {
+    sorter.filter = 'ore';
+    expect(dispatchOnce('ore')).toBe(straight);
+  });
+
+  it('holds a matching item rather than diverting when straight is blocked', () => {
+    sorter.filter = 'ore';
+    const blocker = addItem(conv, straight, 'ammo');
+    const waiting = addItem(conv, sorter, 'ore');
+    conv.update(DT);
+    expect(sorter.item).toBe(waiting);
+    expect(left.item).toBeNull();
+    expect(right.item).toBeNull();
+    conv.destroyItem(blocker);
+    straight.item = null;
+    conv.update(DT);
+    expect(straight.item).toBe(waiting);
+  });
+
+  it('round-robins non-matching items across the two side outputs', () => {
+    sorter.filter = 'ore';
+    expect(dispatchOnce('ammo')).toBe(left);
+    expect(dispatchOnce('ammo')).toBe(right);
+    expect(dispatchOnce('ammo')).toBe(left);
+  });
+
+  it('skips a blocked side for a non-matching item', () => {
+    sorter.filter = 'ore';
+    addItem(conv, left, 'ore');
+    expect(dispatchOnce('ammo')).toBe(right);
+  });
+
+  it('with a null filter behaves exactly like a fresh splitter', () => {
+    sorter.filter = null;
+    expect(dispatchOnce('ore')).toBe(straight);
+    expect(dispatchOnce('ore')).toBe(left);
+    expect(dispatchOnce('ore')).toBe(right);
+    expect(dispatchOnce('ore')).toBe(straight);
+  });
+});
+
 describe('tunnels', () => {
   it('dives to the next same-facing tunnel within reach', () => {
     const entrance = placeBuilding(grid, 'tunnel', 10, 18, 0);

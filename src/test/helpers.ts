@@ -137,6 +137,7 @@ export function makeBuilding(type: BuildingType, x: number, y: number, dir: Dir 
     sprite: makeSprite(center(x), center(y)) as unknown as Phaser.GameObjects.Image,
     item: null,
     outIdx: 0,
+    filter: null,
     timer: 0,
     crafting: false,
     inputs: {},

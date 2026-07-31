@@ -15,14 +15,16 @@ const ITEM_TEXTURE: Record<ItemType, string> = {
   coolant: 'item-coolant',
 };
 
-/** Splitter output directions relative to its facing: 0=straight, 3=left, 1=right. */
+/** Output directions relative to facing: 0=straight, 3=left, 1=right. */
 const SPLIT_OFFSETS = [0, 3, 1];
+const SIDE_OFFSETS = [3, 1];
 
 /**
- * Moves items along belts and splitters. Each cell holds at most one item;
+ * Moves items along carriers. Each cell holds at most one item;
  * items glide smoothly to their cell center, then hop to the next cell if
  * free, or get consumed by the machine/tower the cell points into.
- * Splitters round-robin their output between straight/left/right.
+ * Splitters round-robin straight/left/right; configured sorters reserve
+ * straight for their filtered item and share everything else across the sides.
  */
 export class ConveyorSystem {
   items: ItemEnt[] = [];
@@ -60,7 +62,7 @@ export class ConveyorSystem {
       } else if (host.type === 'tunnel') {
         const dive = this.tryTunnel(it, host);
         moved = dive === 'moved' || (dive === 'none' && this.tryTransfer(i, it, host, host.dir));
-      } else if (host.type === 'splitter') {
+      } else if (host.type === 'splitter' || (host.type === 'sorter' && (host.filter ?? null) === null)) {
         for (let k = 0; k < 3; k++) {
           const slot = (host.outIdx + k) % 3;
           const dir = ((host.dir + SPLIT_OFFSETS[slot]) % 4) as Dir;
@@ -68,6 +70,23 @@ export class ConveyorSystem {
             host.outIdx = (slot + 1) % 3;
             moved = true;
             break;
+          }
+        }
+      } else if (host.type === 'sorter') {
+        if (it.type === host.filter) {
+          // A filtered line is a guarantee, not a preference. Diverting when
+          // straight is busy would put the exact wrong item back into the line
+          // the sorter exists to protect.
+          moved = this.tryTransfer(i, it, host, host.dir);
+        } else {
+          for (let k = 0; k < 2; k++) {
+            const slot = (host.outIdx + k) % 2;
+            const dir = ((host.dir + SIDE_OFFSETS[slot]) % 4) as Dir;
+            if (this.tryTransfer(i, it, host, dir)) {
+              host.outIdx = (slot + 1) % 2;
+              moved = true;
+              break;
+            }
           }
         }
       }
@@ -103,7 +122,7 @@ export class ConveyorSystem {
     const nb = this.grid.cellAt(nx, ny)?.building;
     if (!nb) return false;
 
-    if ((nb.type === 'belt' || nb.type === 'splitter' || nb.type === 'tunnel') && !nb.item) {
+    if ((nb.type === 'belt' || nb.type === 'splitter' || nb.type === 'sorter' || nb.type === 'tunnel') && !nb.item) {
       host.item = null;
       nb.item = it;
       it.cx = nx;
@@ -150,12 +169,12 @@ export class ConveyorSystem {
     return false;
   }
 
-  /** Machine pushes a freshly produced item onto the belt/splitter cell it faces. */
+  /** Machine pushes a freshly produced item onto the carrier cell it faces. */
   spawnFrom(fromX: number, fromY: number, dir: number, type: ItemType): boolean {
     const nx = fromX + DX[dir];
     const ny = fromY + DY[dir];
     const nb = this.grid.cellAt(nx, ny)?.building;
-    if (!nb || (nb.type !== 'belt' && nb.type !== 'splitter' && nb.type !== 'tunnel') || nb.item) return false;
+    if (!nb || (nb.type !== 'belt' && nb.type !== 'splitter' && nb.type !== 'sorter' && nb.type !== 'tunnel') || nb.item) return false;
     const sprite = this.scene.add
       .image(fromX * TILE + TILE / 2, fromY * TILE + TILE / 2, ITEM_TEXTURE[type])
       .setDepth(4);
@@ -171,7 +190,7 @@ export class ConveyorSystem {
    */
   restoreItem(type: ItemType, cx: number, cy: number, px: number, py: number, alpha = 1): ItemEnt | null {
     const host = this.grid.cellAt(cx, cy)?.building;
-    if (!host || (host.type !== 'belt' && host.type !== 'splitter' && host.type !== 'tunnel') || host.item) return null;
+    if (!host || (host.type !== 'belt' && host.type !== 'splitter' && host.type !== 'sorter' && host.type !== 'tunnel') || host.item) return null;
     const sprite = this.scene.add.image(px, py, ITEM_TEXTURE[type]).setDepth(4).setAlpha(alpha);
     const it: ItemEnt = { type, cx, cy, sprite };
     host.item = it;

@@ -3,6 +3,7 @@ import { Mods, NO_MODS } from './mods';
 
 export const BELT = { cost: 5 };
 export const SPLITTER = { cost: 20 };
+export const SORTER = { cost: 25 };
 export const TUNNEL = { cost: 15, reach: 4 }; // exit must be ≤ reach tiles ahead, same facing
 /** Consumes finished goods for research. Has no output, so it needs no facing. */
 export const LAB = { cost: 200 };
@@ -539,6 +540,7 @@ export const BUILD_INFO: BuildInfo[] = [
   { type: 'belt', name: 'Belt', cost: BELT.cost, hotkey: '1', cat: 'logistics', desc: 'Moves items one per tile. Drag to paint a line — it turns corners with you.' },
   { type: 'splitter', name: 'Splitter', cost: SPLITTER.cost, hotkey: '2', cat: 'logistics', desc: 'Splits a belt between straight/left/right outputs.' },
   { type: 'tunnel', name: 'Tunnel', cost: TUNNEL.cost, hotkey: '3', cat: 'logistics', desc: 'Items dive underground and surface at the next tunnel facing the same way (≤4 tiles) — crosses anything, even the enemy path.' },
+  { type: 'sorter', name: 'Sorter', cost: SORTER.cost, hotkey: '0', cat: 'logistics', desc: 'Tap to cycle its filter. Matching items are guaranteed straight; everything else alternates left/right. Unconfigured, it works like a splitter.' },
   { type: 'miner', name: 'Miner', cost: MINER.cost, hotkey: '4', cat: 'production', desc: 'Place on ore or crystal. Digs whatever it stands on — crystal comes out slower.' },
   { type: 'press', name: 'Press', cost: MACHINES.press.cost, hotkey: '5', cat: 'production', desc: '1 ore → 1 ammo. Feeds gun towers — and every other machine downstream.' },
   { type: 'forge', name: 'Forge', cost: MACHINES.forge.cost, hotkey: '6', cat: 'production', desc: '2 ammo → 1 shell. Feeds cannons. Belt ammo in from a press.' },

@@ -39,7 +39,7 @@ import { GridSystem, minedResource } from '../systems/GridSystem';
 import { LogisticsSystem } from '../systems/LogisticsSystem';
 import { ProductionSystem } from '../systems/ProductionSystem';
 import { WaveSystem } from '../systems/WaveSystem';
-import { Building, BuildingType, Dir, PathId } from '../types';
+import { Building, BuildingType, Dir, ItemType, PathId } from '../types';
 import { beltRun } from '../systems/beltPaint';
 import { BELT_FRAME_KEYS } from './BootScene';
 import {
@@ -86,6 +86,27 @@ const PATH_COLORS: Record<PathId, number> = {
   volley: 0xff7ad9,
   cryostasis: 0x9fd8ff,
   blizzard: 0xe0f2ff,
+};
+
+/** Tap order is a visible contract: the player learns it by cycling in place. */
+const SORTER_FILTERS: readonly (ItemType | null)[] = [
+  null,
+  'ore',
+  'crystal',
+  'ammo',
+  'shell',
+  'piercing',
+  'coolant',
+];
+
+/** The same material colours the item textures use, so the filter reads at a glance. */
+const SORTER_FILTER_COLOR: Record<ItemType, number> = {
+  ore: 0xb35c1e,
+  crystal: 0x2f7f9e,
+  ammo: 0xb8962e,
+  shell: 0xa85a1e,
+  piercing: 0x6bd4ff,
+  coolant: 0x9fd8ff,
 };
 
 export class GameScene extends Phaser.Scene {
@@ -896,7 +917,9 @@ export class GameScene extends Phaser.Scene {
       b.inputs = { ...(sb.in ?? {}) };
       b.outputBuf = sb.outBuf ?? 0;
       b.outIdx = sb.outIdx ?? 0;
+      b.filter = sb.filter ?? null;
       b.invested = sb.inv;
+      this.paintSorterFilter(b);
       for (let mk = 2; mk <= b.mk; mk++) this.addMkPip(b, mk);
     }
     for (const si of save.items) {
@@ -1021,9 +1044,11 @@ export class GameScene extends Phaser.Scene {
         if (b) this.requestSell(b);
         return;
       }
-      // Towers open their upgrade panel; everything else turns. Re-aiming a
-      // belt or a machine used to mean selling it and building it again.
-      if (b && !isTower(b.type)) this.rotateBuilding(b);
+      // Sorters spend their tap on configuration; R and Shift+wheel still go
+      // through rotateAt, so changing the guaranteed line never also re-aims it.
+      // Towers open their panel; every other building turns as before.
+      if (b?.type === 'sorter') this.cycleSorterFilter(b);
+      else if (b && !isTower(b.type)) this.rotateBuilding(b);
       else this.selectTower(b ?? null);
     });
 
@@ -1288,7 +1313,7 @@ export class GameScene extends Phaser.Scene {
     const cx = tx * TILE + TILE / 2;
     const cy = ty * TILE + TILE / 2;
     const tower = isTower(type);
-    const flat = type === 'belt' || type === 'splitter' || type === 'tunnel';
+    const flat = type === 'belt' || type === 'splitter' || type === 'sorter' || type === 'tunnel';
     // The lab has no output, so it has no facing to show — leave it upright
     // however the build cursor happened to be rotated.
     const facing = type !== 'lab';
@@ -1310,6 +1335,7 @@ export class GameScene extends Phaser.Scene {
       sprite,
       item: null,
       outIdx: 0,
+      filter: null,
       timer: 0,
       crafting: false,
       inputs: {},
@@ -1395,6 +1421,28 @@ export class GameScene extends Phaser.Scene {
     this.requestSave();
   }
 
+  /** Advance the one in-world configuration this building owns. */
+  private cycleSorterFilter(b: Building): void {
+    const current = b.filter ?? null;
+    const next = (SORTER_FILTERS.indexOf(current) + 1) % SORTER_FILTERS.length;
+    b.filter = SORTER_FILTERS[next];
+    // The index means three outputs when unconfigured and two when configured;
+    // restarting it makes the first choice predictable after either transition.
+    b.outIdx = 0;
+    this.paintSorterFilter(b);
+    this.tweens.add({ targets: b.sprite, scale: 1.12, duration: 70, yoyo: true });
+    sfx.place();
+    this.requestSave();
+  }
+
+  /** Null keeps the pale procedural art; a real filter wears its item's colour. */
+  private paintSorterFilter(b: Building): void {
+    if (b.type !== 'sorter') return;
+    const filter = b.filter ?? null;
+    if (filter) b.sprite.setTint(SORTER_FILTER_COLOR[filter]);
+    else b.sprite.clearTint();
+  }
+
   /** Above this, selling asks twice — a stray right-click should not vaporise a Mk4 tower. */
   private static readonly SELL_CONFIRM_OVER = 150;
   private static readonly SELL_CONFIRM_MS = 2500;
@@ -1409,7 +1457,7 @@ export class GameScene extends Phaser.Scene {
     // accept parks at the head of a belt forever and backs the whole line up
     // behind it — and the only recovery used to be selling the belt out from
     // under it and rebuilding, which is the factory game equivalent of burning
-    // the house down to get rid of a wasp. Only belts, splitters and tunnels can
+    // the house down to get rid of a wasp. Only carriers can
     // hold an item at all, so `b.item` is the whole test.
     if (b.item) {
       this.conveyor.destroyItem(b.item);

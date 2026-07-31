@@ -52,6 +52,23 @@ export class BootScene extends Phaser.Scene {
     g.generateTexture('splitter', 32, 32);
     g.clear();
 
+    // Sorter: the same three exits, but a funnel/diamond at the decision point
+    // makes the filtering role legible before any tint says what it is filtering.
+    g.fillStyle(0x262b38);
+    g.fillRect(0, 0, 32, 32);
+    g.fillStyle(0x465268);
+    g.fillRect(2, 2, 28, 28);
+    g.fillStyle(0xdce7f5);
+    g.fillTriangle(20, 12, 27, 16, 20, 20); // straight (E)
+    g.fillTriangle(12, 12, 16, 5, 20, 12); // up (left of E)
+    g.fillTriangle(12, 20, 16, 27, 20, 20); // down (right of E)
+    g.fillStyle(0x161b26);
+    g.fillTriangle(5, 9, 15, 16, 5, 23);
+    g.fillStyle(0xdce7f5);
+    g.fillTriangle(11, 12, 17, 16, 11, 20);
+    g.generateTexture('sorter', 32, 32);
+    g.clear();
+
     // Tunnel: belt stub diving into a dark portal on the East side
     g.fillStyle(0x262b38);
     g.fillRect(0, 0, 32, 32);

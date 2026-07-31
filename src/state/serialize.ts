@@ -45,6 +45,8 @@ export interface SavedBuilding {
   inCry?: number;
   outBuf?: number;
   outIdx?: number;
+  /** absent keeps a sorter useful as an ordinary splitter in older saves */
+  filter?: ItemType | null;
 }
 
 export interface SavedItem {
@@ -156,6 +158,7 @@ export function captureRun(
       if (buffered.length > 0) sb.in = Object.fromEntries(buffered);
       if (b.outputBuf > 0) sb.outBuf = b.outputBuf;
       if (b.outIdx > 0) sb.outIdx = b.outIdx;
+      if (b.type === 'sorter' && b.filter) sb.filter = b.filter;
       return sb;
     }),
     items: items.map((it) => {
@@ -169,6 +172,7 @@ export function captureRun(
 const BUILDING_TYPES: readonly BuildingType[] = [
   'belt',
   'splitter',
+  'sorter',
   'tunnel',
   'miner',
   'press',
@@ -228,7 +232,7 @@ const MAX_TIMER = 3_600;
 const MAX_RESEARCH = 1_000_000_000;
 
 /** Cells an item may legitimately rest on — the same set `ConveyorSystem` will accept. */
-const ITEM_HOSTS: readonly BuildingType[] = ['belt', 'splitter', 'tunnel'];
+const ITEM_HOSTS: readonly BuildingType[] = ['belt', 'splitter', 'sorter', 'tunnel'];
 
 /**
  * Structural validation of an untrusted save (localStorage can be hand-edited,
@@ -281,6 +285,13 @@ export function validateSave(raw: unknown): SaveV1 | null {
     if (b.timer !== undefined && (!isFiniteNum(b.timer) || b.timer < 0 || b.timer > MAX_TIMER)) return null;
     if (b.outIdx !== undefined && !isCount(b.outIdx, 2)) return null; // splitter round-robin: straight/left/right
     if (b.crafting !== undefined && typeof b.crafting !== 'boolean') return null;
+    // A filter on any other building is inert state at best and a sign of a
+    // hand-edited save at worst. Null is accepted explicitly because clients
+    // may write the useful-by-default, ordinary-splitter mode rather than omit it.
+    if (b.filter !== undefined) {
+      if (type !== 'sorter') return null;
+      if (b.filter !== null && !ITEM_TYPES.includes(b.filter as ItemType)) return null;
+    }
 
     // Machine buffers: only machines have them, only for items their own recipe
     // accepts, and never above the buffer's cap. Restoring a machine holding

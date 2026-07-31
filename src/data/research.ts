@@ -85,6 +85,8 @@ export interface ResearchCard {
   max: number;
   /** offered only when the run has something for it to improve */
   needs?: (ctx: DrawContext) => boolean;
+  /** taking either side of a branch permanently removes the other from this run's pool */
+  excludes?: readonly string[];
   /** folded into the run's Mods, once per stack. Omitted by one-shot cards. */
   apply?: (m: Mods) => void;
   /** immediate, un-stackable effect resolved at pick time (never re-applied on load) */
@@ -93,6 +95,8 @@ export interface ResearchCard {
 
 const hasTower = (kind: string) => (ctx: DrawContext) => (ctx.towers[kind] ?? 0) > 0;
 const hasAnyTower = (ctx: DrawContext) => Object.values(ctx.towers).some((n) => n > 0);
+const hasDamageTower = (ctx: DrawContext) =>
+  Object.entries(ctx.towers).some(([kind, n]) => kind !== 'cryo' && n > 0);
 
 export const CARDS: ResearchCard[] = [
   {
@@ -101,7 +105,7 @@ export const CARDS: ResearchCard[] = [
     desc: '+15% tower damage',
     weight: 10,
     max: 6,
-    needs: hasAnyTower,
+    needs: hasDamageTower,
     apply: (m) => (m.damage *= 1.15),
   },
   {
@@ -128,6 +132,7 @@ export const CARDS: ResearchCard[] = [
     desc: '+20% belt speed — the whole factory moves faster',
     weight: 8,
     max: 4,
+    needs: (ctx) => ctx.belts > 0,
     apply: (m) => (m.beltSpeed *= 1.2),
   },
   {
@@ -182,6 +187,90 @@ export const CARDS: ResearchCard[] = [
     max: 3,
     apply: (m) => (m.researchValue *= 1.25),
   },
+  // Makes the player choose whether transport or conversion owns the factory's spare capacity.
+  {
+    id: 'continuous_flow',
+    name: 'CONTINUOUS FLOW',
+    desc: 'Belts run 45% faster, but machines craft 20% slower',
+    weight: 18,
+    max: 1,
+    needs: (ctx) => ctx.belts > 0 && ctx.machines > 0,
+    excludes: ['batch_production'],
+    apply: (m) => {
+      m.beltSpeed *= 1.45;
+      m.craftSpeed *= 0.8;
+    },
+  },
+  // Makes the same transport-versus-conversion decision from the opposite bottleneck.
+  {
+    id: 'batch_production',
+    name: 'BATCH PRODUCTION',
+    desc: 'Machines craft 40% faster, but belts run 18% slower',
+    weight: 18,
+    max: 1,
+    needs: (ctx) => ctx.belts > 0 && ctx.machines > 0,
+    excludes: ['continuous_flow'],
+    apply: (m) => {
+      m.craftSpeed *= 1.4;
+      m.beltSpeed *= 0.82;
+    },
+  },
+  // Asks whether the factory should flood its inputs now and solve processing later.
+  {
+    id: 'feed_the_line',
+    name: 'FEED THE LINE',
+    desc: 'Miners run 45% faster, but machines craft 18% slower',
+    weight: 18,
+    max: 1,
+    needs: (ctx) => ctx.miners > 0 && ctx.machines > 0,
+    excludes: ['pull_production'],
+    apply: (m) => {
+      m.minerSpeed *= 1.45;
+      m.craftSpeed *= 0.82;
+    },
+  },
+  // Asks whether existing stockpiles can support faster processing without more extraction.
+  {
+    id: 'pull_production',
+    name: 'PULL PRODUCTION',
+    desc: 'Machines craft 45% faster, but miners run 18% slower',
+    weight: 18,
+    max: 1,
+    needs: (ctx) => ctx.miners > 0 && ctx.machines > 0,
+    excludes: ['feed_the_line'],
+    apply: (m) => {
+      m.craftSpeed *= 1.45;
+      m.minerSpeed *= 0.82;
+    },
+  },
+  // Trades target churn for ammunition efficiency: fewer, heavier shots must not miss.
+  {
+    id: 'heavy_shots',
+    name: 'HEAVY SHOTS',
+    desc: 'Tower damage +65%, but fire rate -30%',
+    weight: 18,
+    max: 1,
+    needs: hasDamageTower,
+    excludes: ['storm_fire'],
+    apply: (m) => {
+      m.damage *= 1.65;
+      m.fireRate *= 0.7;
+    },
+  },
+  // Trades ammunition efficiency for rapid retargeting against crowds and leaks.
+  {
+    id: 'storm_fire',
+    name: 'STORM FIRE',
+    desc: 'Fire rate +65%, but tower damage -28%',
+    weight: 18,
+    max: 1,
+    needs: hasDamageTower,
+    excludes: ['heavy_shots'],
+    apply: (m) => {
+      m.fireRate *= 1.65;
+      m.damage *= 0.72;
+    },
+  },
   {
     id: 'reinforcements',
     name: 'REINFORCEMENTS',
@@ -230,7 +319,12 @@ export function modsFrom(taken: Record<string, number>, base: Partial<Mods> = {}
 
 /** Cards that could still be offered: not maxed out, and relevant to this run. */
 export function offerable(ctx: DrawContext): ResearchCard[] {
-  return CARDS.filter((c) => (ctx.taken[c.id] ?? 0) < c.max && (!c.needs || c.needs(ctx)));
+  return CARDS.filter(
+    (c) =>
+      (ctx.taken[c.id] ?? 0) < c.max &&
+      !c.excludes?.some((id) => (ctx.taken[id] ?? 0) > 0) &&
+      (!c.needs || c.needs(ctx)),
+  );
 }
 
 /**

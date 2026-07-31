@@ -10,6 +10,7 @@ export type ItemType = 'ore' | 'crystal' | 'ammo' | 'shell' | 'piercing' | 'cool
 export type BuildingType =
   | 'belt'
   | 'splitter'
+  | 'sorter'
   | 'tunnel'
   | 'miner'
   | 'press'
@@ -51,10 +52,17 @@ export interface Building {
   y: number;
   dir: Dir;
   sprite: Phaser.GameObjects.Image;
-  /** belt/splitter: the single item slot */
+  /** carriers: the single item slot */
   item: ItemEnt | null;
   /** splitter: round-robin output index (0=straight, 1=left, 2=right) */
   outIdx: number;
+  /**
+   * Sorter: the item type routed to its straight output, or null for "not yet
+   * configured". A missing choice must preserve ordinary splitter routing, so a
+   * newly built sorter — or one restored from a save written before sorters
+   * existed — can never trap a line by silently reserving its straight output.
+   */
+  filter?: ItemType | null;
   /** miner/press: crafting timer (seconds) */
   timer: number;
   /** press: currently mid-craft */

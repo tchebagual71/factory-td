@@ -27,8 +27,24 @@ function seeded(seed: number): () => number {
 }
 
 function ctx(over: Partial<DrawContext> = {}): DrawContext {
-  return { towers: { tower: 2, cannon: 1 }, machines: 3, miners: 4, belts: 20, taken: {}, ...over };
+  return {
+    towers: { tower: 2, cannon: 1, lancer: 1, cryo: 1 },
+    machines: 3,
+    miners: 4,
+    belts: 20,
+    taken: {},
+    ...over,
+  };
 }
+
+const NEW_CARD_IDS = [
+  'continuous_flow',
+  'batch_production',
+  'feed_the_line',
+  'pull_production',
+  'heavy_shots',
+  'storm_fire',
+] as const;
 
 /**
  * Mirrors the Lab call site in `ConveyorSystem`: the exact value, scaled by any
@@ -175,13 +191,53 @@ describe('card pool', () => {
     }
   });
 
+  it('gives every situational card a satisfiable prerequisite that refuses an empty run', () => {
+    const built = ctx();
+    const irrelevant: Record<string, DrawContext> = {
+      calibrated_barrels: ctx({ towers: { cryo: 1 } }),
+      autoloaders: ctx({ towers: {} }),
+      optics: ctx({ towers: {} }),
+      greased_belts: ctx({ belts: 0 }),
+      hardened_drills: ctx({ miners: 0 }),
+      tooling: ctx({ machines: 0 }),
+      sabot_rounds: ctx({ towers: { tower: 1 } }),
+      deep_freeze: ctx({ towers: { tower: 1 } }),
+      continuous_flow: ctx({ belts: 0 }),
+      batch_production: ctx({ belts: 0 }),
+      feed_the_line: ctx({ miners: 0 }),
+      pull_production: ctx({ miners: 0 }),
+      heavy_shots: ctx({ towers: { cryo: 1 } }),
+      storm_fire: ctx({ towers: { cryo: 1 } }),
+    };
+    const situational = CARDS.filter((c) => c.needs);
+    expect(Object.keys(irrelevant).sort()).toEqual(situational.map((c) => c.id).sort());
+    for (const card of situational) {
+      expect(card.needs!(built), `${card.id} has an impossible prerequisite`).toBe(true);
+      expect(card.needs!(irrelevant[card.id]), `${card.id} has nothing relevant to improve`).toBe(false);
+    }
+  });
+
+  it('weights the one-shot branches strongly enough to survive the repeatable multiplier pool', () => {
+    const branchWeight = CARDS.filter((c) => NEW_CARD_IDS.includes(c.id as (typeof NEW_CARD_IDS)[number])).reduce(
+      (sum, c) => sum + c.weight,
+      0,
+    );
+    const restWeight = CARDS.filter((c) => !NEW_CARD_IDS.includes(c.id as (typeof NEW_CARD_IDS)[number])).reduce(
+      (sum, c) => sum + c.weight,
+      0,
+    );
+    expect(branchWeight).toBeGreaterThan(restWeight);
+  });
+
   it('never offers an upgrade with nothing to improve', () => {
-    const bare = offerable(ctx({ towers: {}, machines: 0, miners: 0 }));
+    const bare = offerable(ctx({ towers: {}, machines: 0, miners: 0, belts: 0 }));
     for (const c of bare) {
       expect(c.id, 'needs a lancer').not.toBe('sabot_rounds');
       expect(c.id, 'needs a cryo field').not.toBe('deep_freeze');
       expect(c.id, 'needs a miner').not.toBe('hardened_drills');
       expect(c.id, 'needs a machine').not.toBe('tooling');
+      expect(c.id, 'needs a belt').not.toBe('greased_belts');
+      expect(NEW_CARD_IDS, `${c.id} is a situational branch`).not.toContain(c.id);
     }
     // ...but a run with those buildings can see them
     expect(offerable(ctx({ towers: { lancer: 1 } })).map((c) => c.id)).toContain('sabot_rounds');
@@ -191,6 +247,16 @@ describe('card pool', () => {
     const card = CARDS.find((c) => c.id === 'optics')!;
     const taken = { optics: card.max };
     expect(offerable(ctx({ taken })).map((c) => c.id)).not.toContain('optics');
+  });
+
+  it('permanently removes the other side of every mutually exclusive branch', () => {
+    for (const id of NEW_CARD_IDS) {
+      const card = cardById(id)!;
+      expect(card.excludes, `${id} must name its opposing branch`).toHaveLength(1);
+      const opposite = card.excludes![0];
+      expect(cardById(opposite)?.excludes).toContain(id);
+      expect(offerable(ctx({ taken: { [id]: 1 } })).map((c) => c.id)).not.toContain(opposite);
+    }
   });
 });
 
@@ -223,7 +289,7 @@ describe('draw', () => {
   });
 
   it('only ever offers cards the context allows', () => {
-    const context = ctx({ towers: {}, machines: 0, miners: 0 });
+    const context = ctx({ towers: {}, machines: 0, miners: 0, belts: 0 });
     for (let seed = 1; seed < 40; seed++) {
       for (const c of draw(context, seeded(seed), 3)) {
         expect(c.needs?.(context) ?? true, `${c.id} offered without its prerequisite`).toBe(true);
@@ -235,6 +301,10 @@ describe('draw', () => {
 describe('modsFrom', () => {
   it('an untaken run is a no-op', () => {
     expect(modsFrom({})).toEqual(emptyMods());
+  });
+
+  it('keeps every untaken new branch neutral', () => {
+    for (const id of NEW_CARD_IDS) expect(modsFrom({ [id]: 0 }), id).toEqual(emptyMods());
   });
 
   it('stacks a card the number of times it was taken', () => {
@@ -252,6 +322,21 @@ describe('modsFrom', () => {
   it('clamps past a card’s max, so a tampered save cannot stack it forever', () => {
     const card = cardById('calibrated_barrels')!;
     expect(modsFrom({ calibrated_barrels: 999 })).toEqual(modsFrom({ calibrated_barrels: card.max }));
+  });
+
+  it('clamps every new branch at its max', () => {
+    for (const id of NEW_CARD_IDS) {
+      const card = cardById(id)!;
+      expect(modsFrom({ [id]: 999 }), id).toEqual(modsFrom({ [id]: card.max }));
+    }
+  });
+
+  it('is idempotent for the same saved counts', () => {
+    const taken = { continuous_flow: 1, feed_the_line: 1, heavy_shots: 1, optics: 2 };
+    const once = modsFrom(taken);
+    const twice = modsFrom(taken);
+    expect(twice).toEqual(once);
+    expect(modsFrom(taken)).toEqual(once);
   });
 
   it('ignores ids that no longer exist', () => {
