@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { BUILD_INFO, buildGroupSizes } from '../data/buildings';
-import { controlVisual } from './uiTheme';
+import { controlVisual, UI_COLOR } from './uiTheme';
 import { UIScene } from './UIScene';
 
 class PaletteObject {
   fill: number | undefined;
   stroke: number | undefined;
+  text: string | undefined;
+  color: string | undefined;
   interactive = false;
   handlers = new Map<string, () => void>();
 
@@ -15,6 +17,8 @@ class PaletteObject {
   on(event: string, handler: () => void): this { this.handlers.set(event, handler); return this; }
   setFillStyle(color: number): this { this.fill = color; return this; }
   setScale(): this { return this; }
+  setText(text: string): this { this.text = text; return this; }
+  setColor(color: string): this { this.color = color; return this; }
 }
 
 describe('UIScene description handoff', () => {
@@ -56,5 +60,45 @@ describe('UIScene description handoff', () => {
     expect(frame).toBeDefined();
     frame!.handlers.get('pointerover')!();
     expect(frame!.stroke).toBe(controlVisual('hover').stroke);
+  });
+
+  it('restores a selected build slot gold rim after hover-out', () => {
+    const frames: PaletteObject[] = [];
+    const object = () => new PaletteObject();
+    const scene = {
+      add: {
+        container: () => ({ add: () => undefined }),
+        rectangle: (_x: number, _y: number, _w: number, _h: number, fill: number) => {
+          const frame = object();
+          frame.fill = fill;
+          frames.push(frame);
+          return frame;
+        },
+        image: object,
+        text: object,
+      },
+      slotColor: new Map(),
+      paletteFrames: new Map(),
+      paletteButtons: new Map(),
+      paletteState: new Map(),
+      showDesc: () => undefined,
+      showHint: () => undefined,
+    };
+    const proto = UIScene.prototype as unknown as {
+      buildPalette(layout: unknown): void;
+      refreshSelection(type: 'belt'): void;
+    };
+    proto.buildPalette.call(scene, {
+      slots: BUILD_INFO.map((_, index) => ({ x: index * 80, y: 0, w: 76, h: 64 })),
+      groupHeaders: buildGroupSizes().map((_, index) => ({ x: index * 200, y: 0, w: 180, h: 11 })),
+    });
+    proto.refreshSelection.call(scene, 'belt');
+    const frame = scene.paletteFrames.get('belt') as PaletteObject;
+    const state = scene.paletteState.get('belt') as PaletteObject;
+    frame.handlers.get('pointerover')!();
+    frame.handlers.get('pointerout')!();
+
+    expect(frame.stroke).toBe(UI_COLOR.money.hex);
+    expect(state.text).toBe('SELECTED');
   });
 });

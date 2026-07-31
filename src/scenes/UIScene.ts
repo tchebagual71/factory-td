@@ -562,7 +562,10 @@ export class UIScene extends Phaser.Scene {
         this.showDesc(info.desc, cat.css);
       });
       frame.on('pointerout', () => {
-        frame.setFillStyle(UI_COLOR.surfaceRaised.hex).setStrokeStyle(2, cat.color, 0.45);
+        const selected = this.selectedType === info.type;
+        frame
+          .setFillStyle(UI_COLOR.surfaceRaised.hex)
+          .setStrokeStyle(selected ? 3 : 2, selected ? UI_COLOR.money.hex : cat.color, selected ? 1 : 0.45);
         this.showHint();
       });
       container.add([
