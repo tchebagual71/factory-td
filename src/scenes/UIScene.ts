@@ -557,11 +557,12 @@ export class UIScene extends Phaser.Scene {
         .setInteractive({ useHandCursor: true });
       frame.on('pointerdown', () => GameState.events.emit('ui:select', info.type));
       frame.on('pointerover', () => {
-        frame.setFillStyle(controlVisual('hover', cat.color).fill);
+        const hover = controlVisual('hover', cat.color);
+        frame.setFillStyle(hover.fill).setStrokeStyle(2, hover.stroke);
         this.showDesc(info.desc, cat.css);
       });
       frame.on('pointerout', () => {
-        frame.setFillStyle(UI_COLOR.surfaceRaised.hex);
+        frame.setFillStyle(UI_COLOR.surfaceRaised.hex).setStrokeStyle(2, cat.color, 0.45);
         this.showHint();
       });
       container.add([
