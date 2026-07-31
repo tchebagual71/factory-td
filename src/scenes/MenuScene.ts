@@ -22,6 +22,7 @@ import { meta } from '../state/meta';
 import { clearLocal, lastPickedMap, loadLocal, setPendingLoad, setPendingMap } from '../state/persistence';
 import { progress } from '../state/progress';
 import { isoSupported, renderMode, toggleRenderMode } from '../state/renderMode';
+import { achievementCells, achievementLayout } from './achievementLayout';
 import { anchorInput } from '../utils/htmlInput';
 import { getVolume, isMuted, setVolume, sfx, toggleMute } from '../utils/sfx';
 
@@ -573,12 +574,18 @@ export class MenuScene extends Phaser.Scene {
     const top = this.modalTop(H);
     const left = GAME_W / 2 - W / 2 + 44;
 
+    // The instructions have to name the control the player actually has. The
+    // footer already adapted to touch while these steps still said "press R"
+    // and "press SPACE" to someone holding a phone with no keyboard.
+    const turnIt = IS_TOUCH ? 'tap ROTATE before placing to turn it' : 'press R before placing to turn it';
+    const sendIt = IS_TOUCH ? 'Tap SEND WAVE' : 'Press SPACE';
+
     const steps: [string, string][] = [
-      ['1.  MINE', 'Put a MINER on an orange ore tile. It digs one ore at a time and pushes it out the side it faces — press R before placing to turn it.'],
+      ['1.  MINE', `Put a MINER on an orange ore tile. It digs one ore at a time and pushes it out the side it faces — ${turnIt}.`],
       ['2.  BELT IT', 'Drag with BELT selected to paint a line. The belts follow your drag, corners included. Items ride the belt one per tile.'],
       ['3.  MAKE AMMO', 'Point the belt into a PRESS (1 ore → 1 ammo). Ammo feeds guns directly — and it is what every deeper machine runs on: FORGE (2 ammo → shell), ASSEMBLER (2 ammo + 1 crystal → piercing round), CHILLER (1 ammo → 2 coolant).'],
       ['4.  FEED THE GUNS', 'Belt finished rounds into a tower. A tower with no ammo turns grey and stops firing — that, not money, is what loses runs. Use SPLITTERS to serve your guns and your deeper machines from one press line.'],
-      ['5.  SEND THE WAVE', 'Press SPACE when you are ready. Sending early pays a bonus that ticks down while you build. Kills and clears pay for the next expansion.'],
+      ['5.  SEND THE WAVE', `${sendIt} when you are ready. Sending early pays a bonus that ticks down while you build. Kills and clears pay for the next expansion.`],
       ['6.  RESEARCH', 'Build a LAB and belt finished rounds into it instead of into a gun. It converts them to research, and every level lets you pick one of three permanent upgrades. That is the standing decision of the whole game: arm the guns now, or buy power for the rest of the run.'],
     ];
     let y = top + 84;
@@ -715,31 +722,98 @@ export class MenuScene extends Phaser.Scene {
 
   // ---------- achievements ----------
 
-  private showAchievements(): void {
-    const H = 560;
-    this.openModal(H);
-    this.modalTitle('ACHIEVEMENTS', H);
+  /**
+   * The achievements browser. Paginated, because the list outgrew a single
+   * panel: at 28 entries the old fixed-height layout drew its last third below
+   * the modal and partly below the canvas. All geometry comes from the pure,
+   * tested `achievementLayout` — nothing here picks a coordinate.
+   */
+  private showAchievements(page = 0): void {
+    const grid = achievementLayout({ gameW: GAME_W, gameH: GAME_H, count: ACHIEVEMENTS.length, touch: IS_TOUCH });
+    const shown = Phaser.Math.Clamp(page, 0, grid.pages - 1);
+    this.openModal(grid.modalH, grid.modalW);
+    this.modalTitle(
+      grid.pages > 1 ? `ACHIEVEMENTS  —  ${shown + 1} / ${grid.pages}` : 'ACHIEVEMENTS',
+      grid.modalH,
+    );
 
-    const colW = 470;
-    const x0 = GAME_W / 2 - colW + 10;
-    ACHIEVEMENTS.forEach((a, i) => {
-      const x = x0 + (i % 2) * colW;
-      const y = this.modalTop(H) + 70 + Math.floor(i / 2) * 52;
+    const unlockedCount = ACHIEVEMENTS.filter((a) => progress.unlocked.has(a.id)).length;
+    this.modal.push(
+      this.add
+        .text(GAME_W / 2, grid.top + 56, `${unlockedCount} of ${ACHIEVEMENTS.length} unlocked`, {
+          ...FONT,
+          fontSize: '12px',
+          color: '#8892a6',
+        })
+        .setOrigin(0.5)
+        .setDepth(12),
+    );
+
+    for (const cell of achievementCells(grid, ACHIEVEMENTS.length, shown, GAME_W)) {
+      const a = ACHIEVEMENTS[cell.index];
+      const { x, y } = cell;
       const got = progress.unlocked.has(a.id);
       const cur = Math.min(progress.stats[a.stat], a.goal);
       const detail = a.unlock ? `${a.desc} — ${a.unlock.label}` : a.desc;
       this.modal.push(
         this.add.text(x, y, got ? '★' : '☆', { ...FONT, fontSize: '20px', color: got ? '#ffe066' : '#3a3f52' }).setDepth(12),
-        this.add.text(x + 30, y - 2, a.name, { ...FONT, fontSize: '13px', fontStyle: 'bold', color: got ? '#e8edf5' : '#8892a6' }).setDepth(12),
-        this.add.text(x + 30, y + 15, `${detail}  (${cur}/${a.goal})`, { ...FONT, fontSize: '10px', color: '#8892a6' }).setDepth(12),
-        this.add.rectangle(x + 30, y + 30, 400, 3, 0x1e2233).setOrigin(0, 0.5).setDepth(12),
         this.add
-          .rectangle(x + 30, y + 30, Math.round(400 * (cur / a.goal)), 3, got ? 0xffe066 : 0x5ef078)
+          .text(x + 30, y - 2, a.name, { ...FONT, fontSize: '13px', fontStyle: 'bold', color: got ? '#e8edf5' : '#8892a6' })
+          .setDepth(12),
+        this.add
+          .text(x + 30, y + 15, `${detail}  (${cur}/${a.goal})`, {
+            ...FONT,
+            fontSize: '10px',
+            color: '#8892a6',
+            wordWrap: { width: grid.barW },
+          })
+          .setDepth(12),
+        this.add.rectangle(x + 30, y + 30, grid.barW, 3, 0x1e2233).setOrigin(0, 0.5).setDepth(12),
+        this.add
+          .rectangle(x + 30, y + 30, Math.round(grid.barW * (cur / a.goal)), 3, got ? 0xffe066 : 0x5ef078)
           .setOrigin(0, 0.5)
           .setDepth(12),
       );
-    });
-    this.modalClose(H);
+    }
+
+    if (grid.pages > 1) {
+      const { w, h } = grid.pagerBtn;
+      const step = (dir: number) => {
+        const next = (shown + dir + grid.pages) % grid.pages; // wraps, so one control reaches everything
+        sfx.place();
+        this.showAchievements(next);
+      };
+      this.modal.push(
+        ...this.pagerButton(grid.prevX, grid.pagerY, w, h, '‹', () => step(-1)),
+        ...this.pagerButton(grid.nextX, grid.pagerY, w, h, '›', () => step(1)),
+      );
+    }
+
+    this.modalClose(grid.modalH);
+  }
+
+  /** One pager arrow. Returns its parts so the caller can register them for teardown. */
+  private pagerButton(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    glyph: string,
+    onClick: () => void,
+  ): Phaser.GameObjects.GameObject[] {
+    const frame = this.add
+      .rectangle(x, y, w, h, 0x1e2233)
+      .setStrokeStyle(2, 0x2b3040)
+      .setDepth(12)
+      .setInteractive({ useHandCursor: true });
+    const label = this.add
+      .text(x, y, glyph, { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(0.5)
+      .setDepth(13);
+    frame.on('pointerover', () => frame.setStrokeStyle(2, 0xffe066));
+    frame.on('pointerout', () => frame.setStrokeStyle(2, 0x2b3040));
+    frame.on('pointerdown', onClick);
+    return [frame, label];
   }
 
   // ---------- leaderboard ----------

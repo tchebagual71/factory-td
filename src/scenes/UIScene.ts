@@ -7,7 +7,7 @@ import { activeMap, prospectCost, prospectKind } from '../data/map';
 import { ResearchCard, researchForLevel } from '../data/research';
 import { earlySendBonus, waveDef, WAVE_KIND_LABEL } from '../data/waves';
 import { pushAchievements } from '../services/cloud';
-import { ammoDeficits, ammoTotal, GameState, WaveTally } from '../state/GameState';
+import { ammoDeficits, ammoTotal, ammoUndelivered, GameState, WaveTally } from '../state/GameState';
 import { meta } from '../state/meta';
 import { progress } from '../state/progress';
 import { renderMode } from '../state/renderMode';
@@ -130,7 +130,10 @@ export class UIScene extends Phaser.Scene {
       researchBox.setVisible(show);
       this.researchBar.setVisible(show);
       this.researchText.setVisible(show);
-      this.researchText.setText(`⚗ RESEARCH  Lv${level}   ${points}/${need}`);
+      // Research banks as an exact fraction (see ConveyorSystem); the player is
+      // shown whole points, floored so the bar never claims a level is reached
+      // a fraction before it is.
+      this.researchText.setText(`⚗ RESEARCH  Lv${level}   ${Math.floor(points)}/${need}`);
       this.researchBar.width = Math.round(barW * Phaser.Math.Clamp(points / need, 0, 1));
     });
 
@@ -235,7 +238,10 @@ export class UIScene extends Phaser.Scene {
       this.clearCards();
       this.closeHelp();
       GameState.finishDraw();
-      const prevBest = progress.stats.bestWave;
+      // Compare against the run-start snapshot, not the live stat: WaveSystem
+      // has been bumping bestWave on every clear, so by now it equals the wave
+      // we died on and nothing could ever beat it.
+      const prevBest = GameState.bestWaveAtStart;
       progress.recordMax('bestWave', GameState.wave);
       const newBest = prevBest > 0 && GameState.wave > prevBest;
       // Bank the run's ⚙ SCRAP before the card is drawn, so the number shown is
@@ -298,6 +304,11 @@ export class UIScene extends Phaser.Scene {
     const x = GAME_W / 2 - W / 2;
     const y = GAME_H / 2 - H / 2;
 
+    // Freeze the sim. This is a full-screen wall of text, and on touch there is
+    // no keyboard to pause with — enemies used to keep marching (and leaking)
+    // while the player read the reference. Not a user pause, so `paused` is
+    // untouched and closing restores whatever they had chosen.
+    GameState.modalOpen = true;
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.78).setOrigin(0).setDepth(80).setInteractive();
     dim.on('pointerdown', () => this.closeHelp());
     const panel = this.add
@@ -322,7 +333,7 @@ export class UIScene extends Phaser.Scene {
           ['Build', 'Three shelves: LOGI, PROD, GUNS. Tap a slot, then the board; tap it again to cancel.'],
           ['Belts', 'Drag across the board to paint a line — corners included.'],
           ['Rotate', 'ROTATE sets the facing before you build; tap a placed belt to turn it.'],
-          ['Sell', 'SELL, then tap a building — refunds half. Or long-press it.'],
+          ['Sell', 'SELL, then tap a building — refunds half. Or long-press it. On a belt carrying a stuck item, the first tap clears the item instead.'],
           ['Upgrade', 'Tap a placed tower to open its upgrade panel.'],
           ['Wave', 'SEND WAVE. AUTO sends them back to back; ×1/×2/×3 is game speed.'],
           ['Logistics', 'LOGI shades belts by throughput and shows each tower’s ammo uptime.'],
@@ -333,8 +344,8 @@ export class UIScene extends Phaser.Scene {
           // this reference quietly lying to the player.
           ['Build', `Pick from the three shelves in the bar, or use the hotkeys listed here. ${key('cancel')} cancels.`],
           ['Belts', 'Hold and drag to paint a line; it turns corners with your drag.'],
-          ['Rotate', `${key('rotate')} turns whatever is under the cursor, or the pending build on bare ground.`],
-          ['Sell', 'Right-click a building — refunds half. Expensive ones ask twice.'],
+          ['Rotate', `${key('rotate')} turns whatever is under the cursor, or the pending build on bare ground. Shift+wheel turns it either way.`],
+          ['Sell', 'Right-click a building — refunds half. Expensive ones ask twice. On a belt carrying a stuck item, the first right-click clears the item instead.'],
           ['Upgrade', `Click a placed tower, then ${key('upgradeA')} (or ${key('upgradeB')} for the second path at Mk3).`],
           ['Wave', `${key('sendWave')} sends it · ${key('speed')} cycles speed ×1/×2/×3 · ${key('pause')} pauses.`],
           ['Logistics', `${key('overlay')} shades belts by throughput and shows each tower’s ammo uptime · ${key('mute')} mutes.`],
@@ -384,6 +395,7 @@ export class UIScene extends Phaser.Scene {
   private closeHelp(): void {
     this.helpLayer.forEach((o) => o.destroy());
     this.helpLayer = [];
+    GameState.modalOpen = false;
   }
 
   /** Shared HUD button: a frame plus a centered label, with hover feedback. */
@@ -648,13 +660,30 @@ export class UIScene extends Phaser.Scene {
    */
   private showWaveSummary(wave: number, t: WaveTally): void {
     this.summaryCard?.destroy();
-    const W = 268;
-    const H = 118;
+    const W = 288;
+    const H = 158;
     const c = this.add.container(GAME_W / 2 - W / 2, 372).setDepth(45).setAlpha(0);
     const short = ammoDeficits(t);
     const deficit = short.length > 0;
     const fired = ammoTotal(t.fired);
     const made = ammoTotal(t.produced);
+    const got = ammoTotal(t.delivered);
+    const lab = ammoTotal(t.toLab);
+    const stranded = ammoUndelivered(t);
+    const magDelta = t.magEnd - t.magStart;
+
+    // The diagnosis, not just the numbers. A shortfall has two very different
+    // causes and they need opposite fixes: not enough was made (widen
+    // production) versus plenty was made and it never arrived (fix the routing).
+    // The old card only ever said "add production".
+    const totalShort = short.reduce((sum, d) => sum + d.short, 0);
+    const routingBound = deficit && stranded >= totalShort;
+    const advice = !deficit
+      ? '✓ supply kept up with the guns'
+      : routingBound
+        ? `⚠ ${short.map((d) => `${d.type} −${d.short}`).join('  ')} — made, but not delivered`
+        : `⚠ ${short.map((d) => `${d.type} −${d.short}`).join('  ')} — add production`;
+
     const bg = this.add.rectangle(0, 0, W, H, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, deficit ? 0xff9f43 : 0x2b3040);
     const rows: Phaser.GameObjects.GameObject[] = [
       bg,
@@ -663,17 +692,21 @@ export class UIScene extends Phaser.Scene {
         ...FONT, fontSize: '11px', color: t.leaked > 0 ? '#ff8b8b' : '#cdd6e4',
       }),
       this.add.text(12, 50, `Income     +$${t.income}`, { ...FONT, fontSize: '11px', color: '#ffe066' }),
-      this.add.text(12, 68, `Ammo       ${fired} fired · ${made} made`, {
-        ...FONT, fontSize: '11px', color: deficit ? '#ff9f43' : '#5ef078',
+      this.add.text(12, 68, `Made       ${made}${lab > 0 ? `   (${lab} to lab)` : ''}`, {
+        ...FONT, fontSize: '11px', color: '#cdd6e4',
       }),
-      this.add.text(
-        12,
-        90,
-        deficit
-          ? `⚠ ${short.map((d) => `${d.type} −${d.short}`).join('  ')} — add production`
-          : '✓ production kept up',
-        { ...FONT, fontSize: '10px', color: deficit ? '#ff9f43' : '#8892a6' },
-      ),
+      this.add.text(12, 86, `Delivered  ${got}${stranded > 0 ? `   (${stranded} never arrived)` : ''}`, {
+        ...FONT, fontSize: '11px', color: stranded > 0 ? '#ff9f43' : '#cdd6e4',
+      }),
+      this.add.text(12, 104, `Fired      ${fired}${t.starved > 0 ? `   (${t.starved} gun${t.starved === 1 ? '' : 's'} ran dry)` : ''}`, {
+        ...FONT, fontSize: '11px', color: deficit || t.starved > 0 ? '#ff9f43' : '#5ef078',
+      }),
+      // The buffer line is what stops a stockpiled wave reading as a success and
+      // a restocking wave reading as a failure.
+      this.add.text(12, 122, `Magazines  ${magDelta >= 0 ? '+' : ''}${magDelta}  (${t.magStart} → ${t.magEnd})`, {
+        ...FONT, fontSize: '11px', color: magDelta < 0 ? '#ff9f43' : '#5ef078',
+      }),
+      this.add.text(12, 142, advice, { ...FONT, fontSize: '10px', color: deficit ? '#ff9f43' : '#8892a6' }),
     ];
     c.add(rows);
     this.summaryCard = c;

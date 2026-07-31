@@ -1,5 +1,13 @@
-import { GRID_H, GRID_W } from '../config';
-import { MAX_MK } from '../data/buildings';
+import { GRID_H, GRID_W, TILE } from '../config';
+import {
+  isMachine,
+  isTower,
+  MACHINES,
+  MAX_MK,
+  recipeNeeds,
+  TOWERS,
+  UPGRADE_TREE,
+} from '../data/buildings';
 import { RESERVES } from '../data/map';
 import { Building, BuildingType, Dir, ItemEnt, ItemType, PathId } from '../types';
 
@@ -189,9 +197,38 @@ function isFiniteNum(n: unknown): n is number {
   return typeof n === 'number' && Number.isFinite(n);
 }
 
-function inGrid(x: unknown, y: unknown): boolean {
-  return isFiniteNum(x) && isFiniteNum(y) && x >= 0 && x < GRID_W && y >= 0 && y < GRID_H;
+/**
+ * Whole numbers only. Anything that indexes the grid, counts items, or picks a
+ * tier must be an integer: `x: 1.5` is finite and in range but addresses no
+ * cell, and a fractional `mk` indexes past the end of an upgrade tier list.
+ */
+function isInt(n: unknown): n is number {
+  return typeof n === 'number' && Number.isInteger(n);
 }
+
+/** An integer in [0, max]. The workhorse for every counter and buffer. */
+function isCount(n: unknown, max: number): n is number {
+  return isInt(n) && n >= 0 && n <= max;
+}
+
+function inGrid(x: unknown, y: unknown): boolean {
+  return isInt(x) && isInt(y) && x >= 0 && x < GRID_W && y >= 0 && y < GRID_H;
+}
+
+/**
+ * Generous ceilings for values that have no natural cap but must not be
+ * absurd — a tampered save should never be able to hand the sim an
+ * astronomically large counter and have it silently propagate into money,
+ * upgrade gating or the HUD.
+ */
+const MAX_INVESTED = 10_000_000;
+const MAX_FED = 10_000_000;
+/** Seconds. Far above any cycle in `buildings.ts`, even with every speed mod stacked. */
+const MAX_TIMER = 3_600;
+const MAX_RESEARCH = 1_000_000_000;
+
+/** Cells an item may legitimately rest on — the same set `ConveyorSystem` will accept. */
+const ITEM_HOSTS: readonly BuildingType[] = ['belt', 'splitter', 'tunnel'];
 
 /**
  * Structural validation of an untrusted save (localStorage can be hand-edited,
@@ -210,43 +247,96 @@ export function validateSave(raw: unknown): SaveV1 | null {
   if (typeof s.auto !== 'boolean') return null;
   if (!Array.isArray(s.buildings) || !Array.isArray(s.items)) return null;
 
-  const seen = new Set<string>();
+  /** cell key -> the building type occupying it, so items can be host-checked below */
+  const occupied = new Map<string, BuildingType>();
   for (const b of s.buildings as Record<string, unknown>[]) {
     if (typeof b !== 'object' || b === null) return null;
     if (!BUILDING_TYPES.includes(b.t as BuildingType)) return null;
+    const type = b.t as BuildingType;
     if (!inGrid(b.x, b.y)) return null;
     if (b.d !== 0 && b.d !== 1 && b.d !== 2 && b.d !== 3) return null;
-    if (!isFiniteNum(b.inv) || b.inv < 0) return null;
-    if (b.mk !== undefined && (!isFiniteNum(b.mk) || b.mk < 1 || b.mk > MAX_MK)) return null;
-    if (b.path !== undefined && b.path !== null && !PATH_IDS.includes(b.path as PathId)) return null;
-    for (const key of ['ammo', 'fed', 'timer', 'inOre', 'inCry', 'outBuf', 'outIdx'] as const) {
-      if (b[key] !== undefined && (!isFiniteNum(b[key]) || (b[key] as number) < 0)) return null;
+    if (!isCount(b.inv, MAX_INVESTED)) return null;
+    if (b.mk !== undefined && (!isInt(b.mk) || b.mk < 1 || b.mk > MAX_MK)) return null;
+
+    // A specialization must belong to *this* tower's own tree. `pathOf` does a
+    // `.find(...)!`, so a cannon carrying 'sniper' yields undefined and throws
+    // the moment combat or the upgrade panel resolves its stats. A globally
+    // valid id is not good enough.
+    if (b.path !== undefined && b.path !== null) {
+      if (!PATH_IDS.includes(b.path as PathId)) return null;
+      if (!isTower(type)) return null;
+      if (!UPGRADE_TREE[type].paths.some((p) => p.id === b.path)) return null;
     }
+    // Past Mk2 a tower must have chosen a path; without one `nextTier` and the
+    // Mk3+ stat lookup have no branch to read.
+    if (isInt(b.mk) && b.mk > 2 && (b.path === undefined || b.path === null)) return null;
+
+    // Ammo is bounded by the magazine the tower actually has, and only towers
+    // have one at all.
+    if (b.ammo !== undefined) {
+      if (!isTower(type)) return null;
+      if (!isCount(b.ammo, TOWERS[type].ammoCap)) return null;
+    }
+    if (!isCount(b.fed ?? 0, MAX_FED)) return null;
+    if (b.timer !== undefined && (!isFiniteNum(b.timer) || b.timer < 0 || b.timer > MAX_TIMER)) return null;
+    if (b.outIdx !== undefined && !isCount(b.outIdx, 2)) return null; // splitter round-robin: straight/left/right
     if (b.crafting !== undefined && typeof b.crafting !== 'boolean') return null;
+
+    // Machine buffers: only machines have them, only for items their own recipe
+    // accepts, and never above the buffer's cap. Restoring a machine holding
+    // stock it can never consume is the exact failure `migrateV1` exists to
+    // prevent — a hand-edited save must not reintroduce it.
+    if (b.outBuf !== undefined) {
+      if (!isMachine(type)) return null;
+      // NOT `outputCap`. A machine starts a cycle whenever its buffer is *below*
+      // the cap and then adds `outputPer`, so a chiller (cap 4, 2 per cycle) can
+      // legitimately finish holding 5. Capping at `outputCap` would reject real
+      // saves and delete the run.
+      const { outputCap, outputPer } = MACHINES[type];
+      if (!isCount(b.outBuf, outputCap + outputPer - 1)) return null;
+    }
     if (b.in !== undefined) {
       if (typeof b.in !== 'object' || b.in === null || Array.isArray(b.in)) return null;
+      if (!isMachine(type)) return null;
       for (const [item, n] of Object.entries(b.in as Record<string, unknown>)) {
         if (!ITEM_TYPES.includes(item as ItemType)) return null;
-        if (!isFiniteNum(n) || n < 0) return null;
+        if (recipeNeeds(type, item as ItemType) === 0) return null;
+        if (!isCount(n, MACHINES[type].inputCap)) return null;
       }
     }
+    // v1-only fields; migrateV1 drops them, but they must still be sane numbers.
+    for (const key of ['inOre', 'inCry'] as const) {
+      if (b[key] !== undefined && !isCount(b[key], Number.MAX_SAFE_INTEGER)) return null;
+    }
+
     const cell = `${b.x},${b.y}`;
-    if (seen.has(cell)) return null; // two buildings on one tile
-    seen.add(cell);
+    if (occupied.has(cell)) return null; // two buildings on one tile
+    occupied.set(cell, type);
   }
 
+  const itemCells = new Set<string>();
   for (const it of s.items as Record<string, unknown>[]) {
     if (typeof it !== 'object' || it === null) return null;
     if (!ITEM_TYPES.includes(it.t as ItemType)) return null;
     if (!inGrid(it.cx, it.cy)) return null;
-    if (!isFiniteNum(it.px) || !isFiniteNum(it.py)) return null;
+    // An item only ever rests on a belt-like cell. Anywhere else it is
+    // unreachable cargo that no system will ever move again.
+    const host = occupied.get(`${it.cx},${it.cy}`);
+    if (!host || !ITEM_HOSTS.includes(host)) return null;
+    // One item per cell is the core conveyor invariant; two would leave an
+    // orphan sprite the belt can never advance.
+    const key = `${it.cx},${it.cy}`;
+    if (itemCells.has(key)) return null;
+    itemCells.add(key);
+    // Sprite position may be mid-glide, but must be on the board.
+    if (!isFiniteNum(it.px) || it.px < 0 || it.px > GRID_W * TILE) return null;
+    if (!isFiniteNum(it.py) || it.py < 0 || it.py > GRID_H * TILE) return null;
     if (it.a !== undefined && (!isFiniteNum(it.a) || it.a < 0 || it.a > 1)) return null;
   }
 
-  if (s.surveys !== undefined && (!isFiniteNum(s.surveys) || s.surveys < 0 || s.surveys > 1000)) return null;
-  for (const key of ['research', 'researchLevel'] as const) {
-    if (s[key] !== undefined && (!isFiniteNum(s[key]) || (s[key] as number) < 0)) return null;
-  }
+  if (s.surveys !== undefined && !isCount(s.surveys, 1000)) return null;
+  if (s.research !== undefined && (!isFiniteNum(s.research) || s.research < 0 || s.research > MAX_RESEARCH)) return null;
+  if (s.researchLevel !== undefined && !isCount(s.researchLevel, 100_000)) return null;
   if (s.taken !== undefined) {
     if (typeof s.taken !== 'object' || s.taken === null || Array.isArray(s.taken)) return null;
     for (const [id, n] of Object.entries(s.taken as Record<string, unknown>)) {

@@ -13,6 +13,19 @@ function uptimeColor(frac: number): string {
   return frac >= GOOD ? '#5ef078' : frac >= OK ? '#ffd75e' : '#ff5555';
 }
 
+/**
+ * The word shown on a stalled tile. Short enough to sit inside a 32px cell, and
+ * the reason the overlay no longer says everything it knows in colour alone —
+ * amber-vs-green is invisible to a red-green colourblind player, and "it is
+ * pulsing" does not say what to do about it.
+ */
+const STALL_LABEL: Record<NonNullable<Building['stallReason']>, string> = {
+  input: 'DRY', // short of an ingredient — widen the supply line
+  output: 'FULL', // finished goods with nowhere to go — widen the outlet
+  empty: 'SPENT', // the deposit is gone; this miner will never run again
+  jam: 'JAM', // a carrier holding something no neighbour will take
+};
+
 /** Belt-likes are the throughput carriers; everything else is a producer or consumer. */
 function isCarrier(b: Building): boolean {
   return b.type === 'belt' || b.type === 'splitter' || b.type === 'tunnel';
@@ -49,12 +62,32 @@ export interface OverlayCell {
 export function overlayCell(b: Building, pulse: number): OverlayCell {
   if (isCarrier(b)) {
     const jammed = !!b.item && b.stalled;
-    return { fill: { color: jammed ? 0xff5555 : 0x5ef078, alpha: jammed ? 0.5 : 0.1 + uptimeOf(b) * 0.5 } };
+    return {
+      fill: { color: jammed ? 0xff5555 : 0x5ef078, alpha: jammed ? 0.5 : 0.1 + uptimeOf(b) * 0.5 },
+      // Only jams get a word. Labelling every belt would bury the one tile the
+      // player actually needs to find under a wall of text.
+      ...(jammed ? { label: STALL_LABEL.jam, labelColor: '#ff5555' } : {}),
+    };
   }
   if (isMachine(b.type) || b.type === 'miner') {
     const starved = b.stalled;
     const throb = 0.35 + 0.25 * pulse;
-    return { stroke: { color: starved ? 0xff9f43 : 0x5ef078, alpha: starved ? throb + 0.35 : 0.4 } };
+    return {
+      stroke: { color: starved ? 0xff9f43 : 0x5ef078, alpha: starved ? throb + 0.35 : 0.4 },
+      // The machine inspector, such as it is: say what this producer is waiting
+      // for. "It is orange" told the player something was wrong but never which
+      // way to fix it — widening the supply of a machine whose *outlet* is
+      // blocked is wasted money.
+      // Healthy machines return no label at all rather than an empty one: the
+      // draw loop allocates a Text per labelled building, and a late-game board
+      // is mostly healthy machines.
+      ...(starved
+        ? {
+            label: STALL_LABEL[b.stallReason ?? 'input'],
+            labelColor: b.stallReason === 'empty' ? '#8892a6' : '#ff9f43',
+          }
+        : {}),
+    };
   }
   if (isTower(b.type)) {
     const up = uptimeOf(b);

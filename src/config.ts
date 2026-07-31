@@ -51,5 +51,15 @@ export const IS_TOUCH = touchCapable;
 
 export const BELT_SPEED = 70; // px/sec item travel speed
 
+/**
+ * Longest real frame, in seconds, that one tick may simulate. Tab-away or a
+ * stalled frame would otherwise teleport enemies through towers.
+ *
+ * Note this is applied *before* the ×1/×2/×3 speed multiplier, so the dt a
+ * system actually receives reaches MAX_DT × 3. Anything deriving a bound from a
+ * frame length must use the dt it was handed, not this constant.
+ */
+export const MAX_DT = 0.05;
+
 export const START_MONEY = 450;
 export const START_LIVES = 20;

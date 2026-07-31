@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { ItemType } from '../types';
+import { MACHINES, MachineType, MINER, RAW_ITEMS, recipeInputs } from './buildings';
 import { emptyMods } from './mods';
 import {
   CARDS,
   cardById,
   DrawContext,
   draw,
+  embodiedValue,
   grantAmount,
   labAccepts,
   modsFrom,
+  ORE_VALUE,
   offerable,
   RESEARCH_VALUE,
   researchForLevel,
@@ -27,6 +30,22 @@ function ctx(over: Partial<DrawContext> = {}): DrawContext {
   return { towers: { tower: 2, cannon: 1 }, machines: 3, miners: 4, belts: 20, taken: {}, ...over };
 }
 
+/**
+ * Mirrors the Lab call site in `ConveyorSystem`: the exact value, scaled by any
+ * research mods, banked *unrounded*.
+ *
+ * It used to round each delivery to a whole point, and that rounding was itself
+ * an exploit — see the PEER REVIEW test below. Research now accumulates as a
+ * fraction and only the level thresholds are whole numbers.
+ */
+function deliveredResearch(item: ItemType, researchMult = 1): number {
+  const value = RESEARCH_VALUE[item];
+  return value === undefined ? 0 : value * researchMult;
+}
+
+/** Every research multiplier a run can actually reach: PEER REVIEW is ×1.25, max 3 stacks. */
+const REACHABLE_MULTIPLIERS = [1, 1.25, 1.25 ** 2, 1.25 ** 3];
+
 describe('lab intake', () => {
   it('accepts manufactured goods only — research must always cost you ammo', () => {
     for (const made of ['ammo', 'shell', 'piercing', 'coolant'] as ItemType[]) {
@@ -37,9 +56,73 @@ describe('lab intake', () => {
     }
   });
 
-  it('pays more for deeper goods than for the ammo they were made from', () => {
-    expect(RESEARCH_VALUE.shell!).toBeGreaterThan(RESEARCH_VALUE.ammo!);
-    expect(RESEARCH_VALUE.piercing!).toBeGreaterThan(RESEARCH_VALUE.shell!);
+  it('keeps raw embodied value separate from raw Lab payout', () => {
+    for (const raw of RAW_ITEMS) {
+      expect(RESEARCH_VALUE[raw], `${raw} must have no payout`).toBeUndefined();
+      expect(labAccepts(raw), `${raw} must be rejected`).toBe(false);
+      expect(deliveredResearch(raw), `${raw} must round to no payout`).toBe(0);
+      expect(embodiedValue(raw), `${raw} must contribute after manufacture`).toBeGreaterThan(0);
+    }
+    expect(embodiedValue('ore')).toBe(ORE_VALUE);
+    expect(embodiedValue('crystal')).toBeCloseTo(ORE_VALUE * (MINER.crystalCycle / MINER.cycle), 12);
+  });
+
+  it('conserves exact embodied value through every machine recipe', () => {
+    for (const type of Object.keys(MACHINES) as MachineType[]) {
+      const stats = MACHINES[type];
+      const inputValue = recipeInputs(type).reduce(
+        (sum, [item, count]) => sum + embodiedValue(item) * count,
+        0,
+      );
+      const outputValue = embodiedValue(stats.output) * stats.outputPer;
+      expect(outputValue, `${type} must conserve its inputs`).toBeCloseTo(inputValue, 12);
+    }
+  });
+
+  /**
+   * Conservation holds in exact arithmetic, but the Lab used to round *each
+   * delivery* to a whole point — and that rounding reintroduced the very
+   * exploit this model exists to kill. Coolant is worth exactly half an ammo,
+   * so with one PEER REVIEW stack the old call site paid `round(2.5) × 2 = 6`
+   * for laundered coolant against `round(5) = 5` for the ammo itself: a 20%
+   * gain for owning one chiller. Research is banked unrounded now, and this
+   * pins that at every multiplier a run can actually reach.
+   */
+  it('cannot be gamed by converting, at any research multiplier a run can reach', () => {
+    for (const mult of REACHABLE_MULTIPLIERS) {
+      for (const type of Object.keys(MACHINES) as MachineType[]) {
+        const stats = MACHINES[type];
+        const inputs = recipeInputs(type).reduce(
+          (sum, [item, count]) => sum + embodiedValue(item) * mult * count,
+          0,
+        );
+        const outputs = deliveredResearch(stats.output, mult) * stats.outputPer;
+        expect(outputs, `${type} creates research at ×${mult}`).toBeLessThanOrEqual(inputs + 1e-9);
+      }
+    }
+  });
+
+  it('specifically: laundering ammo through a chiller never beats labbing it directly', () => {
+    for (const mult of REACHABLE_MULTIPLIERS) {
+      const direct = deliveredResearch('ammo', mult);
+      // one ammo in, `outputPer` coolant out
+      const laundered = deliveredResearch('coolant', mult) * MACHINES.chiller.outputPer;
+      expect(laundered, `chiller launder at ×${mult}`).toBeLessThanOrEqual(direct + 1e-9);
+    }
+  });
+
+  it('derives the current exact and whole-item payouts from conserved material value', () => {
+    expect(RESEARCH_VALUE.ammo).toBe(4);
+    expect(RESEARCH_VALUE.coolant).toBe(2);
+    expect(RESEARCH_VALUE.shell).toBe(8);
+    expect(RESEARCH_VALUE.piercing).toBeCloseTo(14.933333333333334, 12);
+    // Close to the hand-authored 4 / 3 / 10 / 16 these replaced: the designer's
+    // instinct was sound, and coolant — the one that was exploitable — is the
+    // only value that moves materially.
+    expect(deliveredResearch('ammo')).toBe(4);
+    expect(deliveredResearch('coolant')).toBe(2);
+    expect(deliveredResearch('shell')).toBe(8);
+    expect(deliveredResearch('piercing')).toBeCloseTo(14.933333333333334, 12);
   });
 });
 
@@ -56,6 +139,19 @@ describe('researchForLevel', () => {
   it('keeps the first few levels quick, so a new Lab pays off visibly', () => {
     // ~2 magazines of ammo at 4 research each
     expect(researchForLevel(1)).toBeLessThanOrEqual(40);
+  });
+
+  it('keeps level 15 at about 300 ammo sacrificed to the Lab', () => {
+    // Sum the actual rounded level thresholds, then divide by the same whole
+    // ammo payout the simulation awards. This pins cadence at the player-facing
+    // boundary instead of relying on the formula's unrounded approximation.
+    let total = 0;
+    for (let level = 1; level <= 15; level++) total += researchForLevel(level);
+    const ammoRounds = Math.ceil(total / deliveredResearch('ammo'));
+    expect(total).toBe(1190);
+    expect(ammoRounds).toBe(298);
+    expect(ammoRounds).toBeGreaterThanOrEqual(240);
+    expect(ammoRounds).toBeLessThanOrEqual(360);
   });
 
   it('clamps a nonsense level rather than returning NaN', () => {

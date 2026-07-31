@@ -17,6 +17,14 @@ const FROST_TINT = 0xe8f6ff;
 /** How long a hit flash stays on an enemy. Game seconds, so it shortens at ×3 like everything else. */
 const FLASH_SECONDS = 0.05;
 
+/**
+ * Ceiling on spawns drained in a single tick. dt is already clamped to 50ms, and
+ * the tightest interval in `waves.ts` is far above that, so this never binds in
+ * normal play — it exists so a pathological frame cannot dump a whole wave at
+ * the entrance at once.
+ */
+const MAX_SPAWNS_PER_TICK = 4;
+
 /** Spawns waves, walks enemies along the fixed path, handles kills and leaks. */
 export class WaveSystem {
   enemies: Enemy[] = [];
@@ -38,6 +46,7 @@ export class WaveSystem {
     // Bank the early-send bonus before setPhase resets the build clock
     const early = earlySendBonus(GameState.wave, GameState.buildElapsed);
     GameState.tally = emptyTally();
+    GameState.tally.magStart = this.scene.magazineTotal();
     GameState.setPhase('wave');
     const suffix = this.def.kind === 'normal' ? '' : ` — ${this.def.kind.toUpperCase()}`;
     this.scene.bigText(`WAVE ${GameState.wave}${suffix}`);
@@ -57,12 +66,20 @@ export class WaveSystem {
     if (GameState.phase !== 'wave' || !this.def) return;
 
     if (this.toSpawn > 0) {
+      // Carry the overshoot (`+= interval`, never `= interval`) and drain more
+      // than one spawn in a tick when the frame was long. Assigning the interval
+      // quantised spawning to render frames: at ×3 speed dt approaches the 50ms
+      // clamp, so a phone and a desktop produced measurably different waves.
       this.spawnTimer -= dt;
-      if (this.spawnTimer <= 0) {
+      let guard = MAX_SPAWNS_PER_TICK;
+      while (this.toSpawn > 0 && this.spawnTimer <= 0 && guard-- > 0) {
         this.spawn(this.def);
         this.toSpawn -= 1;
-        this.spawnTimer = this.def.interval;
+        this.spawnTimer += this.def.interval;
       }
+      // Hit the guard on a pathological frame: drop the backlog rather than
+      // banking debt that would burst-spawn on every subsequent tick.
+      if (this.spawnTimer < 0) this.spawnTimer = 0;
     }
 
     for (const e of this.enemies) {
@@ -255,10 +272,12 @@ export class WaveSystem {
     // Flawless: the wave ended with nothing having got past the guns.
     if (GameState.tally.leaked === 0) progress.record('flawlessWaves');
     progress.recordMax('bestStreak', GameState.combo.best);
+    GameState.tally.magEnd = this.scene.magazineTotal();
     // Card first, so it reports the wave that just ended, not the next one
     GameState.events.emit('wavesummary', GameState.wave, cloneTally(GameState.tally));
     GameState.nextWave();
     progress.recordMax('bestWave', GameState.wave);
+    progress.flush(); // wave boundary: settle the throttled stat writes with the save
     GameState.setPhase('build');
     this.def = null;
     if (GameState.auto) {

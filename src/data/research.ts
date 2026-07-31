@@ -1,4 +1,5 @@
 import { ItemType } from '../types';
+import { MACHINES, MINER, producerOf, recipeInputs } from './buildings';
 import { emptyMods, Mods } from './mods';
 
 /**
@@ -13,13 +14,39 @@ import { emptyMods, Mods } from './mods';
  * can be tested deterministically.
  */
 
-/** Research paid per item delivered to a lab. Raw resources are not accepted at all. */
-export const RESEARCH_VALUE: Partial<Record<ItemType, number>> = {
-  ammo: 4,
-  coolant: 3,
-  shell: 10,
-  piercing: 16,
-};
+/** One unit of ordinary ore becomes one ammo, preserving the established four-point Lab cadence. */
+export const ORE_VALUE = 4;
+
+const embodiedMemo: Partial<Record<ItemType, number>> = {};
+
+/**
+ * Research potential carried by an item, including raw material the Lab will
+ * never accept. Crystal carries more than ore because its miner is slower;
+ * recipes then conserve the summed input value across however many outputs a
+ * cycle produces. Machine time changes throughput, not value created.
+ */
+export function embodiedValue(item: ItemType, depth = 0): number {
+  if (item === 'ore') return ORE_VALUE;
+  if (item === 'crystal') return ORE_VALUE * (MINER.crystalCycle / MINER.cycle);
+  if (depth > 8) return 0;
+  const cached = embodiedMemo[item];
+  if (cached !== undefined) return cached;
+  const maker = producerOf(item);
+  if (!maker) return 0;
+  const stats = MACHINES[maker];
+  let inputValue = 0;
+  for (const [input, count] of recipeInputs(maker)) {
+    inputValue += embodiedValue(input, depth + 1) * count;
+  }
+  const value = inputValue / stats.outputPer;
+  embodiedMemo[item] = value;
+  return value;
+}
+
+/** Lab payout before ConveyorSystem rounds to whole points. Raw resources are deliberately absent. */
+export const RESEARCH_VALUE: Partial<Record<ItemType, number>> = Object.fromEntries(
+  Object.values(MACHINES).map(({ output }) => [output, embodiedValue(output)]),
+) as Partial<Record<ItemType, number>>;
 
 export function labAccepts(item: ItemType): boolean {
   return RESEARCH_VALUE[item] !== undefined;

@@ -107,12 +107,19 @@ export class CombatSystem {
           b.barrel?.setTint(0x8a8a8a);
           // Counted only on the transition, and only mid-wave: a tower sitting
           // empty through the build phase is a supply plan, not a failure.
-          if (GameState.phase === 'wave') progress.record('starvedTowers');
+          if (GameState.phase === 'wave') {
+            progress.record('starvedTowers');
+            GameState.tally.starved += 1; // …and the wave report says how many fell silent
+          }
         } else {
           b.sprite.clearTint();
           b.barrel?.clearTint();
         }
       }
+      // A tower that cannot shoot must not bank credit. Without this floor the
+      // `+= interval` below would let an empty or unengaged tower accumulate
+      // arbitrarily negative cooldown and then empty its magazine in one frame.
+      if (starved && b.cooldown < 0) b.cooldown = 0;
       if (b.cooldown > 0 || starved) continue;
 
       if (isSupport(b.type)) {
@@ -131,11 +138,16 @@ export class CombatSystem {
           bestTraveled = e.traveled;
         }
       }
-      if (!best) continue;
+      if (!best) {
+        b.cooldown = 0; // nothing in range: ready, but no credit banked
+        continue;
+      }
 
       b.ammo -= 1;
       bumpAmmo(GameState.tally.fired, stats.ammoType);
-      b.cooldown = 1 / stats.fireRate;
+      // `+=` keeps the fraction of a frame the cooldown overshot by, so fire
+      // rate is the stat rather than the stat rounded down to a frame boundary.
+      b.cooldown += 1 / stats.fireRate;
       const angle = Math.atan2(best.y - cy, best.x - cx);
       b.barrel?.setRotation(angle);
       // Heavier rounds kick harder and flash bigger — the recoil is most of the
@@ -190,11 +202,14 @@ export class CombatSystem {
     const inRange = this.wave.enemies.filter(
       (e) => !e.dead && Phaser.Math.Distance.Between(cx, cy, e.x, e.y) <= stats.range,
     );
-    if (inRange.length === 0) return;
+    if (inRange.length === 0) {
+      b.cooldown = 0; // idle field: ready to pulse, but banking no credit
+      return;
+    }
 
     b.ammo -= 1;
     bumpAmmo(GameState.tally.fired, stats.ammoType);
-    b.cooldown = 1 / stats.fireRate;
+    b.cooldown += 1 / stats.fireRate;
     for (const e of inRange) this.wave.chill(e, stats.slowFactor, stats.slowDur);
 
     const ring = this.scene.add.circle(cx, cy, stats.range * 0.35, 0x6bd4ff, 0.22).setDepth(6);
@@ -259,6 +274,7 @@ export class CombatSystem {
     if (bl.kills >= 3) {
       const bonus = bl.kills * 3;
       GameState.addMoney(bonus);
+      progress.record('moneyEarned', bonus);
       progress.record('skewers');
       this.scene.floatText(bl.sprite.x, bl.sprite.y - 24, `SKEWER ×${bl.kills}  +$${bonus}`, '#6bd4ff');
       this.scene.cameras.main.shake(70, 0.002);
@@ -288,6 +304,7 @@ export class CombatSystem {
     if (kills >= 3) {
       const bonus = kills * 3;
       GameState.addMoney(bonus);
+      progress.record('moneyEarned', bonus);
       progress.record('multiKills');
       this.scene.floatText(ix, iy - 24, `MULTI ×${kills}  +$${bonus}`, '#ff9f43');
     }

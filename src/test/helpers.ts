@@ -122,6 +122,9 @@ export function makeScene(): Phaser.Scene {
     floatText: () => undefined,
     bigText: () => undefined,
     burst: () => undefined,
+    // WaveSystem samples this at the start and end of every wave for the report
+    // card's magazine line. No towers in a bare test world, hence zero.
+    magazineTotal: () => 0,
   } as unknown as Phaser.Scene;
 }
 
@@ -145,6 +148,7 @@ export function makeBuilding(type: BuildingType, x: number, y: number, dir: Dir 
     path: null,
     invested: 0,
     stalled: false,
+    stallReason: null,
     utilBusy: 0,
     utilBlocked: 0,
     utilTotal: 0,

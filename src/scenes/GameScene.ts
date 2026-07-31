@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_H, GAME_W, GRID_H, GRID_W, IS_TOUCH, PLAYFIELD_H, TILE } from '../config';
+import { GAME_H, GAME_W, GRID_H, GRID_W, IS_TOUCH, MAX_DT, PLAYFIELD_H, TILE } from '../config';
 import {
   BUILD_INFO,
   costOf,
@@ -69,6 +69,9 @@ const BURST_POOL = 10;
 /** Shared scrolling-chevron animation played by every belt. */
 const BELT_ANIM = 'belt-run';
 
+/** How long a press must be held to read as sell-instead-of-tap. */
+const LONG_PRESS_MS = 450;
+
 /** Upgrade-panel geometry. Authored small; scaled up bodily for fingers. */
 const PANEL_W = 258;
 const PANEL_SCALE = IS_TOUCH ? 1.4 : 1;
@@ -109,6 +112,12 @@ export class GameScene extends Phaser.Scene {
   private pressAt = 0;
   private pressX = 0;
   private pressY = 0;
+  /**
+   * Tile a press landed on while nothing was selected, held until pointerup
+   * decides whether the gesture was a tap, a long-press, or a drag. Nothing on
+   * the board may be mutated before that decision.
+   */
+  private pendingTap: { tx: number; ty: number } | null = null;
   private saveDirty = false;
   private saveTimer = 0;
   /** false while create() is mid-flight — reset()/applySnapshot() event bursts must not autosave a half-built scene */
@@ -181,6 +190,9 @@ export class GameScene extends Phaser.Scene {
     this.bursts = []; // and it destroys the pooled emitters — never reuse the dead ones
     this.burstIdx = 0;
     GameState.reset();
+    // Freeze the score to beat before a single wave clear can move it. Must sit
+    // after reset() (which zeroes it) and before applySave().
+    GameState.bestWaveAtStart = progress.stats.bestWave;
 
     // The layout has to be chosen before anything reads the board: a resumed
     // run brings its own map, a fresh one uses whatever the menu picked.
@@ -329,7 +341,7 @@ export class GameScene extends Phaser.Scene {
         this.saveRun();
       }
     }
-    const dt = Math.min(deltaMs / 1000, 0.05) * GameState.speed;
+    const dt = Math.min(deltaMs / 1000, MAX_DT) * GameState.speed;
     this.waveSystem.update(dt);
     this.conveyor.update(dt);
     this.production.update(dt);
@@ -495,6 +507,18 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ---------- juice helpers (used by systems) ----------
+
+  /**
+   * Rounds currently loaded across every tower on the board. Sampled at the
+   * start and end of a wave so the report can say what the fight cost the
+   * magazines — the one figure that distinguishes "the factory kept up" from
+   * "I had a stockpile and just spent it".
+   */
+  magazineTotal(): number {
+    let n = 0;
+    for (const b of this.grid.buildings) if (isTower(b.type)) n += b.ammo;
+    return n;
+  }
 
   /**
    * Floating bounty/status text. Capped: a late swift wave is 100+ kills in
@@ -692,7 +716,7 @@ export class GameScene extends Phaser.Scene {
 
   private tryUpgrade(choice: 0 | 1 = 0): void {
     const b = this.selTower;
-    if (!b || !isTower(b.type) || GameState.gameOver || GameState.awaitingCard) return;
+    if (!b || !isTower(b.type) || GameState.gameOver || GameState.awaitingCard || GameState.modalOpen) return;
     let tier: UpgradeTier | null;
     let newPath: PathId | null = null;
     if (b.mk === 2) {
@@ -780,7 +804,11 @@ export class GameScene extends Phaser.Scene {
     const card = cardById(id);
     if (!card) return;
     if (card.instant === 'life') GameState.gainLives(1);
-    else if (card.instant === 'cash') GameState.addMoney(grantAmount(GameState.wave));
+    else if (card.instant === 'cash') {
+      const grant = grantAmount(GameState.wave);
+      GameState.addMoney(grant);
+      progress.record('moneyEarned', grant); // research payouts are earned income, same as a bounty
+    }
     GameState.takeCard(id);
     progress.record('researchTaken');
     progress.recordMax('bestResearchLevel', GameState.researchLevel);
@@ -811,12 +839,14 @@ export class GameScene extends Phaser.Scene {
     this.saveDirty = false;
     clearLocal();
     progress.recordMax('bestWave', GameState.wave); // listener-order independent
+    progress.flush();
     void clearSave();
     void pushBest(progress.stats.bestWave);
   };
 
   private onBeforeUnload = (): void => {
     if (this.ready && !GameState.gameOver && GameState.phase === 'build') this.saveRun();
+    progress.flush();
   };
 
   private saveRun(): void {
@@ -840,6 +870,7 @@ export class GameScene extends Phaser.Scene {
   /** Back to the title screen; flushes a final save first when the run is alive. UIScene sleeps so its listeners stay singular. */
   private exitToMenu(): void {
     if (this.ready && !GameState.gameOver && GameState.phase === 'build') this.saveRun();
+    progress.flush(); // the menu reads lifetime stats — they must be on disk first
     this.saveDirty = false;
     this.scene.sleep('ui');
     this.scene.start('menu');
@@ -902,18 +933,19 @@ export class GameScene extends Phaser.Scene {
     on('zoomOut', () => this.zoomAt(1 / 1.25, GAME_W / 2, PLAYFIELD_H / 2));
     on('zoomReset', () => this.resetCam());
 
-    // The scroll wheel is the other half of Factorio's muscle memory: it turns
-    // the same thing R turns, and it turns *back*, which R cannot. Ignored over
-    // the HUD so spinning the wheel while reading the build bar does nothing.
+    // Wheel zooms; Shift-wheel turns the same thing R turns (and turns *back*,
+    // which R cannot). Ignored over the HUD so spinning the wheel while reading
+    // the build bar does nothing.
     //
-    // Holding a modifier zooms instead. Plain wheel stays rotate because that
-    // is what this game's palette is built around — a belt's facing is the
-    // thing you adjust constantly, and zoom is not.
+    // Rotate used to be the *unmodified* wheel. On a trackpad an ordinary
+    // two-finger scroll is a wheel event, so drifting over the factory silently
+    // re-plumbed live belts with no click and no undo. Destructive edits do not
+    // belong on the gesture a laptop emits by accident.
     this.input.on('wheel', (p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
       if (dy === 0 || p.y >= PLAYFIELD_H || this.overHud(p.x, p.y)) return;
       const e = p.event as WheelEvent | undefined;
-      if (e?.ctrlKey || e?.shiftKey || e?.metaKey) this.zoomAt(dy > 0 ? 1 / 1.15 : 1.15, p.x, p.y);
-      else this.rotateAt(p.x, p.y, dy > 0 ? 1 : -1);
+      if (e?.shiftKey) this.rotateAt(p.x, p.y, dy > 0 ? 1 : -1);
+      else this.zoomAt(dy > 0 ? 1 / 1.15 : 1.15, p.x, p.y);
     });
     on('cancel', () => {
       if (this.surveyMode) this.toggleSurveyMode();
@@ -933,6 +965,7 @@ export class GameScene extends Phaser.Scene {
       this.pressAt = this.time.now;
       this.pressX = p.x;
       this.pressY = p.y;
+      this.pendingTap = null; // a pointerup we never saw must not act on the next press
       const { tx, ty } = this.tileAt(p.x, p.y);
       if (p.rightButtonDown()) {
         const b = this.grid.cellAt(tx, ty)?.building;
@@ -954,26 +987,44 @@ export class GameScene extends Phaser.Scene {
         if (this.selected === 'belt') this.startStroke(tx, ty);
         else this.tryPlace(this.selected, tx, ty, false);
       } else {
-        const b = this.grid.cellAt(tx, ty)?.building;
-        // Towers open their upgrade panel; everything else turns. Re-aiming a
-        // belt or a machine used to mean selling it and building it again.
-        if (b && !isTower(b.type)) this.rotateBuilding(b);
-        else this.selectTower(b ?? null);
+        // Deliberately does NOT act yet. This gesture is not classified until
+        // pointerup: the same press becomes a tap (rotate / open the panel) or
+        // a long-press (sell). Acting here meant a long-press on an assembler
+        // rotated it *and then* offered to sell it — cancel the sale and the
+        // production line stayed silently re-aimed.
+        this.pendingTap = { tx, ty };
       }
     });
 
-    // Long-press is the touch stand-in for right-click-to-sell. Only while
-    // nothing is selected for building, so holding after painting a belt can
-    // never refund the belt you just laid down.
+    /**
+     * Where the gesture that started on the board is classified. A press with
+     * nothing selected is ambiguous until it ends: released quickly it is a tap
+     * (turn a belt/machine, or open a tower's panel), held it is the touch
+     * stand-in for right-click-to-sell, and dragged it was a pan and means
+     * nothing at all.
+     *
+     * Only ever runs while nothing is selected for building, so holding after
+     * painting a belt can never refund the belt you just laid down.
+     */
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
       this.endStroke();
-      if (p.y >= PLAYFIELD_H || this.selected || this.sellMode || this.overHud(p.x, p.y)) return;
+      const tap = this.pendingTap;
+      this.pendingTap = null;
+      if (!tap || p.y >= PLAYFIELD_H || this.selected || this.sellMode || this.overHud(p.x, p.y)) return;
+
       const held = this.time.now - this.pressAt;
       const moved = Math.hypot(p.x - this.pressX, p.y - this.pressY);
-      if (held < 450 || moved > 12) return;
-      const t = this.tileAt(p.x, p.y);
-      const b = this.grid.cellAt(t.tx, t.ty)?.building;
-      if (b) this.requestSell(b);
+      if (moved > 12) return; // the finger travelled: a pan, not a tap
+      const b = this.grid.cellAt(tap.tx, tap.ty)?.building;
+
+      if (held >= LONG_PRESS_MS) {
+        if (b) this.requestSell(b);
+        return;
+      }
+      // Towers open their upgrade panel; everything else turns. Re-aiming a
+      // belt or a machine used to mean selling it and building it again.
+      if (b && !isTower(b.type)) this.rotateBuilding(b);
+      else this.selectTower(b ?? null);
     });
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
@@ -1206,10 +1257,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   private select(type: BuildingType | null): void {
-    // The card draw owns the keyboard while it is up: "1" picks a card, and
-    // must not also select a belt behind the modal. (Pointer input is already
-    // swallowed by the modal's dim.)
-    if (GameState.awaitingCard) return;
+    // A modal owns the keyboard while it is up: during a card draw "1" picks a
+    // card and must not also select a belt behind it, and a build hotkey pressed
+    // while the help reference is open would leave a building armed the moment
+    // it closed. (Pointer input is already swallowed by the modal's dim.)
+    if (GameState.awaitingCard || GameState.modalOpen) return;
     // Choosing the armed slot again cancels it. On touch there is no ESC and no
     // right-click, so without this a player who taps BELT is stuck in belt mode.
     if (type !== null && type === this.selected) type = null;
@@ -1271,6 +1323,7 @@ export class GameScene extends Phaser.Scene {
       path: null,
       invested: costOf(type),
       stalled: false,
+      stallReason: null,
       utilBusy: 0,
       utilBlocked: 0,
       utilTotal: 0,
@@ -1352,6 +1405,23 @@ export class GameScene extends Phaser.Scene {
    * is only half and there is no undo.
    */
   private requestSell(b: Building): void {
+    // Unjam before you demolish. A single item that no downstream machine will
+    // accept parks at the head of a belt forever and backs the whole line up
+    // behind it — and the only recovery used to be selling the belt out from
+    // under it and rebuilding, which is the factory game equivalent of burning
+    // the house down to get rid of a wasp. Only belts, splitters and tunnels can
+    // hold an item at all, so `b.item` is the whole test.
+    if (b.item) {
+      this.conveyor.destroyItem(b.item);
+      b.item = null;
+      this.floatText(b.x * TILE + 16, b.y * TILE + 4, 'cleared', '#9aa7bd');
+      this.burst(b.x * TILE + 16, b.y * TILE + 16, 0x9aa7bd, 5);
+      sfx.sell();
+      // Deliberately does not fall through to the sale: the belt survives, and a
+      // second click (now that the cell is empty) sells it as it always did.
+      this.requestSave();
+      return;
+    }
     if (b.invested <= GameScene.SELL_CONFIRM_OVER) {
       this.sell(b);
       return;

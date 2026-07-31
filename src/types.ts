@@ -91,6 +91,19 @@ export interface Building {
    * the next wave starts, so the overlay always reads "last wave".
    */
   stalled: boolean;
+  /**
+   * *Why* it is stalled, set by the same system that set `stalled` — the only
+   * place the answer is known without re-deriving it. The overlay turns this
+   * into a word on the tile, which is both the machine inspector ("what is this
+   * press waiting for?") and the thing that stops the overlay encoding its
+   * meaning in colour alone.
+   *
+   * 'input'  — short of at least one ingredient
+   * 'output' — finished goods with nowhere to go
+   * 'empty'  — a miner whose deposit is spent; it will never run again
+   * 'jam'    — a carrier holding an item no neighbour will accept
+   */
+  stallReason: 'input' | 'output' | 'empty' | 'jam' | null;
   utilBusy: number;
   utilBlocked: number;
   utilTotal: number;

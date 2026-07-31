@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { BELT_SPEED, TILE } from '../config';
 import { isMachine, isTower, MACHINES, recipeNeeds, TOWERS, TUNNEL } from '../data/buildings';
 import { labAccepts, RESEARCH_VALUE } from '../data/research';
-import { GameState } from '../state/GameState';
+import { bumpAmmo, GameState } from '../state/GameState';
 import { Building, Dir, DX, DY, ItemEnt, ItemType } from '../types';
 import { GridSystem } from './GridSystem';
 
@@ -72,6 +72,7 @@ export class ConveyorSystem {
         }
       }
       host.stalled = !moved;
+      host.stallReason = moved ? null : 'jam';
     }
   }
 
@@ -124,7 +125,14 @@ export class ConveyorSystem {
     // The Lab has no buffer and no output: finished goods go in and become
     // research. Raw ore is refused, so research always costs you ammo.
     if (nb.type === 'lab' && labAccepts(it.type)) {
-      GameState.addResearch(Math.max(1, Math.round(RESEARCH_VALUE[it.type]! * GameState.mods.researchValue)));
+      // Banked exactly, never rounded per delivery. `RESEARCH_VALUE` conserves
+      // value across every recipe, but rounding each item destroys that: a
+      // chiller's coolant is worth exactly half an ammo, and with one PEER
+      // REVIEW stack `round(2.5) * 2 = 6` beat the `round(5) = 5` the ammo would
+      // have paid — the laundering exploit, back in miniature. Fractions
+      // accumulate harmlessly; only the level thresholds are whole numbers.
+      GameState.addResearch(RESEARCH_VALUE[it.type]! * GameState.mods.researchValue);
+      bumpAmmo(GameState.tally.toLab, it.type); // a round the guns did not get
       this.consume(index);
       this.pop(nb.sprite);
       return true;
@@ -132,6 +140,9 @@ export class ConveyorSystem {
     if (isTower(nb.type) && it.type === TOWERS[nb.type].ammoType && nb.ammo < TOWERS[nb.type].ammoCap) {
       nb.ammo += 1;
       nb.fed += 1; // lifetime service record — gates this tower's upgrades
+      // The one place a round becomes usable defence. Everything the wave report
+      // says about supply is measured here rather than at the machine.
+      bumpAmmo(GameState.tally.delivered, it.type);
       this.consume(index);
       this.pop(nb.sprite);
       return true;

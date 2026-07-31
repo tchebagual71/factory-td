@@ -36,15 +36,37 @@ function writeJSON(key: string, value: unknown): void {
   }
 }
 
+/**
+ * How long stats may sit in memory before being written. A kill records three
+ * or four stats, and a swift wave at ×3 speed produces kills faster than one a
+ * frame — writing through on each one meant dozens of `JSON.stringify` +
+ * synchronous `localStorage.setItem` pairs per second on the main thread, which
+ * is exactly the budget a low-end phone does not have.
+ */
+const FLUSH_MS = 2000;
+
 class ProgressClass {
   stats: Stats = emptyStats();
   unlocked = new Set<string>();
+
+  /** stats changed since the last write */
+  private dirty = false;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     const savedStats = readJSON<Partial<Stats>>(KEY_STATS);
     if (savedStats) this.stats = { ...emptyStats(), ...savedStats };
     const savedAch = readJSON<string[]>(KEY_ACH);
     if (Array.isArray(savedAch)) this.unlocked = new Set(savedAch.filter((id) => typeof id === 'string'));
+
+    // Never lose a session's progress to a closed tab. `visibilitychange` is the
+    // one that actually fires on mobile, where `beforeunload` is unreliable.
+    if (typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', () => this.flush());
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') this.flush();
+      });
+    }
   }
 
   record(stat: StatKey, n = 1): void {
@@ -57,6 +79,21 @@ class ProgressClass {
     if (value <= this.stats[stat]) return;
     this.stats[stat] = value;
     this.afterChange();
+  }
+
+  /**
+   * Write any pending stats out now. Called at the natural run boundaries (wave
+   * end, leaving to the menu, game over) and when the tab goes away — so the
+   * throttle below can never cost a player more than the current wave.
+   */
+  flush(): void {
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (!this.dirty) return;
+    this.dirty = false;
+    writeJSON(KEY_STATS, this.stats);
   }
 
   /** Starting-money bonus earned from unlocks (consumed at run start). */
@@ -77,10 +114,27 @@ class ProgressClass {
   }
 
   private afterChange(): void {
+    // The unlock scan stays synchronous: it is a pass over a couple of dozen
+    // pure predicates, and the toast has to land on the kill that earned it.
+    // Only the storage write is deferred.
     const fresh = newlyUnlocked(this.unlocked, this.stats);
     for (const def of fresh) this.unlocked.add(def.id);
-    writeJSON(KEY_STATS, this.stats);
-    if (fresh.length > 0) writeJSON(KEY_ACH, [...this.unlocked]);
+
+    this.dirty = true;
+    if (fresh.length > 0) {
+      // An unlock is rare and expensive to lose, so it writes through — and
+      // takes the pending stats with it.
+      writeJSON(KEY_ACH, [...this.unlocked]);
+      this.flush();
+    } else if (this.flushTimer === null) {
+      // A throttle, not a debounce: continuous kills must not postpone the
+      // write indefinitely.
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = null;
+        this.flush();
+      }, FLUSH_MS);
+    }
+
     for (const def of fresh) GameState.events.emit('achievement', def satisfies AchievementDef);
   }
 }

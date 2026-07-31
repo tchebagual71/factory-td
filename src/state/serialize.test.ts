@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GRID_W } from '../config';
+import { MACHINES } from '../data/buildings';
 import { makeBuilding, makeSprite } from '../test/helpers';
 import { Building, ItemEnt } from '../types';
 import { captureRun, SaveV1, validateSave } from './serialize';
@@ -205,5 +206,94 @@ describe('validateSave rejects corrupt input', () => {
 
   it('accepts its own untouched output', () => {
     expect(validateSave(base())).not.toBeNull();
+  });
+});
+
+/**
+ * A save is untrusted input: localStorage is hand-editable and cloud JSON can be
+ * anything. "Finite and non-negative" was not enough — several shapes passed
+ * validation and then crashed or corrupted the board on restore. Each case below
+ * is one of those.
+ */
+describe('validateSave rejects values that would break restoration', () => {
+  function base(): SaveV1 {
+    return captureRun([makeBuilding('belt', 1, 1)], [], SNAPSHOT);
+  }
+  const belt = { t: 'belt', x: 1, y: 1, d: 0, inv: 5 };
+
+  it.each([
+    // Fractional coordinates are finite and in range but address no cell.
+    ['a fractional building x', { ...base(), buildings: [{ ...belt, x: 1.5 }] }],
+    ['a fractional building y', { ...base(), buildings: [{ ...belt, y: 3.25 }] }],
+    ['a fractional mk', { ...base(), buildings: [{ t: 'tower', x: 1, y: 1, d: 0, inv: 90, mk: 2.5 }] }],
+    ['a fractional item cell', { ...base(), items: [{ t: 'ore', cx: 1.5, cy: 1, px: 40, py: 40 }] }],
+    ['a fractional tile coordinate', { ...base(), tiles: [{ x: 1.5, y: 1, n: 5 }] }],
+    ['a fractional patch size', { ...base(), patches: [{ x: 1, y: 1, w: 2.5, h: 2, k: 'ore' }] }],
+
+    // `pathOf` does a `.find(...)!`: a path from another tower's tree returns
+    // undefined and throws the moment stats are resolved.
+    ['a cannon carrying a gun path', { ...base(), buildings: [{ t: 'cannon', x: 1, y: 1, d: 0, inv: 140, mk: 3, path: 'sniper' }] }],
+    ['a lancer carrying a cryo path', { ...base(), buildings: [{ t: 'lancer', x: 1, y: 1, d: 0, inv: 230, mk: 3, path: 'blizzard' }] }],
+    ['a path on something that is not a tower', { ...base(), buildings: [{ t: 'press', x: 1, y: 1, d: 0, inv: 60, path: 'sniper' }] }],
+    ['an Mk3 tower with no path chosen', { ...base(), buildings: [{ t: 'tower', x: 1, y: 1, d: 0, inv: 90, mk: 3 }] }],
+
+    // Counters that outrun the thing that holds them.
+    ['ammo beyond the magazine', { ...base(), buildings: [{ t: 'tower', x: 1, y: 1, d: 0, inv: 90, ammo: 9999 }] }],
+    ['ammo on a belt', { ...base(), buildings: [{ ...belt, ammo: 3 }] }],
+    ['an output buffer beyond what a cycle could leave', { ...base(), buildings: [{ t: 'press', x: 1, y: 1, d: 0, inv: 60, outBuf: 999 }] }],
+    ['an output buffer on a tower', { ...base(), buildings: [{ t: 'tower', x: 1, y: 1, d: 0, inv: 90, outBuf: 1 }] }],
+    ['an input buffer beyond the machine cap', { ...base(), buildings: [{ t: 'press', x: 1, y: 1, d: 0, inv: 60, in: { ore: 999 } }] }],
+    ['a splitter output index off the end', { ...base(), buildings: [{ t: 'splitter', x: 1, y: 1, d: 0, inv: 20, outIdx: 7 }] }],
+    ['a fractional input buffer', { ...base(), buildings: [{ t: 'press', x: 1, y: 1, d: 0, inv: 60, in: { ore: 1.5 } }] }],
+
+    // The exact failure migrateV1 exists to prevent, reintroduced by hand: a
+    // machine holding stock its own recipe will never consume stalls forever.
+    ['a press buffering an item it cannot consume', { ...base(), buildings: [{ t: 'press', x: 1, y: 1, d: 0, inv: 60, in: { coolant: 2 } }] }],
+    ['a forge buffering raw ore', { ...base(), buildings: [{ t: 'forge', x: 1, y: 1, d: 0, inv: 100, in: { ore: 2 } }] }],
+
+    // Items must sit on something that can actually move them.
+    ['an item on an empty cell', { ...base(), items: [{ t: 'ore', cx: 9, cy: 9, px: 300, py: 300 }] }],
+    ['an item parked inside a press', { ...base(), buildings: [{ t: 'press', x: 2, y: 2, d: 0, inv: 60 }], items: [{ t: 'ore', cx: 2, cy: 2, px: 80, py: 80 }] }],
+    ['two items on one belt cell', { ...base(), items: [{ t: 'ore', cx: 1, cy: 1, px: 40, py: 40 }, { t: 'ammo', cx: 1, cy: 1, px: 40, py: 40 }] }],
+    ['an item drawn off the board', { ...base(), items: [{ t: 'ore', cx: 1, cy: 1, px: 99999, py: 40 }] }],
+
+    // Unbounded scalars.
+    ['a fractional invested total', { ...base(), buildings: [{ ...belt, inv: 5.5 }] }],
+    ['an absurd invested total', { ...base(), buildings: [{ ...belt, inv: 1e15 }] }],
+    ['a fractional survey count', { ...base(), surveys: 2.5 }],
+    ['a fractional research level', { ...base(), researchLevel: 1.5 }],
+    ['an absurd research bank', { ...base(), research: 1e15 }],
+    ['a timer beyond any cycle', { ...base(), buildings: [{ t: 'press', x: 1, y: 1, d: 0, inv: 60, timer: 1e9 }] }],
+  ])('rejects %s', (_label, raw) => {
+    expect(validateSave(raw)).toBeNull();
+  });
+
+  it('still accepts a legitimate maxed tower on its own path', () => {
+    const t = makeBuilding('cannon', 4, 4);
+    t.mk = 4;
+    t.path = 'siege';
+    t.ammo = 8; // exactly the cannon magazine
+    expect(validateSave(JSON.parse(JSON.stringify(captureRun([t], [], SNAPSHOT))))).not.toBeNull();
+  });
+
+  /**
+   * A chiller's cap is 4 but it produces 2 per cycle, and a cycle may start at
+   * 3 — so 5 in the output buffer is a state the sim reaches on its own. The
+   * obvious `outBuf <= outputCap` rule would reject it and wipe the run.
+   */
+  it('accepts an output buffer overfilled by a legitimate multi-output cycle', () => {
+    const chiller = makeBuilding('chiller', 4, 4);
+    const { outputCap, outputPer } = MACHINES.chiller;
+    chiller.outputBuf = outputCap + outputPer - 1;
+    expect(outputPer, 'this test is only meaningful while chillers make >1 per cycle').toBeGreaterThan(1);
+    expect(validateSave(JSON.parse(JSON.stringify(captureRun([chiller], [], SNAPSHOT))))).not.toBeNull();
+  });
+
+  it('still accepts a machine buffered to exactly its cap', () => {
+    const asm = makeBuilding('assembler', 4, 4);
+    asm.inputs.ammo = 6; // assembler inputCap
+    asm.inputs.crystal = 6;
+    asm.outputBuf = 2; // outputCap
+    expect(validateSave(JSON.parse(JSON.stringify(captureRun([asm], [], SNAPSHOT))))).not.toBeNull();
   });
 });

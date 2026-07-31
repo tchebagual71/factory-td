@@ -25,18 +25,29 @@ export class ProductionSystem {
         const resource = minedResource(this.grid.cellAt(b.x, b.y)?.kind ?? 'grass');
         if (!resource) {
           b.stalled = true; // exhausted tile (or a stale save) — nothing left to dig
+          b.stallReason = 'empty';
           continue;
         }
+        const cycle = minerCycle(resource) / GameState.mods.minerSpeed;
         b.timer += dt;
-        const ready = b.timer >= minerCycle(resource) / GameState.mods.minerSpeed;
+        const ready = b.timer >= cycle;
         if (ready && this.conveyor.spawnFrom(b.x, b.y, b.dir, resource)) {
-          b.timer = 0;
+          // Subtract the cycle rather than zeroing: whatever the frame overshot
+          // by is real elapsed time and belongs to the next unit. Zeroing threw
+          // away up to one frame per cycle, so mining rate tracked the display
+          // refresh instead of the clock.
+          b.timer -= cycle;
           b.stalled = false;
+          b.stallReason = null;
           if (this.grid.extract(b.x, b.y)) this.onDepleted?.(b.x, b.y);
           this.pop(b.sprite);
         } else {
           b.stalled = ready; // finished ore with nowhere to put it
+          b.stallReason = ready ? 'output' : null;
         }
+        // A miner that is ready but blocked holds at exactly one finished unit —
+        // it must never bank a backlog that floods the belt once it clears.
+        if (b.timer > cycle) b.timer = cycle;
       } else if (isMachine(b.type)) {
         const stats = MACHINES[b.type];
         if (b.outputBuf > 0 && this.conveyor.spawnFrom(b.x, b.y, b.dir, stats.output)) {
@@ -45,16 +56,32 @@ export class ProductionSystem {
         const recipe = recipeInputs(b.type);
         const fed = recipe.every(([item, n]) => (b.inputs[item] ?? 0) >= n);
         // starved of inputs, or backed up because nothing is taking the output
-        b.stalled = (!b.crafting && !fed) || b.outputBuf >= stats.outputCap;
+        const backedUp = b.outputBuf >= stats.outputCap;
+        const starved = !b.crafting && !fed;
+        b.stalled = starved || backedUp;
+        // Output pressure is reported ahead of input hunger: a machine that is
+        // both is waiting on its *outlet*, and widening its supply would do
+        // nothing. That distinction is the whole point of naming the reason.
+        b.stallReason = backedUp ? 'output' : starved ? 'input' : null;
+        const cycle = stats.cycle / GameState.mods.craftSpeed;
         if (!b.crafting && fed && b.outputBuf < stats.outputCap) {
           for (const [item, n] of recipe) b.inputs[item] = (b.inputs[item] ?? 0) - n;
           b.crafting = true;
-          b.timer = 0;
+          // b.timer is deliberately *not* zeroed — it holds the overshoot the
+          // last cycle finished with, which is elapsed time this craft has
+          // already earned. Zeroing it here is what made craft rate depend on
+          // frame length. It only ever advances while `crafting`, so an idle
+          // machine cannot accumulate anything here.
         }
         if (b.crafting) {
           b.timer += dt;
-          if (b.timer >= stats.cycle / GameState.mods.craftSpeed) {
+          if (b.timer >= cycle) {
             b.crafting = false;
+            // Carry the overshoot into the next craft. By construction it is at
+            // most the dt that pushed the timer over, so clamping there costs
+            // nothing in normal play and stops a cycle shorter than one frame
+            // from banking a free craft every tick.
+            b.timer = Math.min(b.timer - cycle, dt);
             b.outputBuf += stats.outputPer;
             bumpAmmo(GameState.tally.produced, stats.output, stats.outputPer);
             this.pop(b.sprite);

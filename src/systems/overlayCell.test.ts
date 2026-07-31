@@ -28,6 +28,7 @@ function make(type: BuildingType, over: Partial<Building> = {}): Building {
     mk: 1,
     path: null,
     invested: 0,
+    stallReason: null,
     stalled: false,
     utilBusy: 0,
     utilBlocked: 0,
@@ -91,6 +92,58 @@ describe('producers', () => {
         expect(a).toBeLessThanOrEqual(1);
       }
     }
+  });
+});
+
+/**
+ * The overlay used to say everything it knew in colour: amber means "something
+ * is wrong here". That is invisible to a red-green colourblind player, and it
+ * never distinguished the two failures a producer can have — which need
+ * opposite fixes. Widening the supply of a machine whose *outlet* is blocked
+ * spends money to change nothing.
+ */
+describe('stall reasons are named, not just coloured', () => {
+  it('says DRY when a machine is short an ingredient', () => {
+    const cell = overlayCell(make('press', { stalled: true, stallReason: 'input' }), 0);
+    expect(cell.label).toBe('DRY');
+  });
+
+  it('says FULL when a machine has finished goods and nowhere to put them', () => {
+    const cell = overlayCell(make('press', { stalled: true, stallReason: 'output' }), 0);
+    expect(cell.label).toBe('FULL');
+  });
+
+  it('says SPENT for a miner standing on an exhausted deposit', () => {
+    const cell = overlayCell(make('miner', { stalled: true, stallReason: 'empty' }), 0);
+    expect(cell.label).toBe('SPENT');
+    // Greyed rather than alarm-coloured: nothing the player does here helps, so
+    // it must not compete for attention with a line that can actually be fixed.
+    expect(cell.labelColor).toBe('#8892a6');
+  });
+
+  it('says JAM on a carrier holding something no neighbour will take', () => {
+    const cell = overlayCell(make('belt', { item: {} as never, stalled: true, stallReason: 'jam' }), 0);
+    expect(cell.label).toBe('JAM');
+  });
+
+  it('labels nothing on a healthy producer, so no Text is allocated for it', () => {
+    expect(overlayCell(make('press'), 0).label).toBeUndefined();
+  });
+
+  it('leaves a flowing belt unlabelled, so the one jam is findable', () => {
+    expect(overlayCell(make('belt', { item: {} as never, stalled: false }), 0).label).toBeUndefined();
+  });
+
+  it('gives every stall reason a distinct word', () => {
+    const reasons = ['input', 'output', 'empty'] as const;
+    const words = reasons.map((r) => overlayCell(make('press', { stalled: true, stallReason: r }), 0).label);
+    expect(new Set(words).size).toBe(reasons.length);
+  });
+
+  it('falls back to DRY rather than blank if a system forgot to set a reason', () => {
+    // Defensive: a stalled machine with no reason is a bug, but a silent tile
+    // is worse than a slightly wrong word.
+    expect(overlayCell(make('press', { stalled: true, stallReason: null }), 0).label).toBe('DRY');
   });
 });
 

@@ -23,12 +23,49 @@ export interface WaveTally {
   income: number;
   /** rounds towers actually fired, per ammo type */
   fired: AmmoCount;
-  /** rounds the factory finished in the same window — below `fired` means those magazines are draining */
+  /**
+   * Rounds the factory *finished* in the same window. Note this is not the same
+   * as rounds that helped: a finished round may still be sitting in an output
+   * buffer, riding a belt, or heading somewhere other than a gun.
+   */
   produced: AmmoCount;
+  /**
+   * Rounds that actually entered a tower's magazine. This — not `produced` — is
+   * what "did supply keep up" means: a factory can be at full tilt and still
+   * starve the guns if the belts do not reach them.
+   */
+  delivered: AmmoCount;
+  /**
+   * Rounds a Lab consumed. A real sink competing with the guns for the same
+   * output, and invisible in `produced` vs `fired` — research that starved a
+   * tower used to look like a production shortfall.
+   */
+  toLab: AmmoCount;
+  /**
+   * How many times a tower ran completely dry during the wave. Counted on the
+   * empty transition, so it is "guns that fell silent", not a duration — the
+   * one number that points at *which* part of the board to go and look at.
+   */
+  starved: number;
+  /** total rounds sitting in every tower magazine when the wave was sent */
+  magStart: number;
+  /** …and when it was cleared. The difference is the buffer the wave cost you. */
+  magEnd: number;
 }
 
 export function emptyTally(): WaveTally {
-  return { kills: 0, leaked: 0, income: 0, fired: {}, produced: {} };
+  return {
+    kills: 0,
+    leaked: 0,
+    income: 0,
+    fired: {},
+    produced: {},
+    delivered: {},
+    toLab: {},
+    starved: 0,
+    magStart: 0,
+    magEnd: 0,
+  };
 }
 
 export function bumpAmmo(c: AmmoCount, type: ItemType, n = 1): void {
@@ -42,20 +79,43 @@ export function ammoTotal(c: AmmoCount): number {
 }
 
 /**
- * Ammo types the towers burned faster than the factory replaced them, worst
+ * Ammo types the towers burned faster than the belts *delivered*, worst
  * shortfall first. This — not the grand total — is what tells a player which
  * supply line to widen.
+ *
+ * Deliberately measured against `delivered`, not `produced`. Comparing against
+ * production made the card lie in both directions: a factory whose output was
+ * stuck in a backed-up buffer, riding a belt that never reached a gun, or being
+ * eaten by a Lab still reported "production kept up", while a player burning
+ * down a stockpile they had banked between waves was told they were short. What
+ * a tower fired can only have come from what was delivered to it, so this
+ * difference is exactly the magazine drain.
  */
 export function ammoDeficits(t: WaveTally): { type: ItemType; short: number }[] {
   return (Object.keys(t.fired) as ItemType[])
-    .map((type) => ({ type, short: (t.fired[type] ?? 0) - (t.produced[type] ?? 0) }))
+    .map((type) => ({ type, short: (t.fired[type] ?? 0) - (t.delivered[type] ?? 0) }))
     .filter((d) => d.short > 0)
     .sort((a, b) => b.short - a.short);
 }
 
+/**
+ * Rounds the factory finished but that never reached a gun this wave — stuck in
+ * a buffer, still on a belt, or spent on research. A large figure next to a
+ * healthy `produced` is the tell that the problem is routing, not throughput.
+ */
+export function ammoUndelivered(t: WaveTally): number {
+  return Math.max(0, ammoTotal(t.produced) - ammoTotal(t.delivered));
+}
+
 /** Deep copy — the live tally is mutated in place all wave, so the card needs its own. */
 export function cloneTally(t: WaveTally): WaveTally {
-  return { ...t, fired: { ...t.fired }, produced: { ...t.produced } };
+  return {
+    ...t,
+    fired: { ...t.fired },
+    produced: { ...t.produced },
+    delivered: { ...t.delivered },
+    toLab: { ...t.toLab },
+  };
 }
 
 /**
@@ -103,6 +163,13 @@ class GameStateClass {
   startAmmoBonus = 0;
   /** kills across the whole run (the tally is per-wave) — feeds the scrap payout */
   runKills = 0;
+  /**
+   * The lifetime best wave as it stood when this run began. `bestWave` is bumped
+   * on every wave clear, so by game over it already equals the wave the player
+   * died on — comparing against it could never report a new best. This is the
+   * frozen "score to beat", set once by GameScene and never written again.
+   */
+  bestWaveAtStart = 0;
   /** fraction off the survey price — the Prospector perk */
   surveyDiscount = 0;
 
@@ -117,10 +184,20 @@ class GameStateClass {
   mods: Mods = emptyMods();
   /** true while a level-up draw is on screen — freezes the sim without being a user pause */
   awaitingCard = false;
+  /**
+   * True while a full-screen reference modal (the in-game help) is up. Also a
+   * freeze that is not a user pause, which is the point: `paused` is left alone,
+   * so closing the modal returns to whatever the player had chosen rather than
+   * silently un-pausing them.
+   */
+  modalOpen = false;
 
-  /** The sim is stopped, for any reason. Player pause and the card draw both qualify. */
+  /**
+   * The sim is stopped, for any reason. Player pause, the card draw and an open
+   * modal all qualify.
+   */
   get frozen(): boolean {
-    return this.paused || this.awaitingCard;
+    return this.paused || this.awaitingCard || this.modalOpen;
   }
 
   /**
@@ -170,7 +247,9 @@ class GameStateClass {
   }
 
   togglePause(): void {
-    if (this.gameOver || this.awaitingCard) return; // a pending card draw owns the freeze
+    // A card draw or an open modal owns the freeze; letting the key through
+    // would quietly flip the pause the player returns to when it closes.
+    if (this.gameOver || this.awaitingCard || this.modalOpen) return;
     this.paused = !this.paused;
     this.events.emit('paused', this.paused);
   }
@@ -304,10 +383,12 @@ class GameStateClass {
     this.researchLevel = 0;
     this.pendingLevels = 0;
     this.awaitingCard = false;
+    this.modalOpen = false;
     this.taken = {};
     this.baseMods = {};
     this.startAmmoBonus = 0;
     this.runKills = 0;
+    this.bestWaveAtStart = 0;
     this.surveyDiscount = 0;
     this.mods = emptyMods();
     this.events.emit('paused', false);

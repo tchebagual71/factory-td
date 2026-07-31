@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { MACHINES, TOWERS } from '../data/buildings';
+import { RESEARCH_VALUE } from '../data/research';
+import { GameState } from '../state/GameState';
 import { addItem, makeScene, placeBuilding } from '../test/helpers';
 import { Building } from '../types';
 import { ConveyorSystem } from './ConveyorSystem';
@@ -16,6 +18,66 @@ let conv: ConveyorSystem;
 beforeEach(() => {
   grid = new GridSystem();
   conv = new ConveyorSystem(makeScene(), grid);
+});
+
+/**
+ * The Lab intake, tested at the real call site rather than through a mirror of
+ * it in `research.test.ts`. That distinction matters here: the exploit this
+ * guards against lived in the *rounding applied on delivery*, not in the value
+ * table, so a test that recomputes the model would have passed while the game
+ * was still exploitable.
+ */
+describe('lab intake', () => {
+  /** Feed one item into a lab and return the research it banked. */
+  function labOne(item: 'ammo' | 'coolant' | 'shell' | 'piercing', researchMult = 1): number {
+    GameState.reset();
+    GameState.mods.researchValue = researchMult;
+    const belt = placeBuilding(grid, 'belt', 6, 18, 0); // east, into the lab
+    placeBuilding(grid, 'lab', 7, 18);
+    addItem(conv, belt, item);
+    conv.update(DT);
+    expect(belt.item, 'the lab should have taken it').toBeNull();
+    return GameState.research;
+  }
+
+  it('refuses raw ore and crystal — research must always cost you defence', () => {
+    for (const raw of ['ore', 'crystal'] as const) {
+      GameState.reset();
+      const belt = placeBuilding(grid, 'belt', 6, 18, 0);
+      placeBuilding(grid, 'lab', 7, 18);
+      const it = addItem(conv, belt, raw);
+      conv.update(DT);
+      expect(belt.item, `${raw} must stay on the belt`).toBe(it);
+      expect(GameState.research).toBe(0);
+      grid = new GridSystem();
+      conv = new ConveyorSystem(makeScene(), grid);
+    }
+  });
+
+  it('banks the exact value, unrounded', () => {
+    expect(labOne('ammo')).toBe(RESEARCH_VALUE.ammo);
+    grid = new GridSystem();
+    conv = new ConveyorSystem(makeScene(), grid);
+    // 14.933…, the one value that is not a whole number. If this ever comes back
+    // as 15, the call site has started rounding again.
+    expect(labOne('piercing')).toBeCloseTo(RESEARCH_VALUE.piercing!, 12);
+  });
+
+  it('never pays more for laundered coolant than for the ammo it came from', () => {
+    // ×1.25 is one PEER REVIEW stack — the exact multiplier at which the old
+    // per-delivery `Math.round` made two coolant (6) beat one ammo (5).
+    for (const mult of [1, 1.25, 1.25 ** 2, 1.25 ** 3]) {
+      grid = new GridSystem();
+      conv = new ConveyorSystem(makeScene(), grid);
+      const direct = labOne('ammo', mult);
+      grid = new GridSystem();
+      conv = new ConveyorSystem(makeScene(), grid);
+      const perCoolant = labOne('coolant', mult);
+      expect(perCoolant * MACHINES.chiller.outputPer, `launder at ×${mult}`).toBeLessThanOrEqual(
+        direct + 1e-9,
+      );
+    }
+  });
 });
 
 describe('belt movement', () => {
