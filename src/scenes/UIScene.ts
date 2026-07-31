@@ -1258,13 +1258,14 @@ export class UIScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(52);
     this.overlay = [dim, title, sub, best, scrap, grade, btn, btnText, menuBtn, menuBtnText];
-    const clearOverlay = () => {
+    const clearOverlay = (restoreAmbient = false) => {
       this.overlay.forEach((o) => o.destroy());
       this.overlay = [];
       this.terminalOpen = false;
+      if (restoreAmbient) this.restoreLowerOverlays();
     };
     btn.on('pointerdown', () => {
-      clearOverlay();
+      clearOverlay(true);
       this.scene.get('game').scene.restart();
     });
     menuBtn.on('pointerdown', () => {

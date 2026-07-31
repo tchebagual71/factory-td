@@ -212,6 +212,10 @@ export class GameScene extends Phaser.Scene {
     this.bursts = []; // and it destroys the pooled emitters — never reuse the dead ones
     this.burstIdx = 0;
     GameState.reset();
+    // UIScene sleeps across a rebuild, but this scene instance retains fields.
+    // Clear the old armed slot before either save hydration or coach emission.
+    this.selected = null;
+    GameState.events.emit('selected', null);
     // Freeze the score to beat before a single wave clear can move it. Must sit
     // after reset() (which zeroes it) and before applySave().
     GameState.bestWaveAtStart = progress.stats.bestWave;
