@@ -3,7 +3,9 @@ import { BUILD_CATEGORIES, BUILD_INFO, buildGroupSizes } from '../data/buildings
 import {
   fittedScale,
   fitCardCopy,
+  hudCardCopyLimits,
   hudLayout,
+  inspectorLayout,
   HudLayoutOpts,
   overlayZones,
   overlaps,
@@ -365,14 +367,22 @@ describe('board overlay hit zones', () => {
     expect(overlayHit(zones, GAME_W / 2, 240, { objective: true, coach: true, inspector: false })).toBe(false);
   });
 
-  it('keeps a displayed inspector inside its reserved zone on desktop and touch', () => {
+  it('keeps the production inspector inside its reserved zone on desktop and touch', () => {
     for (const touch of [false, true]) {
       const zones = overlayZones(GAME_W, 640, topStrip(GAME_W, touch).stats.y + topStrip(GAME_W, touch).h, touch);
-      const panelScale = touch ? 1.2 : 1;
-      expect(258 * panelScale).toBeLessThanOrEqual(zones.inspector.w);
-      expect(136 * panelScale).toBeLessThanOrEqual(zones.inspector.h);
+      const layout = inspectorLayout(touch);
+      expect(layout.panel.w * layout.scale).toBeLessThanOrEqual(zones.inspector.w);
+      expect(layout.panel.h * layout.scale).toBeLessThanOrEqual(zones.inspector.h);
       expect(overlayHit(zones, zones.inspector.x + 1, zones.inspector.y + 1, { objective: true, coach: true, inspector: true })).toBe(true);
     }
+  });
+
+  it('keeps touch inspector buttons at least 36 CSS pixels at 844×390 DPR2', () => {
+    const layout = inspectorLayout(true);
+    const touchCanvasH = 640 + 220; // uiHeightForViewport({ width: 844, height: 390, touch: true })
+    const scale = fittedScale(GAME_W, touchCanvasH, 844, 390);
+    expect(renderedSize(layout.buttonA, scale).h).toBeGreaterThanOrEqual(36);
+    expect(renderedSize(layout.buttonB, scale).h).toBeGreaterThanOrEqual(36);
   });
 });
 
@@ -385,6 +395,12 @@ describe('small-card copy fitting', () => {
       expect(fitted.split('\n').every((line) => line.length <= chars)).toBe(true);
       expect(fitted.endsWith('…')).toBe(true);
     }
+  });
+
+  it('gives primary and supporting touch card text distinct 18/16 budgets', () => {
+    const limits = hudCardCopyLimits(true);
+    expect(limits.missionTitle).toBeLessThan(limits.missionDetail);
+    expect(limits.toastName).toBeLessThan(limits.toastDetail);
   });
 });
 

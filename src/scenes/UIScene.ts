@@ -15,8 +15,10 @@ import { progress } from '../state/progress';
 import { renderMode } from '../state/renderMode';
 import { BuildingType } from '../types';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
-import { fitCardCopy, HudLayout, hudLayout, overlayZones, slotContent, topStrip } from './hudLayout';
+import { fitCardCopy, hudCardCopyLimits, HudLayout, hudLayout, overlayZones, slotContent, topStrip } from './hudLayout';
 import { overlayPlan } from './overlayPolicy';
+import { boardOverlayVisibility, nextMissionId, presentedMissionId, type BoardOverlayVisibility } from './overlayPresentation';
+import { OverlayScheduler } from './overlayScheduler';
 import type { CoachMessage } from './coach';
 import { binding, key } from './keymap';
 import { UI_COLOR, UI_FONT, UI_SPACE, controlVisual } from './uiTheme';
@@ -59,6 +61,7 @@ export class UIScene extends Phaser.Scene {
   private mapText!: Phaser.GameObjects.Text;
   private toastQueue: ToastNotice[] = [];
   private toastActive = false;
+  private overlayScheduler = new OverlayScheduler();
   private menuConfirm = false;
   private surveyArmed = false;
   private researchBar!: Phaser.GameObjects.Rectangle;
@@ -86,6 +89,9 @@ export class UIScene extends Phaser.Scene {
   private terminalOpen = false;
   private inspectorOpen = false;
   private coachDismissed = false;
+  /** UI-local cursor: rotating the contract card never mutates GameState.missions. */
+  private presentedMission: string | null = null;
+  private boardOverlay: BoardOverlayVisibility = { objective: false, coach: false, inspector: false };
 
   constructor() {
     super('ui');
@@ -748,11 +754,11 @@ export class UIScene extends Phaser.Scene {
       .setOrigin(0)
       .setStrokeStyle(2, UI_COLOR.research.hex, 0.72);
     const name = this.add.text(inset, IS_TOUCH ? 9 : 7, '', {
-      ...FONT, fontSize: IS_TOUCH ? '16px' : '12px', fontStyle: 'bold', color: UI_COLOR.text.css,
+      ...FONT, fontSize: IS_TOUCH ? '18px' : '12px', fontStyle: 'bold', color: UI_COLOR.text.css,
       wordWrap: { width: zone.w - inset * 2 - (IS_TOUCH ? 104 : 82) },
     });
     const progress = this.add.text(inset, IS_TOUCH ? 31 : 26, '', {
-      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '14px' : '11px', color: UI_COLOR.textMuted.css,
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '16px' : '11px', color: UI_COLOR.textMuted.css,
       wordWrap: { width: zone.w - inset * 2 },
     });
     const fill = this.add.rectangle(inset, zone.h - 5, 0, 3, UI_COLOR.research.hex, 0.9).setOrigin(0);
@@ -761,24 +767,31 @@ export class UIScene extends Phaser.Scene {
     }).setOrigin(1, 0);
     container.add([frame, name, progress, fill, extra]);
     frame.setInteractive({ useHandCursor: true });
-    frame.on('pointerdown', () => GameState.cycleMissions());
+    frame.on('pointerdown', () => this.cycleMissionCard());
     this.missionCard = { container, frame, name, progress, fill, extra };
   }
 
   private refreshMissionCards(): void {
     const facts = GameState.missionFacts();
-    const mission = GameState.missions[0];
+    this.presentedMission = presentedMissionId(GameState.missions, this.presentedMission);
+    const mission = GameState.missions.find((candidate) => candidate.id === this.presentedMission);
     const def = mission ? missionDef(mission.id) : undefined;
     const progress = mission && def ? `${def.desc} · ${missionProgress(mission, facts)}` : 'No active contract';
-    const name = mission && def ? `CONTRACT · ${def.name}   +$${mission.payout}` : 'NO ACTIVE CONTRACT';
+    const name = mission && def ? (IS_TOUCH ? `${def.name} +$${mission.payout}` : `CONTRACT · ${def.name}   +$${mission.payout}`) : 'NO ACTIVE CONTRACT';
     const extra = GameState.missions.length > 1 ? `+${Math.max(0, GameState.missions.length - 1)} contracts` : '';
-    const fittedProgress = fitCardCopy(progress, IS_TOUCH ? 46 : 38, IS_TOUCH ? 2 : 1);
-    const fittedName = fitCardCopy(name, IS_TOUCH ? 28 : 24, 1);
+    const copy = hudCardCopyLimits(IS_TOUCH);
+    const fittedProgress = fitCardCopy(progress, copy.missionDetail, 1);
+    const fittedName = fitCardCopy(name, copy.missionTitle, 1);
     const ratio = mission ? this.missionRatio(missionProgress(mission, facts)) : 0;
     if (this.missionCard.name.text !== fittedName) this.missionCard.name.setText(fittedName);
     if (this.missionCard.progress.text !== fittedProgress) this.missionCard.progress.setText(fittedProgress);
     if (this.missionCard.extra.text !== extra) this.missionCard.extra.setText(extra);
     this.missionCard.fill.width = Math.round((this.missionCard.frame.width - (IS_TOUCH ? 24 : 16)) * ratio);
+  }
+
+  private cycleMissionCard(): void {
+    this.presentedMission = nextMissionId(GameState.missions, this.presentedMission);
+    this.refreshMissionCards();
   }
 
   private missionRatio(progress: string): number {
@@ -804,15 +817,23 @@ export class UIScene extends Phaser.Scene {
       .setOrigin(0.5);
     this.coachAction = this.add.text(inset + badgeSize + inset, IS_TOUCH ? 10 : 8, '', {
       fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '18px' : '13px', fontStyle: 'bold', color: UI_COLOR.text.css,
-      wordWrap: { width: zone.w - (inset + badgeSize + inset) - inset },
+      wordWrap: { width: zone.w - (inset + badgeSize + inset) - (IS_TOUCH ? 56 : 34) },
     });
     this.descText = this.add.text(inset + badgeSize + inset, IS_TOUCH ? 38 : 31, '', {
-      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '14px' : '10px', color: UI_COLOR.textMuted.css,
-      wordWrap: { width: zone.w - (inset + badgeSize + inset) - inset },
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '16px' : '10px', color: UI_COLOR.textMuted.css,
+      wordWrap: { width: zone.w - (inset + badgeSize + inset) - (IS_TOUCH ? 56 : 34) },
     });
-    this.coachCard.add([frame, badge, this.coachStep, this.coachAction, this.descText]);
-    frame.setInteractive({ useHandCursor: true });
-    frame.on('pointerdown', () => {
+    const closeSize = IS_TOUCH ? 36 : 22;
+    const close = this.add
+      .rectangle(zone.w - inset - closeSize, Math.floor((zone.h - closeSize) / 2), closeSize, closeSize, UI_COLOR.surfaceRaised.hex, 0.94)
+      .setOrigin(0)
+      .setStrokeStyle(1, UI_COLOR.lineBright.hex)
+      .setInteractive({ useHandCursor: true });
+    const closeText = this.add
+      .text(zone.w - inset - closeSize / 2, zone.h / 2, '×', { ...FONT, fontSize: IS_TOUCH ? '24px' : '16px', color: UI_COLOR.textMuted.css })
+      .setOrigin(0.5);
+    this.coachCard.add([frame, badge, this.coachStep, this.coachAction, this.descText, close, closeText]);
+    close.on('pointerdown', () => {
       this.coachDismissed = true;
       this.applyOverlayPlan();
     });
@@ -820,8 +841,9 @@ export class UIScene extends Phaser.Scene {
 
   private refreshCoach(message: CoachMessage): void {
     this.coachStep.setText(String(message.step));
-    this.coachAction.setText(fitCardCopy(message.action, IS_TOUCH ? 42 : 48, 1));
-    this.coachContext = fitCardCopy(message.context, IS_TOUCH ? 52 : 58, IS_TOUCH ? 2 : 1);
+    const copy = hudCardCopyLimits(IS_TOUCH);
+    this.coachAction.setText(fitCardCopy(message.action, copy.coachAction, 1));
+    this.coachContext = fitCardCopy(message.context, copy.coachContext, 1);
     this.showDesc(this.coachContext);
   }
 
@@ -838,6 +860,14 @@ export class UIScene extends Phaser.Scene {
     this.coachCard.setVisible(plan.ambient && !this.coachDismissed);
     this.summaryCard?.setVisible(plan.report);
     this.toastCard?.setVisible(plan.transient);
+    this.syncBoardOverlay(plan);
+  }
+
+  private syncBoardOverlay(plan: ReturnType<typeof overlayPlan>): void {
+    const next = boardOverlayVisibility(plan, GameState.missions.length > 0, this.coachDismissed);
+    if (next.objective === this.boardOverlay.objective && next.coach === this.boardOverlay.coach && next.inspector === this.boardOverlay.inspector) return;
+    this.boardOverlay = next;
+    GameState.events.emit('boardoverlay', next);
   }
 
   private dismissReport(): void {
@@ -845,6 +875,7 @@ export class UIScene extends Phaser.Scene {
     this.tweens.killTweensOf(this.summaryCard);
     this.summaryCard.destroy();
     this.summaryCard = null;
+    this.overlayScheduler.closeReport();
   }
 
   private clearActiveToast(): void {
@@ -852,6 +883,7 @@ export class UIScene extends Phaser.Scene {
     this.toastCard?.destroy();
     this.toastCard = null;
     this.toastActive = false;
+    this.overlayScheduler.closeToast();
   }
 
   private clearAllToasts(): void {
@@ -918,6 +950,7 @@ export class UIScene extends Phaser.Scene {
    */
   private showWaveSummary(wave: number, t: WaveTally): void {
     this.dismissReport();
+    this.overlayScheduler.openReport();
     const W = 288;
     const H = 158;
     const c = this.add.container(GAME_W / 2 - W / 2, 372).setDepth(45).setAlpha(0);
@@ -979,6 +1012,7 @@ export class UIScene extends Phaser.Scene {
         c.destroy();
         if (this.summaryCard === c) {
           this.summaryCard = null;
+          this.overlayScheduler.closeReport();
           this.restoreLowerOverlays();
         }
       },
@@ -1159,18 +1193,20 @@ export class UIScene extends Phaser.Scene {
 
   /** Slide-in achievement and mission cards, one at a time, through one queue. */
   private pumpToasts(): void {
-    if (this.toastActive || this.terminalOpen || this.helpLayer.length > 0 || this.cardLayer.length > 0 || this.summaryCard) return;
+    if (!this.overlayScheduler.canStartToast(this.terminalOpen || this.helpLayer.length > 0 || this.cardLayer.length > 0 || this.summaryCard !== null)) return;
     const def = this.toastQueue.shift();
     if (!def) return;
     this.toastActive = true;
+    this.overlayScheduler.openToast();
     const zone = overlayZones(GAME_W, PLAYFIELD_H, this.stripBottom, IS_TOUCH).toast;
     const c = this.add.container(GAME_W + zone.w, zone.y).setDepth(60);
     const bg = this.add.rectangle(0, 0, zone.w, zone.h, UI_COLOR.surface.hex, 0.96).setOrigin(0).setStrokeStyle(2, UI_COLOR.money.hex);
-    const name = this.add.text(10, IS_TOUCH ? 8 : 5, `★ ${def.name}`, {
-      ...FONT, fontSize: IS_TOUCH ? '14px' : '12px', fontStyle: 'bold', color: UI_COLOR.money.css,
+    const copy = hudCardCopyLimits(IS_TOUCH);
+    const name = this.add.text(10, IS_TOUCH ? 8 : 5, fitCardCopy(`★ ${def.name}`, copy.toastName, 1), {
+      ...FONT, fontSize: IS_TOUCH ? '18px' : '12px', fontStyle: 'bold', color: UI_COLOR.money.css,
     });
-    const desc = this.add.text(10, IS_TOUCH ? 31 : 22, def.desc, {
-      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '12px' : '10px', color: UI_COLOR.text.css,
+    const desc = this.add.text(10, IS_TOUCH ? 40 : 22, fitCardCopy(def.desc, copy.toastDetail, 1), {
+      fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '16px' : '10px', color: UI_COLOR.text.css,
     });
     c.add([bg, name, desc]);
     this.toastCard = c;
@@ -1187,6 +1223,7 @@ export class UIScene extends Phaser.Scene {
         c.destroy();
         if (this.toastCard === c) this.toastCard = null;
         this.toastActive = false;
+        this.overlayScheduler.closeToast();
         this.restoreLowerOverlays();
       },
     });

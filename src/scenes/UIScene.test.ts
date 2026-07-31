@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { BUILD_INFO, buildGroupSizes } from '../data/buildings';
+import { ACHIEVEMENTS } from '../data/achievements';
+import { MISSIONS } from '../data/missions';
+import { fitCardCopy, hudCardCopyLimits } from './hudLayout';
 import { controlVisual, UI_COLOR } from './uiTheme';
 import { UIScene } from './UIScene';
 
@@ -101,5 +104,26 @@ describe('UIScene description handoff', () => {
 
     expect(frame.stroke).toBe(UI_COLOR.money.hex);
     expect(state.text).toBe('SELECTED');
+  });
+
+  it('clamps every current mission and toast string inside desktop and touch card budgets', () => {
+    for (const touch of [false, true]) {
+      const limits = hudCardCopyLimits(touch);
+      const assertFits = (text: string, budget: number) => {
+        const fitted = fitCardCopy(text, budget, 1);
+        expect(fitted.split('\n')).toHaveLength(1);
+        expect(fitted.length).toBeLessThanOrEqual(budget);
+      };
+      for (const mission of MISSIONS) {
+        assertFits(touch ? `${mission.name} +$999` : `CONTRACT · ${mission.name}   +$999`, limits.missionTitle);
+        assertFits(`${mission.desc} · 999/999 delivered`, limits.missionDetail);
+        assertFits(`MISSION COMPLETE  ${mission.name}`, limits.toastName);
+        assertFits(`${mission.desc} — +$999`, limits.toastDetail);
+      }
+      for (const achievement of ACHIEVEMENTS) {
+        assertFits(`★ ${achievement.name}`, limits.toastName);
+        assertFits(achievement.unlock ? `${achievement.desc} — ${achievement.unlock.label}` : achievement.desc, limits.toastDetail);
+      }
+    }
   });
 });

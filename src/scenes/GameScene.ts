@@ -53,7 +53,8 @@ import {
   screenToBoard,
   zoomAbout,
 } from './boardCam';
-import { overlayHit, overlayZones, stripHit, topStrip } from './hudLayout';
+import { inspectorLayout, overlayHit, overlayZones, stripHit, topStrip } from './hudLayout';
+import type { BoardOverlayVisibility } from './overlayPresentation';
 import { isHudObject } from './hudObjects';
 import { binding, GameAction, phaserKeyName } from './keymap';
 import { coachMessage } from './coach';
@@ -72,10 +73,6 @@ const BELT_ANIM = 'belt-run';
 
 /** How long a press must be held to read as sell-instead-of-tap. */
 const LONG_PRESS_MS = 450;
-
-/** Upgrade-panel geometry. Authored small; scaled up bodily for fingers. */
-const PANEL_W = 258;
-const PANEL_SCALE = IS_TOUCH ? 1.2 : 1;
 
 /** Mk-pip / float-text tint per specialization path. */
 const PATH_COLORS: Record<PathId, number> = {
@@ -202,6 +199,8 @@ export class GameScene extends Phaser.Scene {
   private panelMagShown = -1;
   /** Mirrors the panel lifecycle into UIScene's overlay priority. */
   private inspectorOpen = false;
+  /** UIScene publishes the live card state; invisible cards must never eat board input. */
+  private boardOverlay: BoardOverlayVisibility = { objective: false, coach: false, inspector: false };
 
   constructor() {
     super('game');
@@ -309,7 +308,11 @@ export class GameScene extends Phaser.Scene {
     GameState.events.off('ui:view').on('ui:view', () => this.toggleIso());
     GameState.events.off('ui:pickcard').on('ui:pickcard', (id: string) => this.onPickCard(id));
     GameState.events.off('towerfed').on('towerfed', () => this.emitCoach());
+    GameState.events.off('boardoverlay').on('boardoverlay', (visible: BoardOverlayVisibility) => {
+      this.boardOverlay = visible;
+    });
     this.inspectorOpen = false;
+    this.boardOverlay = { objective: false, coach: false, inspector: false };
     GameState.events.emit('inspector', false);
     GameState.events.emit('coachreset');
     GameState.events.off('levelup').on('levelup', () => this.offerCards());
@@ -613,43 +616,44 @@ export class GameScene extends Phaser.Scene {
     // buttons are a comfortable click and an impossible tap, and Phaser
     // transforms container children's hit areas along with their art, so the
     // targets grow with the panel.
-    const s = PANEL_SCALE;
+    const layout = inspectorLayout(IS_TOUCH);
+    const s = layout.scale;
     const zone = overlayZones(GAME_W, PLAYFIELD_H, this.strip.stats.y + this.strip.h, IS_TOUCH).inspector;
     this.panel = this.add
       .container(zone.x, zone.y)
       .setScale(s)
       .setDepth(40)
       .setVisible(false);
-    const bg = this.add.rectangle(0, 0, PANEL_W, 136, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
+    const bg = this.add.rectangle(0, 0, layout.panel.w, layout.panel.h, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
     this.panelBg = bg;
-    this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: '13px', fontStyle: 'bold', color: '#ffe066' });
-    this.panelInfo = this.add.text(10, 37, '', { fontFamily: 'monospace', fontSize: '10px', color: '#cdd6e4', lineSpacing: 2 });
+    this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '16px' : '13px', fontStyle: 'bold', color: '#ffe066' });
+    this.panelInfo = this.add.text(10, IS_TOUCH ? 58 : 37, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '13px' : '10px', color: '#cdd6e4', lineSpacing: IS_TOUCH ? 4 : 2 });
     // Two fixed button slots: A alone for linear tiers, A+B at the Mk3 branch.
     // Buttons sit below the 4-line branch info (ends ~y85).
     this.panelBtnA = this.add
-      .rectangle(10, 108, 114, 22, 0x2e7d4f)
+      .rectangle(layout.buttonA.x, layout.buttonA.y, layout.buttonA.w, layout.buttonA.h, 0x2e7d4f)
       .setOrigin(0)
       .setStrokeStyle(1, 0x5ef078)
       .setInteractive({ useHandCursor: true });
     this.panelBtnA.on('pointerdown', () => this.tryUpgrade(0));
     this.panelBtnAText = this.add
-      .text(67, 119, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
+      .text(layout.buttonA.x + layout.buttonA.w / 2, layout.buttonA.y + layout.buttonA.h / 2, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '15px' : '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
     this.panelBtnB = this.add
-      .rectangle(134, 108, 114, 22, 0x2e7d4f)
+      .rectangle(layout.buttonB.x, layout.buttonB.y, layout.buttonB.w, layout.buttonB.h, 0x2e7d4f)
       .setOrigin(0)
       .setStrokeStyle(1, 0x5ef078)
       .setInteractive({ useHandCursor: true });
     this.panelBtnB.on('pointerdown', () => this.tryUpgrade(1));
     this.panelBtnBText = this.add
-      .text(191, 119, '', { fontFamily: 'monospace', fontSize: '10px', fontStyle: 'bold', color: '#ffffff' })
+      .text(layout.buttonB.x + layout.buttonB.w / 2, layout.buttonB.y + layout.buttonB.h / 2, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '15px' : '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
     // Every tier is paid partly in a *full* magazine and gated on lifetime
     // deliveries, so "how full am I / how much have I been fed?" is the question
     // the panel has to answer — without it a greyed-out button is a mystery.
     // Own row: combined with the title it would overrun the panel.
     this.panelMag = this.add
-      .text(10, 22, '', { fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold', color: '#cdd6e4' });
+      .text(10, IS_TOUCH ? 32 : 22, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '14px' : '11px', fontStyle: 'bold', color: '#cdd6e4' });
     this.panel.add([
       bg,
       this.panelTitle,
@@ -1096,9 +1100,9 @@ export class GameScene extends Phaser.Scene {
   private overHud(x: number, y: number): boolean {
     const zones = overlayZones(GAME_W, PLAYFIELD_H, this.strip.stats.y + this.strip.h, IS_TOUCH);
     return this.overPanel(x, y) || stripHit(this.strip, x, y) || overlayHit(zones, x, y, {
-      objective: true,
-      coach: true,
-      inspector: this.inspectorOpen,
+      objective: this.boardOverlay.objective,
+      coach: this.boardOverlay.coach,
+      inspector: this.boardOverlay.inspector,
     });
   }
 

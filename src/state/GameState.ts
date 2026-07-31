@@ -365,13 +365,6 @@ class GameStateClass {
     this.missionCursor = draw.cursor;
   }
 
-  /** Rotate the contract shown in the HUD without changing the active mission set. */
-  cycleMissions(): void {
-    if (this.missions.length < 2) return;
-    this.missions.push(this.missions.shift()!);
-    this.events.emit('missions', this.missions);
-  }
-
   private resetMissions(): void {
     this.missions = [];
     this.completedMissions = new Set();

@@ -150,6 +150,31 @@ export interface OverlayZones {
   coach: Rect;
 }
 
+/** Production inspector geometry, shared by GameScene and responsive tests. */
+export interface InspectorLayout {
+  panel: Rect;
+  scale: number;
+  buttonA: Rect;
+  buttonB: Rect;
+}
+
+export function inspectorLayout(touch: boolean): InspectorLayout {
+  if (touch) {
+    return {
+      panel: { x: 0, y: 0, w: 360, h: 320 },
+      scale: 1,
+      buttonA: { x: 12, y: 228, w: 164, h: 80 },
+      buttonB: { x: 184, y: 228, w: 164, h: 80 },
+    };
+  }
+  return {
+    panel: { x: 0, y: 0, w: 258, h: 136 },
+    scale: 1,
+    buttonA: { x: 10, y: 108, w: 114, h: 22 },
+    buttonB: { x: 134, y: 108, w: 114, h: 22 },
+  };
+}
+
 /**
  * Reserved board regions for transient overlays. They share the same anchors as
  * the status strip and playfield so UI messages never cover an inspector.
@@ -158,12 +183,13 @@ export function overlayZones(gameW: number, playfieldH: number, stripBottom: num
   const pad = touch ? 12 : 8;
   const top = Math.min(playfieldH, Math.max(0, stripBottom + pad));
   const objectiveW = touch ? 320 : 280;
-  const inspectorW = touch ? 320 : 280;
+  const inspectorLayoutDef = inspectorLayout(touch);
+  const inspectorW = inspectorLayoutDef.panel.w * inspectorLayoutDef.scale + (touch ? 0 : 22);
   const toastW = touch ? 300 : 260;
-  const objectiveH = touch ? 72 : 56;
-  const toastH = touch ? 64 : 48;
-  const inspectorH = touch ? 180 : 150;
-  const coachH = touch ? 72 : 56;
+  const objectiveH = touch ? 84 : 56;
+  const toastH = touch ? 78 : 48;
+  const inspectorH = touch ? inspectorLayoutDef.panel.h * inspectorLayoutDef.scale : 150;
+  const coachH = touch ? 84 : 56;
 
   const objective: Rect = { x: pad, y: top, w: objectiveW, h: objectiveH };
   const toast: Rect = { x: gameW - pad - toastW, y: top, w: toastW, h: toastH };
@@ -218,6 +244,13 @@ export function fitCardCopy(text: string, charsPerLine: number, maxLines: number
   if (line && out.length < lines) out.push(line);
   if (out.length <= lines) return out.join('\n');
   return `${out.slice(0, lines - 1).join('\n')}${lines > 1 ? '\n' : ''}${out[lines - 1].slice(0, Math.max(1, width - 1))}…`;
+}
+
+/** Text budgets matched to the live card widths and type scale. */
+export function hudCardCopyLimits(touch: boolean): Record<'missionTitle' | 'missionDetail' | 'coachAction' | 'coachContext' | 'toastName' | 'toastDetail', number> {
+  return touch
+    ? { missionTitle: 17, missionDetail: 34, coachAction: 36, coachContext: 46, toastName: 25, toastDetail: 34 }
+    : { missionTitle: 24, missionDetail: 38, coachAction: 48, coachContext: 58, toastName: 31, toastDetail: 42 };
 }
 
 /** Scale produced by Phaser's FIT-style canvas fitting. */
