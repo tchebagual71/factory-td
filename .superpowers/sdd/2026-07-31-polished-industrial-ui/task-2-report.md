@@ -30,7 +30,7 @@ Implemented and verified. The modules are pure and contain no Phaser objects or 
 
 ## Commit
 
-The implementation commit hash is recorded in the task handoff after the commit is created.
+Implementation: `04ca27a2df8ffae7db76dfed6fba84c8f39e82d1` (`feat: coordinate gameplay overlays and coaching`).
 
 ## Self-review
 
