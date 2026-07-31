@@ -362,13 +362,7 @@ export class UIScene extends Phaser.Scene {
       this.clearAllToasts();
     });
 
-    ev.on('wavesummary', (wave: number, tally: WaveTally) => {
-      this.queueWaveSummary(wave, tally);
-      // Establish the report first. Completing a mission synchronously queues
-      // its toast, which must wait behind this report rather than begin its
-      // tween invisibly underneath it.
-      GameState.checkMissions({ wave, tally });
-    });
+    ev.on('wavesummary', this.onWaveSummary);
     ev.on('cards', (cards: ResearchCard[], level: number) => this.showCardDraw(cards, level));
 
     this.refreshStats();
@@ -899,6 +893,12 @@ export class UIScene extends Phaser.Scene {
     }
     this.showWaveSummary(wave, tally);
   }
+
+  /** Production event seam: the report must exist before mission completion queues its toast. */
+  private onWaveSummary = (wave: number, tally: WaveTally): void => {
+    this.queueWaveSummary(wave, tally);
+    GameState.checkMissions({ wave, tally });
+  };
 
   private restoreLowerOverlays(): void {
     this.applyOverlayPlan();
