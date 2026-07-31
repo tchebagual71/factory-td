@@ -26,6 +26,13 @@ afterEach(() => {
 });
 
 describe('canvas sizing', () => {
+  it('calculates a touch-safe, aspect-aware HUD height for each viewport', async () => {
+    const { uiHeightForViewport } = await loadConfig();
+    expect(uiHeightForViewport({ width: 844, height: 390, touch: true })).toBeGreaterThanOrEqual(220);
+    expect(uiHeightForViewport({ width: 1440, height: 900, touch: false })).toBe(160);
+    expect(uiHeightForViewport({ width: 1920, height: 1080, touch: false })).toBe(80);
+  });
+
   it('keeps the classic 1280×720 on a 16:9 desktop', async () => {
     const c = await loadConfig({ innerWidth: 1920, innerHeight: 1080 });
     expect(c.GAME_W).toBe(1280);

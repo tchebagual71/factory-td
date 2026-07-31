@@ -16,6 +16,8 @@ export interface Rect {
 }
 
 export interface HudLayout {
+  /** the full bottom command-deck area */
+  deck: Rect;
   /** one slot per build option, in BUILD_INFO order (= category order) */
   slots: Rect[];
   /** one header strip per category, above that category's block of slots */
@@ -44,7 +46,7 @@ export interface HudLayoutOpts {
 
 const PAD = 10;
 const CLUSTER_W = 380;
-const TOUCH_W = 104;
+const TOUCH_W = 180;
 /** compact bars pack the four toggles into a 2×2 block beside the send button */
 const COMPACT_TOGGLE_BLOCK = 188;
 /** breathing room between two category blocks — the visual "these are different things" cue */
@@ -93,8 +95,13 @@ export function hudLayout(o: HudLayoutOpts): HudLayout {
   // ----- touch controls -----
   const touch: Rect[] = [];
   if (o.touch) {
-    const th = Math.floor((availH - 2 * gap) / 3);
-    for (let i = 0; i < 3; i++) touch.push({ x: touchX, y: top + i * (th + gap), w: TOUCH_W, h: th });
+    const th = Math.floor((availH - gap) / 2);
+    const halfW = Math.floor((TOUCH_W - gap) / 2);
+    touch.push(
+      { x: touchX, y: top, w: halfW, h: th },
+      { x: touchX + halfW + gap, y: top, w: halfW, h: th },
+      { x: touchX, y: top + th + gap, w: TOUCH_W, h: th },
+    );
   }
 
   // ----- wave cluster -----
@@ -124,6 +131,7 @@ export function hudLayout(o: HudLayoutOpts): HudLayout {
   }
 
   return {
+    deck: { x: 0, y: o.barY, w: o.gameW, h: o.barH },
     slots,
     groupHeaders,
     paletteCols,
@@ -133,6 +141,58 @@ export function hudLayout(o: HudLayoutOpts): HudLayout {
     send: { x: sendX, y: sendY, w: sendW, h: rowH },
     toggles,
   };
+}
+
+export interface OverlayZones {
+  objective: Rect;
+  inspector: Rect;
+  toast: Rect;
+  coach: Rect;
+}
+
+/**
+ * Reserved board regions for transient overlays. They share the same anchors as
+ * the status strip and playfield so UI messages never cover an inspector.
+ */
+export function overlayZones(gameW: number, playfieldH: number, stripBottom: number, touch: boolean): OverlayZones {
+  const pad = touch ? 12 : 8;
+  const top = Math.min(playfieldH, Math.max(0, stripBottom + pad));
+  const objectiveW = touch ? 320 : 280;
+  const inspectorW = touch ? 320 : 280;
+  const toastW = touch ? 300 : 260;
+  const objectiveH = touch ? 72 : 56;
+  const toastH = touch ? 64 : 48;
+  const inspectorH = touch ? 180 : 150;
+  const coachH = touch ? 72 : 56;
+
+  const objective: Rect = { x: pad, y: top, w: objectiveW, h: objectiveH };
+  const toast: Rect = { x: gameW - pad - toastW, y: top, w: toastW, h: toastH };
+  const inspector: Rect = {
+    x: gameW - pad - inspectorW,
+    y: toast.y + toast.h + pad,
+    w: inspectorW,
+    h: Math.max(0, Math.min(inspectorH, playfieldH - (toast.y + toast.h + pad))),
+  };
+  const coach: Rect = {
+    x: Math.max(pad, Math.floor((gameW - (touch ? 520 : 420)) / 2)),
+    y: Math.max(top, playfieldH - pad - coachH),
+    w: Math.min(touch ? 520 : 420, Math.max(0, gameW - 2 * pad)),
+    h: coachH,
+  };
+  return { objective, inspector, toast, coach };
+}
+
+/** Scale produced by Phaser's FIT-style canvas fitting. */
+export function fittedScale(canvasW: number, canvasH: number, viewportW: number, viewportH: number): number {
+  if (![canvasW, canvasH, viewportW, viewportH].every(Number.isFinite) || canvasW <= 0 || canvasH <= 0 || viewportW < 0 || viewportH < 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(viewportW / canvasW, viewportH / canvasH));
+}
+
+export function renderedSize(rect: Rect, scale: number): Pick<Rect, 'w' | 'h'> {
+  const safeScale = Number.isFinite(scale) && scale >= 0 ? scale : 0;
+  return { w: rect.w * safeScale, h: rect.h * safeScale };
 }
 
 /**

@@ -19,15 +19,21 @@ export const UI_H_ROOMY = 150;
  * a much taller bar, which fills what would otherwise be black bars with a
  * bigger, touch-friendly HUD instead of wasted space.
  */
-function computeUiHeight(touch: boolean): number {
+export function uiHeightForViewport({
+  width,
+  height,
+  touch,
+}: {
+  width: number;
+  height: number;
+  touch: boolean;
+}): number {
   // Touch always gets the roomy HUD: finger-sized buttons matter more than a
   // few extra rows of board, and there is no keyboard to fall back on.
-  const min = touch ? UI_H_ROOMY + 20 : UI_H_MIN;
-  if (typeof window === 'undefined') return min; // tests / SSR
-  const { innerWidth: w, innerHeight: h } = window;
-  if (!w || !h) return min;
+  const min = touch ? 220 : UI_H_MIN;
+  if (!width || !height) return min;
   // Portrait is handled by the rotate prompt; size for the landscape equivalent.
-  const aspect = Math.min(h, w) / Math.max(h, w);
+  const aspect = Math.min(height, width) / Math.max(height, width);
   const wanted = Math.round(GAME_W * aspect) - PLAYFIELD_H;
   return Math.min(UI_H_MAX, Math.max(min, wanted));
 }
@@ -36,7 +42,12 @@ const touchCapable =
   typeof window !== 'undefined' &&
   ('ontouchstart' in window || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
 
-export const UI_H = computeUiHeight(touchCapable);
+const viewport =
+  typeof window === 'undefined'
+    ? { width: 0, height: 0, touch: touchCapable }
+    : { width: window.innerWidth, height: window.innerHeight, touch: touchCapable };
+
+export const UI_H = uiHeightForViewport(viewport);
 export const GAME_H = PLAYFIELD_H + UI_H;
 
 /** True when the HUD has room for the two-row, big-button layout. */

@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { BUILD_CATEGORIES, BUILD_INFO, buildGroupSizes } from '../data/buildings';
-import { hudLayout, HudLayoutOpts, overlaps, Rect, slotContent, stripHit, topStrip } from './hudLayout';
+import {
+  fittedScale,
+  hudLayout,
+  HudLayoutOpts,
+  overlayZones,
+  overlaps,
+  Rect,
+  renderedSize,
+  slotContent,
+  stripHit,
+  topStrip,
+} from './hudLayout';
 
 const GAME_W = 1280;
 const BAR_Y = 640;
@@ -20,7 +31,7 @@ const DEVICES: { name: string; opts: HudLayoutOpts }[] = [
   },
   {
     name: 'phone landscape (very wide, touch)',
-    opts: { gameW: GAME_W, barY: BAR_Y, barH: 170, roomy: true, touch: true, groups: GROUPS },
+    opts: { gameW: GAME_W, barY: BAR_Y, barH: 220, roomy: true, touch: true, groups: GROUPS },
   },
   {
     name: 'boxy tablet, no touch',
@@ -212,6 +223,25 @@ describe('touch ergonomics', () => {
     for (const d of touchDevices) {
       const l = hudLayout(d.opts);
       expect(l.paletteRows, d.name).toBe(2);
+    }
+  });
+});
+
+describe('responsive command deck', () => {
+  it('keeps objective, inspector, toast, and coach safe zones disjoint', () => {
+    const zones = overlayZones(1280, 640, topStrip(1280, true).stats.y + topStrip(1280, true).h, true);
+    expect(overlaps(zones.objective, zones.inspector)).toBe(false);
+    expect(overlaps(zones.toast, zones.inspector)).toBe(false);
+    expect(zones.coach.y + zones.coach.h).toBeLessThanOrEqual(640);
+  });
+
+  it('keeps landscape-phone controls at least 36 CSS pixels in both dimensions', () => {
+    const opts = { gameW: 1280, barY: 640, barH: 220, roomy: true, touch: true, groups: GROUPS };
+    const layout = hudLayout(opts);
+    const scale = fittedScale(1280, 860, 844, 390);
+    for (const rect of [...layout.slots, ...layout.touch, ...layout.toggles, layout.send]) {
+      expect(renderedSize(rect, scale).w).toBeGreaterThanOrEqual(36);
+      expect(renderedSize(rect, scale).h).toBeGreaterThanOrEqual(36);
     }
   });
 });
