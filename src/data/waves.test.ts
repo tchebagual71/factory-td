@@ -2,15 +2,22 @@ import { describe, expect, it } from 'vitest';
 import {
   baseBounty,
   baseHp,
+  bossPurgesSlow,
+  BOSS_SHIELD_DAMAGE_MULT,
+  BOSS_SHIELD_RADIUS,
+  BOSS_SLOW_PURGE_SECONDS,
+  bossShieldMult,
   earlySendBonus,
   EARLY_GROWTH,
   EARLY_SEND_WINDOW,
   HP_TAPER_AT,
   LATE_GROWTH,
+  MIXED_WAVES_FROM,
   resistMult,
   waveClearBonus,
   waveDef,
   WaveKind,
+  waveThreat,
 } from './waves';
 
 describe('waveDef rhythm', () => {
@@ -109,6 +116,69 @@ describe('waveDef scaling', () => {
       expect(w.count).toBeGreaterThan(0);
       expect(w.bounty).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('waveDef squads', () => {
+  it('keeps the teaching act single-kind before mixing begins', () => {
+    for (let n = 1; n < MIXED_WAVES_FROM; n++) {
+      const wave = waveDef(n);
+      expect(wave.squads, `wave ${n}`).toHaveLength(1);
+      expect(wave.squads[0].kind).toBe(wave.kind);
+    }
+  });
+
+  it('adds a distinct secondary squad once the established swift/armored rhythm starts', () => {
+    for (let n = MIXED_WAVES_FROM; n <= 20; n++) {
+      const kinds = new Set(waveDef(n).squads.map((squad) => squad.kind));
+      expect(kinds.size, `wave ${n}`).toBeGreaterThan(1);
+    }
+  });
+
+  it('always accounts for every intended enemy exactly once', () => {
+    for (let n = 1; n <= 60; n++) {
+      const wave = waveDef(n);
+      expect(wave.squads.reduce((sum, squad) => sum + squad.count, 0), `wave ${n}`).toBe(wave.count);
+      for (const squad of wave.squads) {
+        expect(squad.count).toBeGreaterThan(0);
+        expect(squad.spacing).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('redistributes the old count/HP budget instead of moving the threat curve', () => {
+    for (let n = 1; n <= 60; n++) {
+      const wave = waveDef(n);
+      expect(waveThreat(wave), `wave ${n}`).toBeCloseTo(wave.count * wave.hp, 8);
+      // Actual kills, not merely the legacy summary fields, must preserve the
+      // payout which was proven to keep pace with this threat curve.
+      const payout = wave.squads.reduce((sum, squad) => sum + squad.count * squad.bounty, 0);
+      expect(payout, `income at wave ${n}`).toBe(wave.count * wave.bounty);
+    }
+  });
+
+  it('pays for boss shielding out of escort HP before the wave reaches play', () => {
+    const wave = waveDef(10);
+    const rawHp = wave.squads.reduce((sum, squad) => sum + squad.count * squad.hp, 0);
+    expect(wave.squads.some((squad) => squad.shieldedByBoss)).toBe(true);
+    expect(rawHp).toBeLessThan(wave.count * wave.hp);
+    expect(waveThreat(wave)).toBeCloseTo(wave.count * wave.hp, 8);
+  });
+});
+
+describe('boss mechanics', () => {
+  it('the aura reduces escort damage only inside its visible radius', () => {
+    expect(bossShieldMult('normal', BOSS_SHIELD_RADIUS)).toBe(BOSS_SHIELD_DAMAGE_MULT);
+    expect(bossShieldMult('normal', BOSS_SHIELD_RADIUS + 0.01)).toBe(1);
+    expect(bossShieldMult('boss', 0)).toBe(1); // bosses never shield one another
+    expect(bossShieldMult('normal', null)).toBe(1);
+  });
+
+  it('a boss purges an active slow on the four-second beat and nothing else does', () => {
+    expect(bossPurgesSlow('boss', 2, BOSS_SLOW_PURGE_SECONDS - 0.01)).toBe(false);
+    expect(bossPurgesSlow('boss', 2, BOSS_SLOW_PURGE_SECONDS)).toBe(true);
+    expect(bossPurgesSlow('boss', 0, BOSS_SLOW_PURGE_SECONDS)).toBe(false);
+    expect(bossPurgesSlow('armored', 2, BOSS_SLOW_PURGE_SECONDS * 2)).toBe(false);
   });
 });
 

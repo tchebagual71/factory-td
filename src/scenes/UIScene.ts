@@ -4,7 +4,9 @@ import { AchievementDef } from '../data/achievements';
 import { BUILD_CATEGORIES, BUILD_INFO, buildGroupSizes, categoryOf } from '../data/buildings';
 import { ComboState, comboColor, comboExpired, comboNow, comboTier } from '../data/combo';
 import { activeMap, prospectCost, prospectKind } from '../data/map';
+import { ActiveMission, MissionDef, missionDef, missionProgress } from '../data/missions';
 import { ResearchCard, researchForLevel } from '../data/research';
+import { gradeRun } from '../data/score';
 import { earlySendBonus, waveDef, WAVE_KIND_LABEL } from '../data/waves';
 import { pushAchievements } from '../services/cloud';
 import { ammoDeficits, ammoTotal, ammoUndelivered, GameState, WaveTally } from '../state/GameState';
@@ -17,6 +19,11 @@ import { HudLayout, hudLayout, slotContent, topStrip } from './hudLayout';
 import { binding, key } from './keymap';
 
 const FONT = { fontFamily: 'monospace' };
+
+interface ToastNotice {
+  name: string;
+  desc: string;
+}
 
 /** HUD overlay: top-left stat chips, bottom build palette + wave control. */
 export class UIScene extends Phaser.Scene {
@@ -45,7 +52,7 @@ export class UIScene extends Phaser.Scene {
   private earlyText!: Phaser.GameObjects.Text;
   private prospectText!: Phaser.GameObjects.Text;
   private mapText!: Phaser.GameObjects.Text;
-  private toastQueue: AchievementDef[] = [];
+  private toastQueue: ToastNotice[] = [];
   private toastActive = false;
   private menuConfirm = false;
   private surveyArmed = false;
@@ -57,6 +64,7 @@ export class UIScene extends Phaser.Scene {
   private comboText!: Phaser.GameObjects.Text;
   /** last streak count painted, so an unchanged streak costs no `setText` */
   private comboShown = 0;
+  private missionRows: { name: Phaser.GameObjects.Text; progress: Phaser.GameObjects.Text }[] = [];
 
   constructor() {
     super('ui');
@@ -222,6 +230,11 @@ export class UIScene extends Phaser.Scene {
       .setVisible(false);
     GameState.events.on('combo', (c: ComboState) => this.refreshCombo(c));
 
+    // Mission cards live under the top-left status strip. Completion toasts use
+    // the same lane and briefly cover them, then reveal the replacement card;
+    // objective -> payout -> new objective reads as one continuous beat.
+    this.buildMissionCards();
+
     // ----- state listeners -----
     const ev = GameState.events;
     ev.on('money', () => this.refreshStats(true));
@@ -256,10 +269,21 @@ export class UIScene extends Phaser.Scene {
       this.showGameOver(newBest, earned);
     });
     ev.on('achievement', (def: AchievementDef) => {
-      this.toastQueue.push(def);
+      this.toastQueue.push({
+        name: def.name,
+        desc: def.unlock ? `${def.desc} — ${def.unlock.label}` : def.desc,
+      });
       this.pumpToasts();
       void pushAchievements([def.id]);
     });
+    ev.on('missioncomplete', (def: MissionDef, mission: ActiveMission) => {
+      // Payouts bypass WaveTally.income so reports still describe throughput
+      // earnings, but the cash genuinely counts toward the lifetime total.
+      progress.record('moneyEarned', mission.payout);
+      this.toastQueue.push({ name: `MISSION COMPLETE  ${def.name}`, desc: `${def.desc} — +$${mission.payout}` });
+      this.pumpToasts();
+    });
+    ev.on('missions', () => this.refreshMissionCards());
     ev.on('speed', (s: number) => this.speedBtnText.setText(`×${s}`).setColor(s > 1 ? '#ffe066' : '#cdd6e4'));
     ev.on('auto', (on: boolean) => {
       this.autoBtnText.setColor(on ? '#5ef078' : '#8892a6');
@@ -274,12 +298,16 @@ export class UIScene extends Phaser.Scene {
       this.summaryCard = null;
     });
 
-    ev.on('wavesummary', (wave: number, tally: WaveTally) => this.showWaveSummary(wave, tally));
+    ev.on('wavesummary', (wave: number, tally: WaveTally) => {
+      GameState.checkMissions({ wave, tally });
+      this.showWaveSummary(wave, tally);
+    });
     ev.on('cards', (cards: ResearchCard[], level: number) => this.showCardDraw(cards, level));
 
     this.refreshStats();
     this.refreshPreview();
     this.refreshWaveBtn();
+    this.refreshMissionCards();
   }
 
   /**
@@ -618,6 +646,45 @@ export class UIScene extends Phaser.Scene {
     // The streak lapses on a clock, so nothing emits when it ends — the meter
     // has to notice for itself.
     if (this.comboShown > 0 && comboExpired(GameState.combo, comboNow())) this.hideCombo();
+    GameState.checkMissions();
+    this.refreshMissionCards();
+  }
+
+  private buildMissionCards(): void {
+    const x = 8;
+    const y = this.stripBottom + 8;
+    const w = 276;
+    const rowH = 38;
+    this.add.text(x + 8, y, 'ACTIVE MISSIONS', {
+      ...FONT, fontSize: '10px', fontStyle: 'bold', color: '#7cf7c4',
+    }).setDepth(27);
+    for (let i = 0; i < 3; i++) {
+      const rowY = y + 15 + i * rowH;
+      this.add.rectangle(x, rowY, w, rowH - 3, 0x101522, 0.84)
+        .setOrigin(0)
+        .setStrokeStyle(1, 0x315468, 0.9)
+        .setDepth(26);
+      const name = this.add.text(x + 8, rowY + 5, '', {
+        ...FONT, fontSize: '10px', fontStyle: 'bold', color: '#cdd6e4',
+      }).setDepth(27);
+      const progressText = this.add.text(x + 8, rowY + 20, '', {
+        ...FONT, fontSize: '9px', color: '#8892a6',
+      }).setDepth(27);
+      this.missionRows.push({ name, progress: progressText });
+    }
+  }
+
+  private refreshMissionCards(): void {
+    const facts = GameState.missionFacts();
+    for (let i = 0; i < this.missionRows.length; i++) {
+      const row = this.missionRows[i];
+      const mission = GameState.missions[i];
+      const def = mission ? missionDef(mission.id) : undefined;
+      const name = mission && def ? `${def.name}   +$${mission.payout}` : '—';
+      const progressText = mission && def ? missionProgress(mission, facts) : 'No eligible objective';
+      if (row.name.text !== name) row.name.setText(name);
+      if (row.progress.text !== progressText) row.progress.setText(progressText);
+    }
   }
 
   /**
@@ -889,7 +956,7 @@ export class UIScene extends Phaser.Scene {
     this.refreshStats();
   }
 
-  /** Slide-in achievement cards, one at a time, top-right above the upgrade panel. */
+  /** Slide-in achievement and mission cards, one at a time, through one queue. */
   private pumpToasts(): void {
     if (this.toastActive) return;
     const def = this.toastQueue.shift();
@@ -901,7 +968,7 @@ export class UIScene extends Phaser.Scene {
     const c = this.add.container(-280, this.stripBottom + 8).setDepth(60);
     const bg = this.add.rectangle(0, 0, 262, 34, 0x141625, 0.95).setOrigin(0).setStrokeStyle(2, 0xffe066);
     const name = this.add.text(10, 4, `★ ${def.name}`, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#ffe066' });
-    const desc = this.add.text(10, 20, def.unlock ? `${def.desc} — ${def.unlock.label}` : def.desc, { ...FONT, fontSize: '9px', color: '#cdd6e4' });
+    const desc = this.add.text(10, 20, def.desc, { ...FONT, fontSize: '9px', color: '#cdd6e4' });
     c.add([bg, name, desc]);
     sfx.coin();
     this.tweens.add({ targets: c, x: 8, duration: 250, ease: 'Back.out' });
@@ -933,6 +1000,7 @@ export class UIScene extends Phaser.Scene {
   }
 
   private showGameOver(newBest = false, scrapEarned = 0): void {
+    const score = gradeRun({ wave: GameState.wave, tally: GameState.tally });
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.7).setOrigin(0).setDepth(50);
     const title = this.add
       .text(GAME_W / 2, 260, 'FACTORY DESTROYED', { ...FONT, fontSize: '48px', fontStyle: 'bold', color: '#ff5555', stroke: '#000', strokeThickness: 8 })
@@ -962,6 +1030,17 @@ export class UIScene extends Phaser.Scene {
       .text(GAME_W / 2, 374, '', { ...FONT, fontSize: '17px', fontStyle: 'bold', color: '#7cf7c4' })
       .setOrigin(0.5)
       .setDepth(51);
+    // A compact verdict beside SCRAP: the tier is the hook, and the three
+    // supporting numbers make the next-run prescription legible at a glance.
+    const grade = this.add
+      .text(
+        GAME_W / 2,
+        410,
+        `${score.tier}  ${score.verdict}   ·   ${score.points}/100\nWave ${score.wave}   ·   ${score.delivered} delivered   ·   ${score.efficiency}% useful\n${score.advice}`,
+        { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4', align: 'center' },
+      )
+      .setOrigin(0.5)
+      .setDepth(51);
     const counter = { n: 0 };
     scrap.setText(`⚙ +0 SCRAP   (${meta.scrap - scrapEarned} banked)`);
     this.tweens.add({
@@ -982,24 +1061,24 @@ export class UIScene extends Phaser.Scene {
       },
     });
     const btn = this.add
-      .rectangle(GAME_W / 2 - 125, 400, 220, 52, 0x2e7d4f)
+      .rectangle(GAME_W / 2 - 125, 480, 220, 52, 0x2e7d4f)
       .setStrokeStyle(2, 0x5ef078)
       .setDepth(51)
       .setInteractive({ useHandCursor: true });
     const btnText = this.add
-      .text(GAME_W / 2 - 125, 400, 'REBUILD', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#ffffff' })
+      .text(GAME_W / 2 - 125, 480, 'REBUILD', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5)
       .setDepth(52);
     const menuBtn = this.add
-      .rectangle(GAME_W / 2 + 125, 400, 220, 52, 0x1e2233)
+      .rectangle(GAME_W / 2 + 125, 480, 220, 52, 0x1e2233)
       .setStrokeStyle(2, 0x2b3040)
       .setDepth(51)
       .setInteractive({ useHandCursor: true });
     const menuBtnText = this.add
-      .text(GAME_W / 2 + 125, 400, 'MENU', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(GAME_W / 2 + 125, 480, 'MENU', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(0.5)
       .setDepth(52);
-    this.overlay = [dim, title, sub, best, scrap, btn, btnText, menuBtn, menuBtnText];
+    this.overlay = [dim, title, sub, best, scrap, grade, btn, btnText, menuBtn, menuBtnText];
     const clearOverlay = () => {
       this.overlay.forEach((o) => o.destroy());
       this.overlay = [];

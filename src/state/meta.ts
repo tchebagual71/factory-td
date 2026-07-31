@@ -5,13 +5,12 @@
  * themselves are pure in `data/metaTree.ts`, exactly like the
  * `progress.ts` / `achievements.ts` split.
  *
- * Local-only for now. Syncing this to Supabase would need a `jsonb` column on
- * `profiles` and a merge rule in `mergeProgress.ts` (max per node, sum of
- * spend); until then a signed-in player's Workshop stays per-device, which is
- * the same deal `ftd:view` already gets.
+ * localStorage remains authoritative. Signed-in sync is only a best-effort
+ * mirror, applied through the pure rules in `mergeProgress.ts`.
  */
 
 import { effectsFrom, MetaEffects, MetaOwned, META_NODES, metaNode, nodeCost, RunResult, scrapEarned } from '../data/metaTree';
+import type { WorkshopProgress } from './mergeProgress';
 
 const KEY_SCRAP = 'ftd:scrap';
 const KEY_OWNED = 'ftd:workshop';
@@ -57,6 +56,18 @@ class MetaClass {
   /** Everything a fresh run gets from the Workshop. Rebuilt from levels, never accumulated. */
   effects(): MetaEffects {
     return effectsFrom(this.owned);
+  }
+
+  /** A detached snapshot for pure local ↔ cloud merge. */
+  snapshot(): WorkshopProgress {
+    return { scrap: this.scrap, owned: { ...this.owned } };
+  }
+
+  /** Apply an already-validated merged snapshot without replaying purchases. */
+  absorb(snapshot: WorkshopProgress): void {
+    this.scrap = snapshot.scrap;
+    this.owned = { ...snapshot.owned };
+    this.persist();
   }
 
   levels(id: string): number {

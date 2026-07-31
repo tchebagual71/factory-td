@@ -1,6 +1,17 @@
 import { breakCombo, comboColor, comboMilestone, comboNow, comboPitch, comboTier, registerKill } from '../data/combo';
 import { pathPx } from '../data/map';
-import { earlySendBonus, resistMult, waveClearBonus, waveDef, WaveDef } from '../data/waves';
+import {
+  bossPurgesSlow,
+  BOSS_SHIELD_RADIUS,
+  BOSS_SLOW_PURGE_SECONDS,
+  bossShieldMult,
+  earlySendBonus,
+  resistMult,
+  waveClearBonus,
+  waveDef,
+  WaveDef,
+  WaveSquad,
+} from '../data/waves';
 import { cloneTally, emptyTally, GameState } from '../state/GameState';
 import { progress } from '../state/progress';
 import { Enemy, ItemType } from '../types';
@@ -33,8 +44,28 @@ export class WaveSystem {
   private def: WaveDef | null = null;
   private toSpawn = 0;
   private spawnTimer = 0;
+  private squadIndex = 0;
+  private squadSpawned = 0;
   /** something died this frame, so the enemy list needs compacting */
   private reap = false;
+  /**
+   * Live bosses, resolved once per tick instead of once per hit.
+   *
+   * `hit()` needs the nearest boss to apply the escort shield, and it is one of
+   * the hottest paths in the game — a lance resolves several hits in a single
+   * tick against a column. Scanning the whole enemy list inside it made damage
+   * resolution O(enemies²) per frame on exactly the waves that are already the
+   * heaviest, undoing the frame-cost pass in roadmap item 26. Bosses are few, so
+   * this list stays short.
+   */
+  private bosses: Enemy[] = [];
+  /**
+   * Enemy count at the last rebuild. Deriving staleness from the roster itself
+   * rather than from a flag callers must remember to set: a flag was silently
+   * wrong for anything that touched `enemies` outside the spawn path, which is
+   * a trap for tests and for any future caller.
+   */
+  private bossesAt = -1;
 
   constructor(private scene: GameScene) {}
 
@@ -43,13 +74,16 @@ export class WaveSystem {
     this.def = waveDef(GameState.wave);
     this.toSpawn = this.def.count;
     this.spawnTimer = 0;
+    this.squadIndex = 0;
+    this.squadSpawned = 0;
     // Bank the early-send bonus before setPhase resets the build clock
     const early = earlySendBonus(GameState.wave, GameState.buildElapsed);
     GameState.tally = emptyTally();
     GameState.tally.magStart = this.scene.magazineTotal();
     GameState.setPhase('wave');
-    const suffix = this.def.kind === 'normal' ? '' : ` — ${this.def.kind.toUpperCase()}`;
-    this.scene.bigText(`WAVE ${GameState.wave}${suffix}`);
+    const composition = this.def.squads.map((squad) => squad.kind.toUpperCase()).join(' + ');
+    const mechanics = this.def.kind === 'boss' ? ' · SHIELD · PURGE' : '';
+    this.scene.bigText(`WAVE ${GameState.wave} — ${composition}${mechanics}`);
     if (early > 0) {
       GameState.addMoney(early);
       progress.record('moneyEarned', early);
@@ -73,9 +107,19 @@ export class WaveSystem {
       this.spawnTimer -= dt;
       let guard = MAX_SPAWNS_PER_TICK;
       while (this.toSpawn > 0 && this.spawnTimer <= 0 && guard-- > 0) {
-        this.spawn(this.def);
+        const squad = this.def.squads[this.squadIndex];
+        if (!squad) {
+          this.toSpawn = 0;
+          break;
+        }
+        this.spawn(squad);
         this.toSpawn -= 1;
-        this.spawnTimer += this.def.interval;
+        this.spawnTimer += squad.spacing;
+        this.squadSpawned += 1;
+        if (this.squadSpawned >= squad.count) {
+          this.squadIndex += 1;
+          this.squadSpawned = 0;
+        }
       }
       // Hit the guard on a pathological frame: drop the backlog rather than
       // banking debt that would burst-spawn on every subsequent tick.
@@ -84,6 +128,19 @@ export class WaveSystem {
 
     for (const e of this.enemies) {
       if (e.dead) continue;
+      if (e.kind === 'boss') {
+        e.bossPurge = (e.bossPurge ?? 0) + dt;
+        if (e.bossPurge >= BOSS_SLOW_PURGE_SECONDS) {
+          const purged = bossPurgesSlow(e.kind, e.slow, e.bossPurge);
+          e.bossPurge %= BOSS_SLOW_PURGE_SECONDS;
+          if (purged) {
+            e.slow = 0;
+            e.slowFactor = 1;
+            this.scene.floatText(e.x, e.y - 28, 'SLOW PURGED', '#d7b8ff');
+            this.scene.burst(e.x, e.y, 0xa879ff, 18);
+          }
+        }
+      }
       if (e.slow > 0) {
         e.slow -= dt;
         if (e.slow <= 0) e.slowFactor = 1;
@@ -104,6 +161,7 @@ export class WaveSystem {
       const fromY = e.y;
       this.move(e, dt);
       e.sprite.setPosition(e.x, e.y);
+      e.aura?.setPosition(e.x, e.y);
       // Face the way it is walking. Sprites are drawn nose-East, so this is the
       // raw heading; a stationary frame keeps the previous angle.
       if (e.x !== fromX || e.y !== fromY) e.sprite.setRotation(Math.atan2(e.y - fromY, e.x - fromX));
@@ -123,16 +181,41 @@ export class WaveSystem {
     }
   }
 
+  /**
+   * Live bosses, rebuilt only when the roster size changed. Deaths within a tick
+   * do not change the length until the reap, which is why the caller still skips
+   * `dead` — that keeps a boss killed earlier this frame from shielding anything.
+   */
+  private liveBosses(): Enemy[] {
+    if (this.enemies.length !== this.bossesAt) {
+      this.bossesAt = this.enemies.length;
+      this.bosses = this.enemies.filter((b) => b.kind === 'boss');
+    }
+    return this.bosses;
+  }
+
   /** Apply damage (scaled by kind resistances); handles death, bounty, and juice. Returns true on kill. */
   hit(e: Enemy, dmg: number, source: ItemType = 'ammo'): boolean {
     if (e.dead) return false;
-    const mult = resistMult(e.kind, source);
+    let nearestBossDistance: number | null = null;
+    if (e.kind !== 'boss') {
+      for (const other of this.liveBosses()) {
+        // A boss killed earlier in this same tick is still in the cached list;
+        // it must stop shielding its escorts immediately, not next frame.
+        if (other.dead) continue;
+        const distance = Math.hypot(other.x - e.x, other.y - e.y);
+        if (nearestBossDistance === null || distance < nearestBossDistance) nearestBossDistance = distance;
+      }
+    }
+    const resistance = resistMult(e.kind, source);
+    const shield = bossShieldMult(e.kind, nearestBossDistance);
+    const mult = resistance * shield;
     e.hp -= Math.max(1, Math.round(dmg * mult));
     sfx.hit();
     // resisted hits flash steel-gray instead of white — the "wrong ammo" tell.
-    // The tint itself is applied by the update loop, which owns the sprite's
-    // colour; see the priority chain there.
-    e.flashTint = mult < 1 ? 0x7a8494 : 0xffffff;
+    // Purple means the aura absorbed part of the hit; steel-gray remains the
+    // "wrong ammo" tell. The update loop owns the sprite's colour.
+    e.flashTint = shield < 1 ? 0xb991ff : resistance < 1 ? 0x7a8494 : 0xffffff;
     e.flash = FLASH_SECONDS;
     if (e.hp <= 0) {
       this.kill(e);
@@ -171,6 +254,7 @@ export class WaveSystem {
     sfx.coin(comboPitch(combo.count));
     e.sprite.destroy();
     e.hpBar.destroy();
+    e.aura?.destroy();
   }
 
   private leak(e: Enemy): void {
@@ -188,6 +272,7 @@ export class WaveSystem {
     sfx.leak();
     e.sprite.destroy();
     e.hpBar.destroy();
+    e.aura?.destroy();
   }
 
   /**
@@ -230,7 +315,7 @@ export class WaveSystem {
     }
   }
 
-  private spawn(def: WaveDef): void {
+  private spawn(def: WaveSquad): void {
     const p = this.path[0];
     const texture =
       def.kind === 'boss' ? 'boss' : def.kind === 'swift' ? 'swift' : def.kind === 'armored' ? 'armored' : 'enemy';
@@ -238,6 +323,13 @@ export class WaveSystem {
     const barY = def.kind === 'boss' ? 21 : 16;
     const sprite = this.scene.add.image(p.x, p.y, texture).setDepth(5);
     const hpBar = this.scene.add.rectangle(p.x - barW / 2, p.y - barY, barW, 3, 0x5ef078).setOrigin(0, 0.5).setDepth(6);
+    const aura =
+      def.kind === 'boss'
+        ? this.scene.add
+            .circle(p.x, p.y, BOSS_SHIELD_RADIUS, 0x7655cc, 0.1)
+            .setStrokeStyle(2, 0xb991ff, 0.8)
+            .setDepth(4)
+        : undefined;
     this.enemies.push({
       kind: def.kind,
       x: p.x,
@@ -250,6 +342,7 @@ export class WaveSystem {
       flash: 0,
       flashTint: 0,
       tinted: 0,
+      bossPurge: def.kind === 'boss' ? 0 : undefined,
       wp: 0,
       traveled: 0,
       bounty: def.bounty,
@@ -259,6 +352,7 @@ export class WaveSystem {
       hpBar,
       hpBarW: barW,
       hpBarY: barY,
+      aura,
     });
   }
 

@@ -2,6 +2,13 @@ import Phaser from 'phaser';
 import { START_LIVES, START_MONEY } from '../config';
 import { ComboState, emptyCombo } from '../data/combo';
 import { MetaEffects } from '../data/metaTree';
+import {
+  ActiveMission,
+  MissionFacts,
+  missionComplete,
+  missionDef,
+  refillMissions,
+} from '../data/missions';
 import { emptyMods, Mods } from '../data/mods';
 import { modsFrom, researchForLevel } from '../data/research';
 import type { ItemType } from '../types';
@@ -154,6 +161,16 @@ class GameStateClass {
   combo: ComboState = emptyCombo();
 
   /**
+   * The three HUD missions. Deliberately not serialized: they pay a small,
+   * immediate bonus and carry no factory state, so a restored run simply draws
+   * a fresh set. Persisting them would expand the save contract for chrome in
+   * the same way persisting a kill streak would.
+   */
+  missions: ActiveMission[] = [];
+  private completedMissions = new Set<string>();
+  private missionCursor = 0;
+
+  /**
    * Permanent Workshop grants (`data/metaTree.ts`), folded in underneath the
    * research picks. Not serialized: it is rederived from the player's account
    * on every run, so an old save can never carry a stale Workshop with it.
@@ -292,6 +309,70 @@ class GameStateClass {
     this.events.emit('money', this.money);
   }
 
+  /** Structural snapshot consumed by the pure mission rules. */
+  missionFacts(lastCleared?: { wave: number; tally: WaveTally }): MissionFacts {
+    return {
+      wave: this.wave,
+      phase: this.phase,
+      money: this.money,
+      runKills: this.runKills,
+      researchLevel: this.researchLevel,
+      tally: this.tally,
+      lastCleared,
+    };
+  }
+
+  /**
+   * Settle every currently met card, pay it without contaminating wave income,
+   * and refill. The bounded loop matters when one payout crosses another cash
+   * target; the second card should complete too, while a replacement is drawn
+   * against the already-updated wallet.
+   */
+  checkMissions(lastCleared?: { wave: number; tally: WaveTally }): void {
+    let changed = false;
+    for (let pass = 0; pass < 4; pass++) {
+      const facts = this.missionFacts(lastCleared);
+      const met = this.missions.filter((mission) => {
+        const def = missionDef(mission.id);
+        return !!def && missionComplete(def, mission, facts);
+      });
+      if (met.length === 0) break;
+
+      changed = true;
+      const ids = new Set(met.map((mission) => mission.id));
+      this.missions = this.missions.filter((mission) => !ids.has(mission.id));
+      for (const mission of met) {
+        const def = missionDef(mission.id);
+        if (!def) continue;
+        this.completedMissions.add(mission.id);
+        this.addMoney(mission.payout, false);
+        this.events.emit('missioncomplete', def, mission);
+      }
+      this.refillMissionCards(lastCleared);
+    }
+    if (changed) this.events.emit('missions', this.missions);
+  }
+
+  private refillMissionCards(lastCleared?: { wave: number; tally: WaveTally }): void {
+    const draw = refillMissions(
+      this.missions,
+      this.completedMissions,
+      this.missionFacts(lastCleared),
+      3,
+      this.missionCursor,
+    );
+    this.missions = draw.active;
+    this.missionCursor = draw.cursor;
+  }
+
+  private resetMissions(): void {
+    this.missions = [];
+    this.completedMissions = new Set();
+    this.missionCursor = 0;
+    this.refillMissionCards();
+    this.events.emit('missions', this.missions);
+  }
+
   spend(n: number): boolean {
     if (this.money < n) return false;
     this.money -= n;
@@ -354,6 +435,8 @@ class GameStateClass {
     this.buildElapsed = 0;
     this.tally = emptyTally();
     this.surveys = s.surveys ?? 0;
+    this.runKills = 0;
+    this.resetMissions();
     this.events.emit('surveys', this.surveys);
     this.events.emit('research', this.research, this.researchLevel);
     this.events.emit('mods', this.mods);
@@ -377,6 +460,9 @@ class GameStateClass {
     this.buildElapsed = 0;
     this.tally = emptyTally();
     this.combo = emptyCombo();
+    this.missions = [];
+    this.completedMissions = new Set();
+    this.missionCursor = 0;
     this.overlay = false;
     this.surveys = 0;
     this.research = 0;
@@ -391,6 +477,8 @@ class GameStateClass {
     this.bestWaveAtStart = 0;
     this.surveyDiscount = 0;
     this.mods = emptyMods();
+    this.refillMissionCards();
+    this.events.emit('missions', this.missions);
     this.events.emit('paused', false);
     this.events.emit('overlay', false);
     this.events.emit('surveys', 0);

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { effStats } from '../data/buildings';
+import { BOSS_SHIELD_RADIUS, BOSS_SLOW_PURGE_SECONDS, waveDef } from '../data/waves';
 import { GameState } from '../state/GameState';
 import { makeScene, MockSprite, makeSprite } from '../test/helpers';
 import { Enemy } from '../types';
@@ -75,6 +76,48 @@ describe('chill', () => {
     const e = makeEnemy({ slow: 0, slowFactor: 1 });
     wave.chill(e, 0.9, 1);
     expect(e.slowFactor).toBe(0.9);
+  });
+});
+
+describe('boss mechanics at the system seam', () => {
+  it('reduces damage to a nearby escort and stops protecting it outside the aura', () => {
+    const boss = makeEnemy({ kind: 'boss', x: 0, y: 0 });
+    const escort = makeEnemy({ x: BOSS_SHIELD_RADIUS, y: 0 });
+    wave.enemies.push(boss, escort);
+
+    wave.hit(escort, 20, 'shell');
+    expect(escort.hp).toBe(85);
+
+    escort.x = BOSS_SHIELD_RADIUS + 1;
+    wave.hit(escort, 20, 'shell');
+    expect(escort.hp).toBe(65);
+  });
+
+  it('clears a boss slow when its purge beat arrives', () => {
+    const boss = makeEnemy({ kind: 'boss', bossPurge: BOSS_SLOW_PURGE_SECONDS - 0.01 });
+    wave.start();
+    wave.enemies.push(boss);
+    wave.chill(boss, 0.4, 3);
+
+    wave.update(0.02);
+
+    expect(boss.slow).toBe(0);
+    expect(boss.slowFactor).toBe(1);
+  });
+});
+
+describe('squad spawning', () => {
+  it('walks the wave definition into both enemy kinds', () => {
+    GameState.wave = 6;
+    const def = waveDef(GameState.wave);
+    const firstSquadSeconds = def.squads[0].count * def.squads[0].spacing;
+    wave.start();
+
+    for (let elapsed = 0; elapsed <= firstSquadSeconds + 0.1; elapsed += 0.05) wave.update(0.05);
+
+    expect(new Set(wave.enemies.map((enemy) => enemy.kind))).toEqual(
+      new Set(def.squads.map((squad) => squad.kind)),
+    );
   });
 });
 

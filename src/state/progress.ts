@@ -7,6 +7,7 @@ import {
   Stats,
 } from '../data/achievements';
 import { GameState } from './GameState';
+import { mergeStats } from './mergeProgress';
 
 /**
  * Lifetime stats + unlocked achievements, persisted to localStorage. This is
@@ -111,6 +112,30 @@ class ProgressClass {
       }
     }
     if (changed) writeJSON(KEY_ACH, [...this.unlocked]);
+  }
+
+  /**
+   * Merge lifetime counters learned from another device. This is deliberately
+   * quiet: old progress appearing at sign-in is not a new in-run event. Any
+   * achievement implied by those counters is still banked for the union push.
+   */
+  absorbStats(other: Stats): void {
+    const merged = mergeStats(this.stats, other);
+    if ((Object.keys(merged) as StatKey[]).every((stat) => merged[stat] === this.stats[stat])) return;
+
+    this.stats = merged;
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.dirty = false;
+    writeJSON(KEY_STATS, this.stats);
+
+    const fresh = newlyUnlocked(this.unlocked, this.stats);
+    if (fresh.length > 0) {
+      for (const def of fresh) this.unlocked.add(def.id);
+      writeJSON(KEY_ACH, [...this.unlocked]);
+    }
   }
 
   private afterChange(): void {

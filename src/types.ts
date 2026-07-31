@@ -140,6 +140,8 @@ export interface Enemy {
   flashTint: number;
   /** tint currently written to the sprite (0 = none), so the GPU is only touched on a change */
   tinted: number;
+  /** seconds accumulated toward the boss's next coolant purge */
+  bossPurge?: number;
   /** index of the waypoint the enemy is walking toward */
   wp: number;
   /** total px traveled — targeting priority (furthest along path) */
@@ -151,4 +153,6 @@ export interface Enemy {
   hpBar: Phaser.GameObjects.Rectangle;
   hpBarW: number;
   hpBarY: number;
+  /** visible radius of a boss's escort shield; absent on ordinary enemies */
+  aura?: Phaser.GameObjects.Arc;
 }

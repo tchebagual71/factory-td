@@ -27,6 +27,7 @@ export interface MockSprite {
   setRotation(r: number): MockSprite;
   setTint(t: number): MockSprite;
   setTintFill(t: number): MockSprite;
+  setStrokeStyle(width?: number, color?: number, alpha?: number): MockSprite;
   clearTint(): MockSprite;
   setOrigin(x?: number, y?: number): MockSprite;
   destroy(): void;
@@ -67,6 +68,9 @@ export function makeSprite(x = 0, y = 0): MockSprite {
     setTintFill(t: number) {
       s.tint = t;
       s.tintFill = true;
+      return s;
+    },
+    setStrokeStyle() {
       return s;
     },
     clearTint() {

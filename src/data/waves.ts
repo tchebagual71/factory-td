@@ -2,6 +2,18 @@ import { ItemType } from '../types';
 
 export type WaveKind = 'normal' | 'swift' | 'armored' | 'boss';
 
+export interface WaveSquad {
+  kind: WaveKind;
+  count: number;
+  spacing: number; // seconds between members of this squad
+  hp: number;
+  speed: number;
+  bounty: number;
+  leak: number;
+  /** Boss escorts are budgeted at their shielded durability, not their raw HP. */
+  shieldedByBoss: boolean;
+}
+
 export interface WaveDef {
   kind: WaveKind;
   count: number;
@@ -10,7 +22,26 @@ export interface WaveDef {
   interval: number; // seconds between spawns
   bounty: number; // money per kill
   leak: number; // lives lost per leaked enemy
+  squads: WaveSquad[];
 }
+
+/** Five uniform waves teach the counter table before compositions start asking for two answers at once. */
+export const MIXED_WAVES_FROM = 6;
+
+/** A quarter-wave secondary is large enough to demand an answer without erasing the wave's headline identity. */
+export const MIXED_SECONDARY_SHARE = 0.25;
+
+/** The shield reaches a little over three tiles, enough to cover a packed squad without protecting the whole lane. */
+export const BOSS_SHIELD_RADIUS = 104;
+
+/** A 25% reduction is immediately legible but leaves focused fire useful against an escorted target. */
+export const BOSS_SHIELD_DAMAGE_MULT = 0.75;
+
+/** Four seconds lets coolant buy meaningful time while preventing one pulse from pinning a boss indefinitely. */
+export const BOSS_SLOW_PURGE_SECONDS = 4;
+
+/** One boss carries ten escort-sized threat shares, keeping the fifth-wave beat centered on a single landmark enemy. */
+const BOSS_THREAT_WEIGHT = 10;
 
 /**
  * HP growth. The first {@link HP_TAPER_AT} waves compound at the original
@@ -55,7 +86,7 @@ export function baseBounty(n: number): number {
  * every 3rd otherwise is a swift wave (fast, fragile, numerous), and from
  * wave 6 the remaining even waves are armored (resist bullets, not shells).
  */
-export function waveDef(n: number): WaveDef {
+function uniformWaveDef(n: number): Omit<WaveDef, 'squads'> {
   const hp = baseHp(n);
   const bounty = baseBounty(n);
   const baseCount = 4 + 2 * n;
@@ -64,8 +95,8 @@ export function waveDef(n: number): WaveDef {
       kind: 'boss',
       count: Math.max(2, Math.floor(baseCount / 3)),
       hp: hp * 5,
-      speed: Math.min(90, 38 + n),
-      interval: 1.8,
+      speed: speedFor(n, 'boss'),
+      interval: spacingFor(n, 'boss'),
       bounty: bounty * 5,
       leak: 5,
     };
@@ -75,8 +106,8 @@ export function waveDef(n: number): WaveDef {
       kind: 'swift',
       count: Math.round(baseCount * 1.4),
       hp: Math.max(8, Math.round(hp * 0.55)),
-      speed: Math.min(175, 78 + 2.5 * n),
-      interval: Math.max(0.25, 0.55 - 0.015 * n),
+      speed: speedFor(n, 'swift'),
+      interval: spacingFor(n, 'swift'),
       bounty: Math.max(3, Math.floor(bounty * 0.6)),
       leak: 1,
     };
@@ -86,8 +117,8 @@ export function waveDef(n: number): WaveDef {
       kind: 'armored',
       count: Math.max(4, Math.round(baseCount * 0.8)),
       hp: Math.round(hp * 1.35),
-      speed: Math.min(110, Math.round((52 + 2 * n) * 0.85)),
-      interval: Math.max(0.5, 1.1 - 0.02 * n),
+      speed: speedFor(n, 'armored'),
+      interval: spacingFor(n, 'armored'),
       bounty: Math.round(bounty * 1.5),
       leak: 2,
     };
@@ -96,11 +127,107 @@ export function waveDef(n: number): WaveDef {
     kind: 'normal',
     count: baseCount,
     hp,
-    speed: Math.min(130, 52 + 2 * n),
-    interval: Math.max(0.35, 0.95 - 0.02 * n),
+    speed: speedFor(n, 'normal'),
+    interval: spacingFor(n, 'normal'),
     bounty,
     leak: 1,
   };
+}
+
+function speedFor(n: number, kind: WaveKind): number {
+  const normal = Math.min(130, 52 + 2 * n);
+  if (kind === 'swift') return Math.min(175, 78 + 2.5 * n);
+  if (kind === 'armored') return Math.min(110, Math.round(normal * 0.85));
+  if (kind === 'boss') return Math.min(90, 38 + n);
+  return normal;
+}
+
+function spacingFor(n: number, kind: WaveKind): number {
+  if (kind === 'swift') return Math.max(0.25, 0.55 - 0.015 * n);
+  if (kind === 'armored') return Math.max(0.5, 1.1 - 0.02 * n);
+  if (kind === 'boss') return 1.8;
+  return Math.max(0.35, 0.95 - 0.02 * n);
+}
+
+function leakFor(kind: WaveKind): number {
+  if (kind === 'boss') return 5;
+  if (kind === 'armored') return 2;
+  return 1;
+}
+
+/** Reuse the shipped kind HP ratios so a mixed squad still reads as fragile, ordinary, or tanky. */
+function threatWeight(kind: WaveKind): number {
+  if (kind === 'swift') return 0.55;
+  if (kind === 'armored') return 1.35;
+  if (kind === 'boss') return BOSS_THREAT_WEIGHT;
+  return 1;
+}
+
+function secondaryKind(n: number, primary: WaveKind): WaveKind {
+  if (primary === 'boss') return n % 10 === 0 ? 'swift' : 'armored';
+  if (primary === 'swift') return n >= 12 && n % 2 === 0 ? 'armored' : 'normal';
+  if (primary === 'armored') return n % 4 === 0 ? 'swift' : 'normal';
+  return n % 4 === 1 ? 'armored' : 'swift';
+}
+
+function squadsFor(n: number, def: Omit<WaveDef, 'squads'>): WaveSquad[] {
+  if (n < MIXED_WAVES_FROM || def.count < 2) {
+    return [{ ...def, spacing: def.interval, shieldedByBoss: false }];
+  }
+
+  const secondary = secondaryKind(n, def.kind);
+  const secondaryCount =
+    def.kind === 'boss' ? def.count - 1 : Math.max(1, Math.round(def.count * MIXED_SECONDARY_SHARE));
+  const primaryCount = def.count - secondaryCount;
+  const parts = [{ kind: def.kind, count: primaryCount }, { kind: secondary, count: secondaryCount }];
+  const weightedCount = parts.reduce((sum, part) => sum + part.count * threatWeight(part.kind), 0);
+  const hpPerWeight = (def.count * def.hp) / weightedCount;
+
+  return parts.map((part) => {
+    const shieldedByBoss = def.kind === 'boss' && part.kind !== 'boss';
+    return {
+      kind: part.kind,
+      count: part.count,
+      spacing: spacingFor(n, part.kind),
+      // Shielded escorts pay for the aura out of raw HP. While inside it their
+      // effective durability is exactly the threat share allocated here; once
+      // they outrun the boss they become deliberately easier, never harder.
+      hp: hpPerWeight * threatWeight(part.kind) * (shieldedByBoss ? BOSS_SHIELD_DAMAGE_MULT : 1),
+      speed: speedFor(n, part.kind),
+      bounty: def.bounty,
+      leak: leakFor(part.kind),
+      shieldedByBoss,
+    };
+  });
+}
+
+/**
+ * Wave rhythm still chooses the headline kind and its old count/HP budget.
+ * Squads only redistribute that budget, so callers which model the established
+ * curve through the top-level fields continue to read the exact same numbers.
+ */
+export function waveDef(n: number): WaveDef {
+  const def = uniformWaveDef(n);
+  return { ...def, squads: squadsFor(n, def) };
+}
+
+/** Effective HP after accounting for the boss aura already paid for by escort HP. */
+export function waveThreat(def: WaveDef): number {
+  return def.squads.reduce(
+    (total, squad) => total + (squad.count * squad.hp) / (squad.shieldedByBoss ? BOSS_SHIELD_DAMAGE_MULT : 1),
+    0,
+  );
+}
+
+/** Nearby bosses protect escorts, but never one another; multiple auras do not stack. */
+export function bossShieldMult(targetKind: WaveKind, nearestBossDistance: number | null): number {
+  if (targetKind === 'boss' || nearestBossDistance === null || nearestBossDistance > BOSS_SHIELD_RADIUS) return 1;
+  return BOSS_SHIELD_DAMAGE_MULT;
+}
+
+/** Bosses purge an active coolant slow on each four-second mechanic beat. */
+export function bossPurgesSlow(kind: WaveKind, slowSeconds: number, secondsSincePurge: number): boolean {
+  return kind === 'boss' && slowSeconds > 0 && secondsSincePurge >= BOSS_SLOW_PURGE_SECONDS;
 }
 
 export const WAVE_KIND_LABEL: Record<WaveKind, string> = {

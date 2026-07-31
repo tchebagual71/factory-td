@@ -1,5 +1,13 @@
 import { loadLocal, saveLocal } from '../state/persistence';
-import { mergeAchievements, mergeBest, newerRun } from '../state/mergeProgress';
+import {
+  LifetimeProgress,
+  mergeAchievements,
+  mergeBest,
+  mergeLifetimeProgress,
+  newerRun,
+  validateLifetimeProgress,
+} from '../state/mergeProgress';
+import { meta } from '../state/meta';
 import { progress } from '../state/progress';
 import { LatestSaveQueue } from '../state/saveQueue';
 import { SaveV1, validateSave } from '../state/serialize';
@@ -102,9 +110,46 @@ async function pullBest(): Promise<number> {
   return data?.best_wave ?? 0;
 }
 
+interface ProfileProgressPull {
+  /** False means the request failed, including a deployment without the column. */
+  available: boolean;
+  progress: LifetimeProgress | null;
+}
+
+/**
+ * The profile column ships separately from this client. Treat a missing column,
+ * paused project, or blocked request as no cloud at all; none may turn into an
+ * empty snapshot that erases local progress.
+ */
+async function pullLifetimeProgress(): Promise<ProfileProgressPull> {
+  try {
+    const c = getClient();
+    const u = await currentUser();
+    if (!c || !u) return { available: false, progress: null };
+    const { data, error } = await c.from('profiles').select('progress').eq('id', u.id).maybeSingle();
+    if (error || !data) return { available: false, progress: null };
+    return { available: true, progress: validateLifetimeProgress(data.progress) };
+  } catch {
+    return { available: false, progress: null };
+  }
+}
+
+/** Best-effort mirror; deliberately silent while the schema rolls out. */
+async function pushLifetimeProgress(snapshot: LifetimeProgress): Promise<void> {
+  try {
+    const c = getClient();
+    const u = await currentUser();
+    if (!c || !u) return;
+    await c.from('profiles').update({ progress: snapshot }).eq('id', u.id);
+  } catch {
+    // Local state already contains the merge. Cloud absence is the guest path.
+  }
+}
+
 /**
  * Full two-way merge, run once per sign-in (and after identity linking):
- * newest run save wins both directions, achievements union, best wave max.
+ * newest run save wins both directions; Workshop nodes, wallet, and lifetime
+ * stats max-merge; achievements union; leaderboard best wave max.
  */
 export async function syncOnSignIn(): Promise<void> {
   const u = await currentUser();
@@ -117,12 +162,28 @@ export async function syncOnSignIn(): Promise<void> {
   if (choice === 'cloud' && cloud) saveLocal(cloud.save);
   else if (choice === 'local' && local) await pushSave(local);
 
-  const cloudAch = await pullAchievements();
-  const merge = mergeAchievements(progress.unlocked, cloudAch);
-  progress.absorb(merge.toAbsorb);
-  await pushAchievements(merge.toPush);
+  const cloudProgress = await pullLifetimeProgress();
+  if (cloudProgress.available && cloudProgress.progress) {
+    const merged = mergeLifetimeProgress(
+      { v: 1, workshop: meta.snapshot(), stats: progress.stats },
+      cloudProgress.progress,
+    );
+    meta.absorb(merged.workshop);
+    progress.absorbStats(merged.stats);
+  }
 
   const best = mergeBest(progress.stats.bestWave, await pullBest());
   progress.recordMax('bestWave', best);
   await pushBest(best);
+
+  // Push after best-wave reconciliation so the jsonb mirror cannot lag the
+  // existing scores row on the very sign-in that introduced it.
+  if (cloudProgress.available) {
+    await pushLifetimeProgress({ v: 1, workshop: meta.snapshot(), stats: { ...progress.stats } });
+  }
+
+  const cloudAch = await pullAchievements();
+  const merge = mergeAchievements(progress.unlocked, cloudAch);
+  progress.absorb(merge.toAbsorb);
+  await pushAchievements(merge.toPush);
 }
