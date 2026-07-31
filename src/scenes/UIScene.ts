@@ -304,6 +304,7 @@ export class UIScene extends Phaser.Scene {
       this.coachDismissed = false;
       this.applyOverlayPlan();
     });
+    ev.on('boardoverlayrequest', () => this.syncBoardOverlay(overlayPlan({ terminal: this.terminalOpen, blocking: this.helpLayer.length > 0 || this.cardLayer.length > 0, report: this.summaryCard !== null, transient: this.toastActive, inspector: this.inspectorOpen }), true));
     ev.on('gameover', () => {
       // A pending draw (or an open help panel) would otherwise sit on top of the
       // game-over buttons and keep the sim frozen with no way out.
@@ -763,7 +764,7 @@ export class UIScene extends Phaser.Scene {
     });
     const fill = this.add.rectangle(inset, zone.h - 5, 0, 3, UI_COLOR.research.hex, 0.9).setOrigin(0);
     const extra = this.add.text(zone.w - inset, IS_TOUCH ? 9 : 7, '', {
-      ...FONT, fontSize: IS_TOUCH ? '11px' : '9px', color: UI_COLOR.research.css,
+      ...FONT, fontSize: IS_TOUCH ? '16px' : '9px', color: UI_COLOR.research.css,
     }).setOrigin(1, 0);
     container.add([frame, name, progress, fill, extra]);
     frame.setInteractive({ useHandCursor: true });
@@ -817,13 +818,13 @@ export class UIScene extends Phaser.Scene {
       .setOrigin(0.5);
     this.coachAction = this.add.text(inset + badgeSize + inset, IS_TOUCH ? 10 : 8, '', {
       fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '18px' : '13px', fontStyle: 'bold', color: UI_COLOR.text.css,
-      wordWrap: { width: zone.w - (inset + badgeSize + inset) - (IS_TOUCH ? 56 : 34) },
+      wordWrap: { width: zone.w - (inset + badgeSize + inset) - (IS_TOUCH ? 100 : 34) },
     });
     this.descText = this.add.text(inset + badgeSize + inset, IS_TOUCH ? 38 : 31, '', {
       fontFamily: UI_FONT.body, fontSize: IS_TOUCH ? '16px' : '10px', color: UI_COLOR.textMuted.css,
-      wordWrap: { width: zone.w - (inset + badgeSize + inset) - (IS_TOUCH ? 56 : 34) },
+      wordWrap: { width: zone.w - (inset + badgeSize + inset) - (IS_TOUCH ? 100 : 34) },
     });
-    const closeSize = IS_TOUCH ? 36 : 22;
+    const closeSize = IS_TOUCH ? 80 : 22;
     const close = this.add
       .rectangle(zone.w - inset - closeSize, Math.floor((zone.h - closeSize) / 2), closeSize, closeSize, UI_COLOR.surfaceRaised.hex, 0.94)
       .setOrigin(0)
@@ -863,9 +864,9 @@ export class UIScene extends Phaser.Scene {
     this.syncBoardOverlay(plan);
   }
 
-  private syncBoardOverlay(plan: ReturnType<typeof overlayPlan>): void {
-    const next = boardOverlayVisibility(plan, GameState.missions.length > 0, this.coachDismissed);
-    if (next.objective === this.boardOverlay.objective && next.coach === this.boardOverlay.coach && next.inspector === this.boardOverlay.inspector) return;
+  private syncBoardOverlay(plan: ReturnType<typeof overlayPlan>, force = false): void {
+    const next = boardOverlayVisibility(plan, this.missionCard.container.visible, this.coachDismissed);
+    if (!force && next.objective === this.boardOverlay.objective && next.coach === this.boardOverlay.coach && next.inspector === this.boardOverlay.inspector) return;
     this.boardOverlay = next;
     GameState.events.emit('boardoverlay', next);
   }

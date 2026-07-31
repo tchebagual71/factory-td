@@ -315,6 +315,7 @@ export class GameScene extends Phaser.Scene {
     this.boardOverlay = { objective: false, coach: false, inspector: false };
     GameState.events.emit('inspector', false);
     GameState.events.emit('coachreset');
+    GameState.events.emit('boardoverlayrequest');
     GameState.events.off('levelup').on('levelup', () => this.offerCards());
     // Targeted off/on (other scenes listen to these events too; stable refs survive restarts)
     GameState.events.off('phase', this.onPhaseSave).on('phase', this.onPhaseSave);
@@ -626,8 +627,8 @@ export class GameScene extends Phaser.Scene {
       .setVisible(false);
     const bg = this.add.rectangle(0, 0, layout.panel.w, layout.panel.h, 0x141625, 0.94).setOrigin(0).setStrokeStyle(2, 0x2b3040);
     this.panelBg = bg;
-    this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '16px' : '13px', fontStyle: 'bold', color: '#ffe066' });
-    this.panelInfo = this.add.text(10, IS_TOUCH ? 58 : 37, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '13px' : '10px', color: '#cdd6e4', lineSpacing: IS_TOUCH ? 4 : 2 });
+    this.panelTitle = this.add.text(10, 7, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '20px' : '13px', fontStyle: 'bold', color: '#ffe066' });
+    this.panelInfo = this.add.text(10, IS_TOUCH ? 66 : 37, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '16px' : '10px', color: '#cdd6e4', lineSpacing: IS_TOUCH ? 4 : 2 });
     // Two fixed button slots: A alone for linear tiers, A+B at the Mk3 branch.
     // Buttons sit below the 4-line branch info (ends ~y85).
     this.panelBtnA = this.add
@@ -637,7 +638,7 @@ export class GameScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     this.panelBtnA.on('pointerdown', () => this.tryUpgrade(0));
     this.panelBtnAText = this.add
-      .text(layout.buttonA.x + layout.buttonA.w / 2, layout.buttonA.y + layout.buttonA.h / 2, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '15px' : '10px', fontStyle: 'bold', color: '#ffffff' })
+      .text(layout.buttonA.x + layout.buttonA.w / 2, layout.buttonA.y + layout.buttonA.h / 2, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '18px' : '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
     this.panelBtnB = this.add
       .rectangle(layout.buttonB.x, layout.buttonB.y, layout.buttonB.w, layout.buttonB.h, 0x2e7d4f)
@@ -646,14 +647,14 @@ export class GameScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     this.panelBtnB.on('pointerdown', () => this.tryUpgrade(1));
     this.panelBtnBText = this.add
-      .text(layout.buttonB.x + layout.buttonB.w / 2, layout.buttonB.y + layout.buttonB.h / 2, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '15px' : '10px', fontStyle: 'bold', color: '#ffffff' })
+      .text(layout.buttonB.x + layout.buttonB.w / 2, layout.buttonB.y + layout.buttonB.h / 2, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '18px' : '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
     // Every tier is paid partly in a *full* magazine and gated on lifetime
     // deliveries, so "how full am I / how much have I been fed?" is the question
     // the panel has to answer — without it a greyed-out button is a mystery.
     // Own row: combined with the title it would overrun the panel.
     this.panelMag = this.add
-      .text(10, IS_TOUCH ? 32 : 22, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '14px' : '11px', fontStyle: 'bold', color: '#cdd6e4' });
+      .text(10, IS_TOUCH ? 38 : 22, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '16px' : '11px', fontStyle: 'bold', color: '#cdd6e4' });
     this.panel.add([
       bg,
       this.panelTitle,

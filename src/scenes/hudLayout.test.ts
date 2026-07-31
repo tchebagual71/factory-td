@@ -384,6 +384,12 @@ describe('board overlay hit zones', () => {
     expect(renderedSize(layout.buttonA, scale).h).toBeGreaterThanOrEqual(36);
     expect(renderedSize(layout.buttonB, scale).h).toBeGreaterThanOrEqual(36);
   });
+
+  it('keeps the visible touch coach dismiss target at least 36 CSS pixels', () => {
+    const touchCanvasH = 640 + 220;
+    const scale = fittedScale(GAME_W, touchCanvasH, 844, 390);
+    expect(80 * scale).toBeGreaterThanOrEqual(36);
+  });
 });
 
 describe('small-card copy fitting', () => {

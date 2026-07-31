@@ -10,11 +10,11 @@ export interface BoardOverlayVisibility {
 
 export function boardOverlayVisibility(
   plan: OverlayPlan,
-  hasMission: boolean,
+  objectiveVisible: boolean,
   coachDismissed: boolean,
 ): BoardOverlayVisibility {
   return {
-    objective: plan.ambient && hasMission,
+    objective: plan.ambient && objectiveVisible,
     coach: plan.ambient && !coachDismissed,
     inspector: plan.inspector,
   };
