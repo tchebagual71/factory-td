@@ -174,13 +174,13 @@ export class UIScene extends Phaser.Scene {
     const help = this.hudButton(top.help.x, top.help.y, top.help.w, top.h, '?', IS_TOUCH ? 22 : 17, () =>
       this.showHelp(),
     );
-    help.label.setColor('#8892a6');
+    help.label.setColor(UI_COLOR.textMuted.css);
     this.input.keyboard?.on(`keydown-${binding('help').key}`, () => this.showHelp());
 
     const mute = this.hudButton(top.mute.x, top.mute.y, top.mute.w, top.h, '', IS_TOUCH ? 20 : 16, () =>
       applyMute(toggleMute()),
     );
-    const applyMute = (m: boolean) => mute.label.setText(m ? '✕' : '♪').setColor(m ? '#8892a6' : '#5ef078');
+    const applyMute = (m: boolean) => mute.label.setText(m ? '✕' : '♪').setColor(m ? UI_COLOR.textMuted.css : UI_COLOR.action.css);
     applyMute(isMuted());
     this.input.keyboard?.on(`keydown-${binding('mute').key}`, () => applyMute(toggleMute()));
 
@@ -191,7 +191,7 @@ export class UIScene extends Phaser.Scene {
       GameState.events.emit('ui:view'),
     );
     const applyView = (mode: string) =>
-      view.label.setText(mode === 'iso' ? '3D' : '2D').setColor(mode === 'iso' ? '#7cf7c4' : '#8892a6');
+      view.label.setText(mode === 'iso' ? '3D' : '2D').setColor(mode === 'iso' ? UI_COLOR.research.css : UI_COLOR.textMuted.css);
     applyView(renderMode());
     GameState.events.on('view', applyView);
     // ESC is the universal "get this off my screen" — GameScene also uses it to
@@ -539,13 +539,13 @@ export class UIScene extends Phaser.Scene {
         frame,
         this.add.image(bw / 2, inner.iconY, info.type).setScale(inner.iconScale),
         this.add
-          .text(bw / 2, inner.costY, `$${info.cost}`, { ...FONT, fontSize: `${inner.costSize}px`, color: '#ffe066' })
+          .text(bw / 2, inner.costY, `$${info.cost}`, { ...FONT, fontSize: `${inner.costSize}px`, color: UI_COLOR.money.css })
           .setOrigin(0.5, 0),
       ]);
       if (inner.showName) {
         container.add(
           this.add
-            .text(bw / 2, inner.nameY, info.name, { ...FONT, fontSize: `${inner.nameSize}px`, fontStyle: 'bold', color: '#e8edf5' })
+            .text(bw / 2, inner.nameY, info.name, { ...FONT, fontSize: `${inner.nameSize}px`, fontStyle: 'bold', color: UI_COLOR.text.css })
             .setOrigin(0.5, 0),
         );
       }
@@ -555,7 +555,7 @@ export class UIScene extends Phaser.Scene {
       container.add(state);
       // the hotkey badge is noise on a device with no keyboard
       if (!IS_TOUCH) {
-        container.add(this.add.text(4, 3, info.hotkey, { ...FONT, fontSize: '9px', color: '#8892a6' }));
+        container.add(this.add.text(4, 3, info.hotkey, { ...FONT, fontSize: '9px', color: UI_COLOR.textMuted.css }));
       }
       this.paletteFrames.set(info.type, frame);
       this.paletteButtons.set(info.type, container);
@@ -650,13 +650,13 @@ export class UIScene extends Phaser.Scene {
     const [a, s, l, m] = toggles;
     const auto = this.hudButton(a.x, a.y, a.w, a.h, 'AUTO OFF', 13, () => GameState.toggleAuto());
     this.autoBtn = auto.frame;
-    this.autoBtnText = auto.label.setColor('#8892a6');
+    this.autoBtnText = auto.label.setColor(UI_COLOR.textMuted.css);
 
     const speed = this.hudButton(s.x, s.y, s.w, s.h, 'SPEED ×1', 12, () => GameState.cycleSpeed());
     this.speedBtnText = speed.label;
 
     const logi = this.hudButton(l.x, l.y, l.w, l.h, 'LOGISTICS OFF', 10, () => GameState.toggleOverlay());
-    logi.label.setColor('#8892a6');
+    logi.label.setColor(UI_COLOR.textMuted.css);
     GameState.events.on('overlay', (on: boolean) => {
       logi.label.setText(on ? 'LOGISTICS ON' : 'LOGISTICS OFF').setColor(on ? UI_COLOR.logistics.css : UI_COLOR.textMuted.css);
       logi.frame.setStrokeStyle(2, on ? UI_COLOR.logistics.hex : UI_COLOR.line.hex);
