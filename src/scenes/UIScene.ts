@@ -422,6 +422,7 @@ export class UIScene extends Phaser.Scene {
     const controls: [string, string][] = IS_TOUCH
       ? [
           // two rendered lines max — the rows below sit at a fixed 30px pitch
+          ['Move', 'Drag bare ground to pan the board · pinch to zoom out to the whole map and back in.'],
           ['Build', 'Three shelves: LOGI, PROD, GUNS. Tap a slot, then the board; tap it again to cancel.'],
           ['Belts', 'Drag across the board to paint a line — corners included.'],
           ['Rotate', 'ROTATE sets the facing before you build; tap a placed belt to turn it.'],
@@ -434,6 +435,7 @@ export class UIScene extends Phaser.Scene {
       : [
           // Every key here is read from `keymap.ts`, so a rebind can never leave
           // this reference quietly lying to the player.
+          ['Move', `Drag bare ground or middle-drag to pan · wheel zooms · ${key('zoomReset')} resets the view.`],
           ['Build', `Pick from the three shelves in the bar, or use the hotkeys listed here. ${key('cancel')} cancels.`],
           ['Belts', 'Hold and drag to paint a line; it turns corners with your drag.'],
           ['Rotate', `${key('rotate')} turns whatever is under the cursor, or the pending build on bare ground. Shift+wheel turns it either way.`],
@@ -954,7 +956,10 @@ export class UIScene extends Phaser.Scene {
     this.overlayScheduler.openReport();
     const W = 288;
     const H = 158;
-    const c = this.add.container(GAME_W / 2 - W / 2, 372).setDepth(45).setAlpha(0);
+    // Low in the board viewport, but never spilling onto the build bar — the
+    // viewport is shorter than the board on a phone, so 372 is not always inside it.
+    const y = Math.min(372, PLAYFIELD_H - H - 12);
+    const c = this.add.container(GAME_W / 2 - W / 2, y).setDepth(45).setAlpha(0);
     const short = ammoDeficits(t);
     const deficit = short.length > 0;
     const fired = ammoTotal(t.fired);

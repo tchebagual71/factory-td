@@ -22,10 +22,12 @@
  * is checked in `boardCam.test.ts` rather than by squinting at a screenshot.
  */
 
-import { GRID_H, GRID_W, TILE } from '../config';
+import { BOARD_H, BOARD_W, PLAYFIELD_H } from '../config';
+
+export { BOARD_H, BOARD_W };
 
 export interface BoardCam {
-  /** 1 = the whole board fits the viewport, as it always did */
+  /** 1 = one board pixel per canvas pixel — the board spans the viewport width */
   zoom: number;
   /** board px at the centre of the viewport */
   x: number;
@@ -33,25 +35,41 @@ export interface BoardCam {
 }
 
 /**
- * Never below 1: the board is designed to be readable in full, and letting the
- * player zoom *out* past it would only add empty space and a way to get lost.
+ * The zoom at which the *whole* board is on screen at once.
+ *
+ * On every viewport tall enough to hold all 20 rows this is exactly 1, which is
+ * how it always behaved. On a phone the viewport is deliberately shorter than
+ * the board (see `canvasMetrics`), so fitting everything means zooming out —
+ * and the player must be able to, or a map they cannot see in full is a map
+ * they cannot plan on.
  */
-export const MIN_ZOOM = 1;
+export const FIT_ZOOM = Math.min(1, PLAYFIELD_H / BOARD_H);
+
+/**
+ * Never below the fit: zooming out past the whole board would only add empty
+ * space and a way to get lost.
+ */
+export const MIN_ZOOM = FIT_ZOOM;
 /**
  * 3× puts a tile at ~45 css px on a phone — comfortably past the ~44px touch
  * target guideline, which is the whole point of the feature.
  */
 export const MAX_ZOOM = 3;
 
-export const BOARD_W = GRID_W * TILE;
-export const BOARD_H = GRID_H * TILE;
+/**
+ * Open at 1, not at `FIT_ZOOM`. Where the two differ, the board is wider than
+ * the viewport is tall, and 1 is the framing that spends the whole screen on
+ * the board at a legible tile size — which is the reason the viewport was
+ * shortened in the first place. Fitting everything is one pinch away.
+ */
+export const DEFAULT_ZOOM = 1;
 
 export function defaultCam(): BoardCam {
-  return { zoom: MIN_ZOOM, x: BOARD_W / 2, y: BOARD_H / 2 };
+  return { zoom: DEFAULT_ZOOM, x: BOARD_W / 2, y: BOARD_H / 2 };
 }
 
 export function isDefault(c: BoardCam): boolean {
-  return c.zoom === MIN_ZOOM && c.x === BOARD_W / 2 && c.y === BOARD_H / 2;
+  return c.zoom === DEFAULT_ZOOM && c.x === BOARD_W / 2 && c.y === BOARD_H / 2;
 }
 
 export function clampZoom(z: number): number {

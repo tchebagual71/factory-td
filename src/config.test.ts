@@ -74,11 +74,107 @@ describe('canvas sizing', () => {
   it('treats a portrait phone as its landscape equivalent (a rotate prompt covers portrait)', async () => {
     const landscape = await loadConfig({ innerWidth: 844, innerHeight: 390, touch: true });
     const portrait = await loadConfig({ innerWidth: 390, innerHeight: 844, touch: true });
-    expect(portrait.UI_H).toBe(landscape.UI_H);
+    // The whole canvas, not just the bar: loading in portrait and then turning
+    // the phone must not leave the board a different shape than loading in
+    // landscape did, because the canvas is sized once at module load.
+    expect([portrait.UI_H, portrait.PLAYFIELD_H, portrait.GAME_H]).toEqual([
+      landscape.UI_H,
+      landscape.PLAYFIELD_H,
+      landscape.GAME_H,
+    ]);
   });
 
   it('detects touch from either the event hook or the pointer count', async () => {
     expect((await loadConfig({ innerWidth: 1024, innerHeight: 768, touch: true })).IS_TOUCH).toBe(true);
     expect((await loadConfig({ innerWidth: 1920, innerHeight: 1080 })).IS_TOUCH).toBe(false);
+  });
+});
+
+/**
+ * `Scale.FIT` letterboxes whatever it is handed, so any mismatch between the
+ * canvas aspect and the device's is lost to black bars — on an iPhone in
+ * landscape that was ~38% of the screen width. These check the canvas actually
+ * covers the viewport, and that the price is only paid where it buys something.
+ */
+describe('filling the device screen', () => {
+  /** Fraction of the viewport each axis covers once Scale.FIT has fitted the canvas. */
+  function coverage(c: { GAME_W: number; GAME_H: number }, width: number, height: number) {
+    const scale = Math.min(width / c.GAME_W, height / c.GAME_H);
+    return { x: (c.GAME_W * scale) / width, y: (c.GAME_H * scale) / height, tile: 32 * scale };
+  }
+
+  // The screens this has to survive, and whether the board should shorten.
+  const phones = [
+    ['iPhone 15 Pro landscape', 932, 390],
+    ['iPhone SE landscape', 667, 375],
+    ['Pixel-ish landscape', 844, 390],
+  ] as const;
+
+  for (const [name, w, h] of phones) {
+    it(`covers the screen on a ${name}`, async () => {
+      const c = await loadConfig({ innerWidth: w, innerHeight: h, touch: true });
+      const cover = coverage(c, w, h);
+      // Both axes, because covering one by shrinking the other is not a fix.
+      expect(cover.x).toBeGreaterThan(0.98);
+      expect(cover.y).toBeGreaterThan(0.98);
+    });
+
+    it(`buys a bigger tile on a ${name} by showing fewer rows`, async () => {
+      const c = await loadConfig({ innerWidth: w, innerHeight: h, touch: true });
+      // The board is untouched; only the viewport onto it is shorter.
+      expect(c.BOARD_H).toBe(640);
+      expect(c.PLAYFIELD_H).toBeLessThan(c.BOARD_H);
+      // …and never so short it stops reading as a map.
+      expect(c.PLAYFIELD_H).toBeGreaterThanOrEqual(320);
+
+      const before = 32 * Math.min(w / c.BOARD_W, h / (c.BOARD_H + c.UI_H));
+      expect(coverage(c, w, h).tile).toBeGreaterThan(before);
+    });
+  }
+
+  /**
+   * The gate that keeps this off desktop. A 21:9 monitor letterboxes a little,
+   * but a tile is already 48px there — hiding six rows would cost real
+   * information to buy legibility nobody was short of.
+   */
+  it('keeps the whole board on a widescreen desktop, where tiles are already big', async () => {
+    const c = await loadConfig({ innerWidth: 2560, innerHeight: 1080 });
+    expect(c.PLAYFIELD_H).toBe(c.BOARD_H);
+    expect(c.GAME_H).toBe(720);
+    expect(coverage(c, 2560, 1080).tile).toBeGreaterThanOrEqual(22);
+  });
+
+  it('leaves the 16:9 desktop canvas exactly as it was', async () => {
+    const c = await loadConfig({ innerWidth: 1920, innerHeight: 1080 });
+    expect([c.GAME_W, c.GAME_H, c.PLAYFIELD_H, c.UI_H]).toEqual([1280, 720, 640, 80]);
+  });
+
+  it('leaves the tablet canvas exactly as it was', async () => {
+    const c = await loadConfig({ innerWidth: 1024, innerHeight: 768, touch: true });
+    expect([c.GAME_W, c.GAME_H, c.PLAYFIELD_H, c.UI_H]).toEqual([1280, 940, 640, 300]);
+  });
+
+  /**
+   * The title screen needs ~720px of vertical room for its button stack, which
+   * the canvas is now allowed to be shorter than. It is drawn through a scaled
+   * camera instead of reflowed, so the virtual space must never be the short one.
+   */
+  it('gives the title screen its full design height however short the canvas', async () => {
+    for (const [, w, h] of phones) {
+      const c = await loadConfig({ innerWidth: w, innerHeight: h, touch: true });
+      expect(c.MENU_H).toBeGreaterThanOrEqual(720);
+      // and the backdrop still reaches both edges rather than being letterboxed
+      // inside its own canvas
+      expect(c.MENU_W * c.MENU_SCALE).toBeCloseTo(c.GAME_W, 6);
+      expect(c.MENU_H * c.MENU_SCALE).toBeCloseTo(c.GAME_H, 6);
+    }
+  });
+
+  it('does not scale the title screen where the canvas is already tall enough', async () => {
+    for (const win of [{ innerWidth: 1920, innerHeight: 1080 }, { innerWidth: 1024, innerHeight: 768, touch: true }]) {
+      const c = await loadConfig(win);
+      expect(c.MENU_SCALE).toBe(1);
+      expect(c.MENU_H).toBe(c.GAME_H);
+    }
   });
 });

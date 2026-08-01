@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GRID_H, GRID_W, PLAYFIELD_H, TILE } from '../config';
 import {
   BOARD_H,
@@ -161,7 +161,62 @@ describe('grid assumptions', () => {
   it('matches the board the rest of the game uses', () => {
     expect(BOARD_W).toBe(GRID_W * TILE);
     expect(BOARD_H).toBe(GRID_H * TILE);
-    expect(BOARD_H).toBe(PLAYFIELD_H);
     expect(GRID_H).toBe(20);
+    // On a desktop-shaped viewport (what these tests load) the board and the
+    // viewport onto it are still the same height, which is why zoom 1 frames
+    // everything above. They part company on a phone — see below.
+    expect(PLAYFIELD_H).toBe(BOARD_H);
+  });
+});
+
+/**
+ * On a phone the board viewport is deliberately shorter than the board, so the
+ * player can be shown ~60% bigger tiles and pan for the rest. That is only an
+ * acceptable trade if the whole map stays *reachable* — a tower-defence map you
+ * cannot see in full is a map you cannot plan a route against.
+ */
+describe('a viewport shorter than the board', () => {
+  async function loadPhone() {
+    vi.resetModules();
+    vi.stubGlobal('window', { innerWidth: 932, innerHeight: 390, ontouchstart: () => {} });
+    vi.stubGlobal('navigator', { maxTouchPoints: 5 });
+    const config = await import('../config');
+    const cam = await import('./boardCam');
+    return { config, cam };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it('can still zoom out far enough to see every row', async () => {
+    const { config, cam } = await loadPhone();
+    expect(config.PLAYFIELD_H).toBeLessThan(config.BOARD_H);
+
+    const fitted = cam.clampCam({ zoom: cam.MIN_ZOOM, x: 0, y: 0 }, config.GAME_W, config.PLAYFIELD_H);
+    const top = cam.screenToBoard(fitted, 0, 0, config.GAME_W, config.PLAYFIELD_H);
+    const bottom = cam.screenToBoard(fitted, config.GAME_W, config.PLAYFIELD_H, config.GAME_W, config.PLAYFIELD_H);
+    expect(top.y).toBeLessThanOrEqual(0);
+    expect(bottom.y).toBeGreaterThanOrEqual(cam.BOARD_H);
+  });
+
+  it('opens filling the screen rather than fitting the map', async () => {
+    const { cam } = await loadPhone();
+    // Fitting everything on open would render the board *smaller* than it was
+    // before this change — the opposite of the point.
+    expect(cam.defaultCam().zoom).toBe(1);
+    expect(cam.MIN_ZOOM).toBeLessThan(1);
+  });
+
+  it('lets panning reach the rows that are off screen, and no further', async () => {
+    const { config, cam } = await loadPhone();
+    const w = config.GAME_W;
+    const h = config.PLAYFIELD_H;
+    let c = cam.defaultCam();
+    for (let i = 0; i < 100; i++) c = cam.panBy(c, 0, 400, w, h);
+    expect(cam.screenToBoard(c, 0, 0, w, h).y).toBeCloseTo(0, 6); // the top row, exactly
+    for (let i = 0; i < 100; i++) c = cam.panBy(c, 0, -400, w, h);
+    expect(cam.screenToBoard(c, 0, h, w, h).y).toBeCloseTo(cam.BOARD_H, 6); // and the bottom
   });
 });

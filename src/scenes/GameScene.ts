@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_H, GAME_W, GRID_H, GRID_W, IS_TOUCH, MAX_DT, PLAYFIELD_H, TILE } from '../config';
+import { BOARD_H, BOARD_W, GAME_H, GAME_W, GRID_H, GRID_W, IS_TOUCH, MAX_DT, PLAYFIELD_H, TILE } from '../config';
 import {
   BUILD_INFO,
   costOf,
@@ -73,6 +73,13 @@ const BELT_ANIM = 'belt-run';
 
 /** How long a press must be held to read as sell-instead-of-tap. */
 const LONG_PRESS_MS = 450;
+
+/**
+ * How far a press must travel before it starts dragging the board. Comfortably
+ * below the 12px the tap classifier already forgives, so a gesture can never be
+ * both a pan and a tap.
+ */
+const PAN_SLOP = 8;
 
 /** Mk-pip / float-text tint per specialization path. */
 const PATH_COLORS: Record<PathId, number> = {
@@ -183,6 +190,13 @@ export class GameScene extends Phaser.Scene {
   private pinch: { dist: number; mx: number; my: number } | null = null;
   /** Middle-button (or two-finger) pan anchor, in canvas px. */
   private panFrom: { x: number; y: number } | null = null;
+  /**
+   * Last sample of a one-finger board drag, once it has travelled far enough to
+   * be a pan rather than a shaky tap. Separate from `pressX/pressY`, which stay
+   * pinned to where the press began so `pointerup` can still measure the total
+   * travel and classify the gesture.
+   */
+  private dragPan: { x: number; y: number } | null = null;
 
   private selTower: Building | null = null;
   private selRing!: Phaser.GameObjects.Rectangle;
@@ -571,14 +585,21 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  /**
+   * A banner across the middle of the board viewport. Screen space, not board
+   * space (Text is HUD — see `hudObjects`), so it is placed as a fraction of
+   * the viewport rather than at a literal 260px: the viewport is shorter than
+   * the board on a phone, and a fixed offset landed it on the build bar.
+   */
   bigText(msg: string): void {
+    const y = Math.round(PLAYFIELD_H * 0.41);
     const t = this.add
-      .text(640, 260, msg, { fontFamily: 'monospace', fontSize: '32px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 6 })
+      .text(GAME_W / 2, y, msg, { fontFamily: 'monospace', fontSize: '32px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 6 })
       .setOrigin(0.5)
       .setScale(0.3)
       .setDepth(30);
     this.tweens.add({ targets: t, scale: 1, duration: 250, ease: 'Back.out' });
-    this.tweens.add({ targets: t, alpha: 0, y: 210, delay: 1300, duration: 600, onComplete: () => t.destroy() });
+    this.tweens.add({ targets: t, alpha: 0, y: y - 50, delay: 1300, duration: 600, onComplete: () => t.destroy() });
   }
 
   /**
@@ -999,6 +1020,7 @@ export class GameScene extends Phaser.Scene {
       this.pressX = p.x;
       this.pressY = p.y;
       this.pendingTap = null; // a pointerup we never saw must not act on the next press
+      this.dragPan = null;
       const { tx, ty } = this.tileAt(p.x, p.y);
       if (p.rightButtonDown()) {
         const b = this.grid.cellAt(tx, ty)?.building;
@@ -1043,6 +1065,7 @@ export class GameScene extends Phaser.Scene {
       this.endStroke();
       const tap = this.pendingTap;
       this.pendingTap = null;
+      this.dragPan = null;
       if (!tap || p.y >= PLAYFIELD_H || this.selected || this.sellMode || this.overHud(p.x, p.y)) return;
 
       const held = this.time.now - this.pressAt;
@@ -1069,6 +1092,23 @@ export class GameScene extends Phaser.Scene {
       if (this.panFrom && p.middleButtonDown()) {
         this.panScreen(p.x - this.panFrom.x, p.y - this.panFrom.y);
         this.panFrom = { x: p.x, y: p.y };
+        return;
+      }
+      // Drag the board with one finger when nothing is armed. `pendingTap` is
+      // set exactly in that case, and `pointerup` already discards a press that
+      // travelled — so this is the gesture the classifier was always calling a
+      // pan, finally doing something. It matters now that the board viewport is
+      // shorter than the board on a phone: two-finger pinch was the *only* way
+      // to reach the rows off screen, which is not a control you can expect a
+      // player to find before they need it.
+      if (this.pendingTap && p.isDown && !p.rightButtonDown() && p.y < PLAYFIELD_H) {
+        if (this.dragPan) {
+          this.panScreen(p.x - this.dragPan.x, p.y - this.dragPan.y);
+          this.dragPan = { x: p.x, y: p.y };
+        } else if (Math.hypot(p.x - this.pressX, p.y - this.pressY) > PAN_SLOP) {
+          // Start from here, not from the press: the slop is what protects a tap.
+          this.dragPan = { x: p.x, y: p.y };
+        }
         return;
       }
       // drag-paint belts (touch drags report no button, so accept either)
@@ -1259,6 +1299,9 @@ export class GameScene extends Phaser.Scene {
       // A gesture just began: throw away whatever the first finger was drawing.
       this.endStroke();
     }
+    // The pinch owns the board now. Dropping the one-finger anchor stops the
+    // board jumping by the pinch's whole travel when the second finger lifts.
+    this.dragPan = null;
     this.pinch = { dist, mx, my };
     return true;
   }
@@ -1732,8 +1775,8 @@ export class GameScene extends Phaser.Scene {
 
     // subtle grid lines, grass only — they just add noise on top of the road
     g.lineStyle(1, 0xffffff, 0.035);
-    for (let x = 0; x <= GRID_W; x++) g.lineBetween(x * TILE, 0, x * TILE, PLAYFIELD_H);
-    for (let y = 0; y <= GRID_H; y++) g.lineBetween(0, y * TILE, GRID_W * TILE, y * TILE);
+    for (let x = 0; x <= GRID_W; x++) g.lineBetween(x * TILE, 0, x * TILE, BOARD_H);
+    for (let y = 0; y <= GRID_H; y++) g.lineBetween(0, y * TILE, BOARD_W, y * TILE);
 
     // spawn & exit markers
     const route = pathWaypoints();
@@ -1769,7 +1812,7 @@ export class GameScene extends Phaser.Scene {
       for (let d = 20; d < len; d += 44) {
         const cx = ax + ux * d;
         const cy = ay + uy * d;
-        if (cx < -TILE || cx > GRID_W * TILE + TILE || cy < -TILE || cy > PLAYFIELD_H + TILE) continue;
+        if (cx < -TILE || cx > BOARD_W + TILE || cy < -TILE || cy > BOARD_H + TILE) continue;
         g.fillStyle(0xdcb877, 0.5);
         g.fillTriangle(
           cx + ux * 7,
@@ -1793,7 +1836,7 @@ export class GameScene extends Phaser.Scene {
     const bands = 7;
     for (let i = 0; i < bands; i++) {
       g.lineStyle(4, 0x000000, 0.05 * (bands - i));
-      g.strokeRect(i * 4 + 2, i * 4 + 2, GAME_W - i * 8 - 4, PLAYFIELD_H - i * 8 - 4);
+      g.strokeRect(i * 4 + 2, i * 4 + 2, BOARD_W - i * 8 - 4, BOARD_H - i * 8 - 4);
     }
   }
 

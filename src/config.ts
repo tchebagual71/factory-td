@@ -1,8 +1,17 @@
 export const TILE = 32;
 export const GRID_W = 40;
 export const GRID_H = 20;
-export const PLAYFIELD_H = GRID_H * TILE; // 640px — the tile grid, fixed for every device
-export const GAME_W = GRID_W * TILE; // 1280
+
+/**
+ * The tile grid itself — 1280×640, fixed for every device, forever. This is
+ * *board space*: where buildings, enemies and terrain live.
+ *
+ * It is deliberately distinct from `GAME_W`/`PLAYFIELD_H` below, which are the
+ * *viewport* onto it. They were the same number until the canvas had to fit a
+ * phone, and anything drawn in board coordinates must use these two.
+ */
+export const BOARD_W = GRID_W * TILE; // 1280
+export const BOARD_H = GRID_H * TILE; // 640
 
 /** Bar heights: the 16:9 desktop default, and the tallest bar a very boxy screen gets. */
 const UI_H_MIN = 80;
@@ -11,9 +20,26 @@ const UI_H_MAX = 300;
 export const UI_H_ROOMY = 150;
 
 /**
- * The playfield is a fixed 1280×640 tile grid, but the HUD bar underneath is
- * elastic: we grow it so the whole canvas roughly matches the window's aspect
- * ratio before `Scale.FIT` letterboxes anything.
+ * Shortest board viewport we will ever hand a player: 10 rows. Below this the
+ * board stops reading as a map and becomes a slit you can only navigate by
+ * memory, and no amount of extra tile size is worth that.
+ */
+const MIN_PLAYFIELD_H = 320;
+
+/**
+ * A tile this size (css px) is comfortable to aim at. Above it, showing the
+ * whole board is worth more than making the tiles bigger; below it, precise
+ * placement stops working and the board has to be scrolled instead.
+ *
+ * ~22px is where a 32px tile stops being a reliable tap target — it is the knob
+ * that keeps this whole mechanism *off* on desktop, where the board has always
+ * fit comfortably and hiding rows would be a pure regression.
+ */
+const COMFORTABLE_TILE_CSS = 22;
+
+/**
+ * The HUD bar height. Grown so the whole canvas roughly matches the window's
+ * aspect ratio before `Scale.FIT` letterboxes anything.
  *
  * On a 16:9 monitor that yields the original 1280×720. On a 4:3 iPad it yields
  * a much taller bar, which fills what would otherwise be black bars with a
@@ -34,24 +60,136 @@ export function uiHeightForViewport({
   if (!width || !height) return min;
   // Portrait is handled by the rotate prompt; size for the landscape equivalent.
   const aspect = Math.min(height, width) / Math.max(height, width);
-  const wanted = Math.round(GAME_W * aspect) - PLAYFIELD_H;
+  const wanted = Math.round(BOARD_W * aspect) - BOARD_H;
   return Math.min(UI_H_MAX, Math.max(min, wanted));
+}
+
+export interface CanvasMetrics {
+  /** canvas width — always the board width, so the board fills it at zoom 1 */
+  gameW: number;
+  gameH: number;
+  /** height of the *viewport onto the board*, which is ≤ BOARD_H */
+  playfieldH: number;
+  uiH: number;
+}
+
+/**
+ * How big the canvas is, and how that height is split between board and HUD.
+ *
+ * `Scale.FIT` letterboxes whatever we hand it, so the canvas aspect has to
+ * match the device's or the player loses the difference to black bars. A phone
+ * in landscape is around 2.17:1 while the board plus a touch-sized HUD is
+ * 1.49:1 — that mismatch was ~38% of the screen width, which is what made the
+ * game look shoved into a corner.
+ *
+ * The width is pinned to the board, so the only give is vertical:
+ *
+ * 1. the HUD bar absorbs surplus height on boxy screens (as it always has), then
+ * 2. on screens still too wide to fit, **the board viewport shortens** — the
+ *    board is unchanged, we simply see fewer rows of it at once and pan for the
+ *    rest (`boardCam`), which buys back roughly 60% more tile size.
+ *
+ * Step 2 only engages when the whole-board framing would put a tile under
+ * `COMFORTABLE_TILE_CSS`. A 21:9 desktop letterboxes a little and keeps all 20
+ * rows, because there a tile is already 48px and hiding rows would buy nothing.
+ */
+export function canvasMetrics({
+  width,
+  height,
+  touch,
+}: {
+  width: number;
+  height: number;
+  touch: boolean;
+}): CanvasMetrics {
+  const uiH = uiHeightForViewport({ width, height, touch });
+  const full: CanvasMetrics = { gameW: BOARD_W, gameH: BOARD_H + uiH, playfieldH: BOARD_H, uiH };
+  if (!width || !height) return full;
+
+  // What one tile would measure on this device with the whole board on screen.
+  const fullScale = Math.min(width / BOARD_W, height / full.gameH);
+  if (fullScale * TILE >= COMFORTABLE_TILE_CSS) return full;
+
+  // Portrait is handled by the rotate prompt; size for the landscape equivalent.
+  const aspect = Math.min(width, height) / Math.max(width, height);
+  const wantedH = Math.round(BOARD_W * aspect);
+  const playfieldH = Math.min(BOARD_H, Math.max(MIN_PLAYFIELD_H, wantedH - uiH));
+  return { gameW: BOARD_W, gameH: uiH + playfieldH, playfieldH, uiH };
 }
 
 const touchCapable =
   typeof window !== 'undefined' &&
   ('ontouchstart' in window || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
 
-const viewport =
-  typeof window === 'undefined'
-    ? { width: 0, height: 0, touch: touchCapable }
-    : { width: window.innerWidth, height: window.innerHeight, touch: touchCapable };
+/**
+ * Width and height the notch and home indicator actually leave us.
+ *
+ * The page is `viewport-fit=cover`, so `innerWidth` counts pixels behind the
+ * notch that the canvas is then inset out of (`#app` in index.html). Sizing the
+ * canvas against the larger number and fitting it into the smaller box puts the
+ * difference straight back into letterbox bars — on a notched iPhone held in
+ * landscape that is ~120px of width, which is the whole margin this change was
+ * trying to win. Measured through a probe because `env()` is only readable from
+ * CSS; zero wherever the browser doesn't support it, which is the correct
+ * answer on every screen without a cutout.
+ */
+function safeAreaInsets(): { x: number; y: number } {
+  if (typeof document === 'undefined' || !document.body) return { x: 0, y: 0 };
+  const probe = document.createElement('div');
+  probe.style.cssText =
+    'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none;' +
+    'padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
+  document.body.appendChild(probe);
+  const s = getComputedStyle(probe);
+  const px = (v: string): number => (Number.isFinite(parseFloat(v)) ? parseFloat(v) : 0);
+  const insets = {
+    x: px(s.paddingLeft) + px(s.paddingRight),
+    y: px(s.paddingTop) + px(s.paddingBottom),
+  };
+  probe.remove();
+  return insets;
+}
 
-export const UI_H = uiHeightForViewport(viewport);
-export const GAME_H = PLAYFIELD_H + UI_H;
+const viewport = ((): { width: number; height: number; touch: boolean } => {
+  if (typeof window === 'undefined') return { width: 0, height: 0, touch: touchCapable };
+  const inset = safeAreaInsets();
+  return {
+    width: Math.max(0, window.innerWidth - inset.x),
+    height: Math.max(0, window.innerHeight - inset.y),
+    touch: touchCapable,
+  };
+})();
+
+const metrics = canvasMetrics(viewport);
+
+export const UI_H = metrics.uiH;
+export const GAME_W = metrics.gameW;
+export const GAME_H = metrics.gameH;
+/**
+ * The viewport onto the board, *not* the board — see `BOARD_H`. Equal to
+ * `BOARD_H` everywhere the whole board comfortably fits, which is every desktop
+ * and tablet; shorter on a phone, where the rest is reached by panning.
+ */
+export const PLAYFIELD_H = metrics.playfieldH;
 
 /** True when the HUD has room for the two-row, big-button layout. */
 export const ROOMY_UI = UI_H >= UI_H_ROOMY;
+
+/**
+ * The title screen needs about 720px of vertical room for its button stack, and
+ * the canvas is now allowed to be shorter than that. Rather than reflow the
+ * menu — which would mean a second, differently-shaped layout to keep correct —
+ * it is laid out at `MENU_W × MENU_H` and drawn through a scaled camera.
+ *
+ * `MENU_SCALE` is 1 on every screen tall enough, so the title screen is
+ * pixel-identical to before there. Only the height is ever scaled down; the
+ * virtual width grows to match, so the backdrop still reaches both edges
+ * instead of being letterboxed inside its own canvas.
+ */
+const MENU_DESIGN_H = 720;
+export const MENU_SCALE = Math.min(1, GAME_H / MENU_DESIGN_H);
+export const MENU_W = GAME_W / MENU_SCALE;
+export const MENU_H = GAME_H / MENU_SCALE;
 
 /**
  * Touch-capable device. Drives on-screen replacements for the keyboard-and-

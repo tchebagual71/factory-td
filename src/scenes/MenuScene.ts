@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_H, GAME_W, IS_TOUCH, TILE } from '../config';
+import { IS_TOUCH, MENU_H, MENU_SCALE, MENU_W, TILE } from '../config';
 import { BOARD_CX, BOARD_CZ, toView } from '../iso/isoMath';
 import { ACHIEVEMENTS } from '../data/achievements';
 import {
@@ -55,17 +55,24 @@ export class MenuScene extends Phaser.Scene {
     // Depth -2 so the mode backdrop (-1) sits above it and the buttons (0)
     // above that. The backdrop is rebuilt on toggle, so it cannot rely on
     // display-list insertion order to stay behind the UI.
-    this.add.rectangle(0, 0, GAME_W, GAME_H, 0x0e0f1a).setOrigin(0).setDepth(-2);
+    // Draw the whole title screen through a scaled camera. On a phone the canvas
+    // is shorter than the menu's button stack needs, and scaling the camera is
+    // the one change that cannot leave two layouts to keep in agreement — see
+    // MENU_SCALE in config.
+    this.cameras.main.setZoom(MENU_SCALE);
+    this.cameras.main.centerOn(MENU_W / 2, MENU_H / 2);
+
+    this.add.rectangle(0, 0, MENU_W, MENU_H, 0x0e0f1a).setOrigin(0).setDepth(-2);
     // The canvas grows on boxier screens, so the whole title screen is laid out
     // relative to a vertical origin rather than pinned to a 720px-tall canvas.
-    const TOP = Math.round((GAME_H - 720) / 2);
+    const TOP = Math.round((MENU_H - 720) / 2);
     this.buildBackdrop();
     const title = this.add
-      .text(GAME_W / 2, TOP + 130, 'FACTORY TD', { ...FONT, fontSize: '64px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 10 })
+      .text(MENU_W / 2, TOP + 130, 'FACTORY TD', { ...FONT, fontSize: '64px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 10 })
       .setOrigin(0.5);
     this.tweens.add({ targets: title, scale: 1.03, yoyo: true, repeat: -1, duration: 1600, ease: 'Sine.inOut' });
     this.subtitle = this.add
-      .text(GAME_W / 2, TOP + 185, '', { ...FONT, fontSize: '15px', color: '#cdd6e4' })
+      .text(MENU_W / 2, TOP + 185, '', { ...FONT, fontSize: '15px', color: '#cdd6e4' })
       .setOrigin(0.5);
     this.paintSubtitle();
 
@@ -77,15 +84,15 @@ export class MenuScene extends Phaser.Scene {
 
     // ----- account chip (top-right) -----
     const chip = this.add
-      .text(GAME_W - 16, 16, '...', { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(MENU_W - 16, 16, '...', { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(1, 0);
     const accountBtn = this.add
-      .rectangle(GAME_W - 16, 42, 150, 30, 0x1e2233)
+      .rectangle(MENU_W - 16, 42, 150, 30, 0x1e2233)
       .setOrigin(1, 0)
       .setStrokeStyle(2, 0x2b3040)
       .setInteractive({ useHandCursor: true });
     const accountBtnText = this.add
-      .text(GAME_W - 91, 57, 'ACCOUNT', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(MENU_W - 91, 57, 'ACCOUNT', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(0.5);
     accountBtn.on('pointerdown', () => {
       sfx.place();
@@ -131,7 +138,7 @@ export class MenuScene extends Phaser.Scene {
     // Paired on one row: the stack has to stay inside the canvas, and neither of
     // these needs the full width.
     const half = 186;
-    const halfX = GAME_W / 2 - half / 2 - 4;
+    const halfX = MENU_W / 2 - half / 2 - 4;
     this.button(y, 'HOW TO PLAY', 0x1e2233, 0x2b3040, () => this.showHowToPlay(), half, halfX);
     this.button(
       y,
@@ -140,7 +147,7 @@ export class MenuScene extends Phaser.Scene {
       0x2b3040,
       () => this.showAchievements(),
       half,
-      GAME_W / 2 + half / 2 + 4,
+      MENU_W / 2 + half / 2 + 4,
     );
     y += 62;
     this.button(y, 'LEADERBOARD', 0x1e2233, 0x2b3040, () => void this.showLeaderboard(), half, halfX);
@@ -154,7 +161,7 @@ export class MenuScene extends Phaser.Scene {
       canSpend ? 0x7cf7c4 : 0x2b3040,
       () => this.showWorkshop(),
       half,
-      GAME_W / 2 + half / 2 + 4,
+      MENU_W / 2 + half / 2 + 4,
     );
 
     // Stack the rest sequentially so adding a row can never silently collide
@@ -167,12 +174,12 @@ export class MenuScene extends Phaser.Scene {
 
     if (progress.stats.bestWave > 0) {
       this.add
-        .text(GAME_W / 2, y, `Personal best: wave ${progress.stats.bestWave}`, { ...FONT, fontSize: '14px', color: '#ffe066' })
+        .text(MENU_W / 2, y, `Personal best: wave ${progress.stats.bestWave}`, { ...FONT, fontSize: '14px', color: '#ffe066' })
         .setOrigin(0.5);
     }
     this.add
-      .text(GAME_W / 2, GAME_H - 26, IS_TOUCH
-        ? 'New here? Tap HOW TO PLAY · tap a build slot then tap the map · tap it again to cancel · SELL refunds 50% · [?] in-game help'
+      .text(MENU_W / 2, MENU_H - 26, IS_TOUCH
+        ? 'New here? Tap HOW TO PLAY · tap a build slot then tap the map · drag to pan, pinch to zoom · SELL refunds 50% · [?] in-game help'
         : 'New here? Read HOW TO PLAY · 1-9 factory · ZXCV guns · R rotate · drag paints belts · right-click sells · SPACE wave · L logistics · H help', {
         ...FONT, fontSize: '11px', color: '#8892a6',
       })
@@ -226,12 +233,12 @@ export class MenuScene extends Phaser.Scene {
     if (!iso) {
       // 2D CLASSIC: the flat tile grid, and the prop row along the bottom.
       g.lineStyle(1, 0x1c2030, 0.9);
-      for (let x = 0; x <= GAME_W; x += TILE) g.lineBetween(x, 0, x, GAME_H);
-      for (let y = 0; y <= GAME_H; y += TILE) g.lineBetween(0, y, GAME_W, y);
+      for (let x = 0; x <= MENU_W; x += TILE) g.lineBetween(x, 0, x, MENU_H);
+      for (let y = 0; y <= MENU_H; y += TILE) g.lineBetween(0, y, MENU_W, y);
       for (let i = 0; i < 14; i++) {
         this.backdrop.push(
           this.add
-            .image(60 + i * 90, GAME_H - 100 + (i % 2) * 24, i % 3 === 0 ? 'tower' : 'belt')
+            .image(60 + i * 90, MENU_H - 100 + (i % 2) * 24, i % 3 === 0 ? 'tower' : 'belt')
             .setAlpha(0.12)
             .setScale(1.4)
             .setDepth(-1),
@@ -243,8 +250,8 @@ export class MenuScene extends Phaser.Scene {
     // 3D ISOMETRIC: a ground lattice at the true camera angle, with a few
     // extruded solids standing on it — the same read as the real board.
     const S = 0.66;
-    const CX = GAME_W / 2;
-    const CY = GAME_H - 168;
+    const CX = MENU_W / 2;
+    const CY = MENU_H - 168;
     const pt = (bx: number, by: number, h = 0) => {
       const v = toView(bx, h, by);
       return { x: CX + v.x * S, y: CY - v.y * S };
@@ -342,7 +349,7 @@ export class MenuScene extends Phaser.Scene {
     stroke: number,
     onClick: () => void,
     width = 380,
-    cx = GAME_W / 2,
+    cx = MENU_W / 2,
   ): { frame: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text } {
     const frame = this.add
       .rectangle(cx, y, width, 50, fill)
@@ -372,10 +379,10 @@ export class MenuScene extends Phaser.Scene {
     this.closeModal();
     // dim swallows and closes on outside-clicks; the panel is interactive so
     // clicks inside it never reach the dim (input.topOnly is true by default)
-    const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.75).setOrigin(0).setDepth(10).setInteractive();
+    const dim = this.add.rectangle(0, 0, MENU_W, MENU_H, 0x000000, 0.75).setOrigin(0).setDepth(10).setInteractive();
     dim.on('pointerdown', () => this.closeModal());
     const panel = this.add
-      .rectangle(GAME_W / 2, GAME_H / 2, width, height, 0x141625, 0.98)
+      .rectangle(MENU_W / 2, MENU_H / 2, width, height, 0x141625, 0.98)
       .setStrokeStyle(2, 0x2b3040)
       .setDepth(11)
       .setInteractive();
@@ -389,27 +396,27 @@ export class MenuScene extends Phaser.Scene {
 
   /** Top edge of a centered modal — content must hang off this, not off a fixed y. */
   private modalTop(height: number): number {
-    return GAME_H / 2 - height / 2;
+    return MENU_H / 2 - height / 2;
   }
 
   private modalTitle(text: string, height: number): void {
     this.modal.push(
       this.add
-        .text(GAME_W / 2, GAME_H / 2 - height / 2 + 34, text, { ...FONT, fontSize: '24px', fontStyle: 'bold', color: '#ffe066' })
+        .text(MENU_W / 2, MENU_H / 2 - height / 2 + 34, text, { ...FONT, fontSize: '24px', fontStyle: 'bold', color: '#ffe066' })
         .setOrigin(0.5)
         .setDepth(12),
     );
   }
 
   private modalClose(height: number): void {
-    const y = GAME_H / 2 + height / 2 - 44;
+    const y = MENU_H / 2 + height / 2 - 44;
     const close = this.add
-      .rectangle(GAME_W / 2, y, 180, 44, 0x2e7d4f)
+      .rectangle(MENU_W / 2, y, 180, 44, 0x2e7d4f)
       .setStrokeStyle(2, 0x5ef078)
       .setDepth(12)
       .setInteractive({ useHandCursor: true });
     const closeText = this.add
-      .text(GAME_W / 2, y, 'CLOSE', { ...FONT, fontSize: '15px', fontStyle: 'bold', color: '#ffffff' })
+      .text(MENU_W / 2, y, 'CLOSE', { ...FONT, fontSize: '15px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5)
       .setDepth(13);
     close.on('pointerdown', () => this.closeModal());
@@ -448,18 +455,18 @@ export class MenuScene extends Phaser.Scene {
     const W = 1000;
     this.openModal(H, W);
     const top = this.modalTop(H);
-    const left = GAME_W / 2 - W / 2;
+    const left = MENU_W / 2 - W / 2;
 
     this.modalTitle('WORKSHOP', H);
     this.modal.push(
       this.add
-        .text(GAME_W / 2, top + 60, `⚙ ${meta.scrap} SCRAP` , {
+        .text(MENU_W / 2, top + 60, `⚙ ${meta.scrap} SCRAP` , {
           ...FONT, fontSize: '19px', fontStyle: 'bold', color: '#7cf7c4',
         })
         .setOrigin(0.5)
         .setDepth(12),
       this.add
-        .text(GAME_W / 2, top + 84, 'Earned every run — deeper runs pay more. Perks are permanent and apply to every new run.', {
+        .text(MENU_W / 2, top + 84, 'Earned every run — deeper runs pay more. Perks are permanent and apply to every new run.', {
           ...FONT, fontSize: '11px', color: '#8892a6',
         })
         .setOrigin(0.5)
@@ -572,7 +579,7 @@ export class MenuScene extends Phaser.Scene {
     this.openModal(H, W);
     this.modalTitle('HOW TO PLAY', H);
     const top = this.modalTop(H);
-    const left = GAME_W / 2 - W / 2 + 44;
+    const left = MENU_W / 2 - W / 2 + 44;
 
     // The instructions have to name the control the player actually has. The
     // footer already adapted to touch while these steps still said "press R"
@@ -615,11 +622,11 @@ export class MenuScene extends Phaser.Scene {
         .setDepth(12),
       this.add
         .text(
-          GAME_W / 2,
+          MENU_W / 2,
           top + H - 96,
           IS_TOUCH
-            ? 'The build bar is split LOGISTICS · PRODUCTION · GUNS. Tap a slot then tap the map (tap it again to cancel) · ROTATE turns it\nSELL then tap to refund half · tap a tower to upgrade · the [?] button in-game reopens this reference'
-            : 'The build bar is split LOGISTICS · PRODUCTION · GUNS — keys 1-9 are the factory, ZXCV the guns · H reopens this in-game\nR rotate (also turns whatever is under the cursor) · right-click sells · click a tower to upgrade · L logistics · F speed · P pause',
+            ? 'The build bar is split LOGISTICS · PRODUCTION · GUNS. Tap a slot then tap the map (tap it again to cancel) · ROTATE turns it\nSELL then tap to refund half · tap a tower to upgrade · drag bare ground to pan, pinch to zoom · the [?] button in-game reopens this'
+            : 'The build bar is split LOGISTICS · PRODUCTION · GUNS — keys 1-9 are the factory, ZXCV the guns · H reopens this in-game\nR rotate (also turns whatever is under the cursor) · right-click sells · click a tower to upgrade · drag or wheel moves the board · L logistics · F speed · P pause',
           { ...FONT, fontSize: '11px', color: '#8892a6', align: 'center' },
         )
         .setOrigin(0.5)
@@ -637,10 +644,10 @@ export class MenuScene extends Phaser.Scene {
   private buildMapPicker(y: number): void {
     const current = lastPickedMap() ?? DEFAULT_MAP_ID;
     this.add
-      .text(GAME_W / 2, y - 16, 'MAP', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#8892a6' })
+      .text(MENU_W / 2, y - 16, 'MAP', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#8892a6' })
       .setOrigin(0.5);
     const blurb = this.add
-      .text(GAME_W / 2, y + 50, '', { ...FONT, fontSize: '11px', color: '#8892a6' })
+      .text(MENU_W / 2, y + 50, '', { ...FONT, fontSize: '11px', color: '#8892a6' })
       .setOrigin(0.5);
 
     const W = 176;
@@ -659,7 +666,7 @@ export class MenuScene extends Phaser.Scene {
     };
 
     MAPS.forEach((map, i) => {
-      const x = GAME_W / 2 - total / 2 + i * (W + gap);
+      const x = MENU_W / 2 - total / 2 + i * (W + gap);
       const frame = this.add
         .rectangle(x, y, W, 34, 0x1e2233)
         .setOrigin(0)
@@ -685,7 +692,7 @@ export class MenuScene extends Phaser.Scene {
     const SW = 22;
     const gap = 4;
     const total = SEGMENTS * SW + (SEGMENTS - 1) * gap;
-    const x0 = GAME_W / 2 - total / 2;
+    const x0 = MENU_W / 2 - total / 2;
     const bars: Phaser.GameObjects.Rectangle[] = [];
 
     this.add
@@ -729,7 +736,7 @@ export class MenuScene extends Phaser.Scene {
    * tested `achievementLayout` — nothing here picks a coordinate.
    */
   private showAchievements(page = 0): void {
-    const grid = achievementLayout({ gameW: GAME_W, gameH: GAME_H, count: ACHIEVEMENTS.length, touch: IS_TOUCH });
+    const grid = achievementLayout({ gameW: MENU_W, gameH: MENU_H, count: ACHIEVEMENTS.length, touch: IS_TOUCH });
     const shown = Phaser.Math.Clamp(page, 0, grid.pages - 1);
     this.openModal(grid.modalH, grid.modalW);
     this.modalTitle(
@@ -740,7 +747,7 @@ export class MenuScene extends Phaser.Scene {
     const unlockedCount = ACHIEVEMENTS.filter((a) => progress.unlocked.has(a.id)).length;
     this.modal.push(
       this.add
-        .text(GAME_W / 2, grid.top + 56, `${unlockedCount} of ${ACHIEVEMENTS.length} unlocked`, {
+        .text(MENU_W / 2, grid.top + 56, `${unlockedCount} of ${ACHIEVEMENTS.length} unlocked`, {
           ...FONT,
           fontSize: '12px',
           color: '#8892a6',
@@ -749,7 +756,7 @@ export class MenuScene extends Phaser.Scene {
         .setDepth(12),
     );
 
-    for (const cell of achievementCells(grid, ACHIEVEMENTS.length, shown, GAME_W)) {
+    for (const cell of achievementCells(grid, ACHIEVEMENTS.length, shown, MENU_W)) {
       const a = ACHIEVEMENTS[cell.index];
       const { x, y } = cell;
       const got = progress.unlocked.has(a.id);
@@ -823,7 +830,7 @@ export class MenuScene extends Phaser.Scene {
     this.openModal(H);
     this.modalTitle('LEADERBOARD — BEST WAVE', H);
     const loading = this.add
-      .text(GAME_W / 2, GAME_H / 2, 'loading…', { ...FONT, fontSize: '14px', color: '#8892a6' })
+      .text(MENU_W / 2, MENU_H / 2, 'loading…', { ...FONT, fontSize: '14px', color: '#8892a6' })
       .setOrigin(0.5)
       .setDepth(12);
     this.modal.push(loading);
@@ -835,7 +842,7 @@ export class MenuScene extends Phaser.Scene {
     if (rows.length === 0) {
       this.modal.push(
         this.add
-          .text(GAME_W / 2, GAME_H / 2, 'No scores yet — sign in and clear a wave to claim the top spot!', { ...FONT, fontSize: '13px', color: '#cdd6e4' })
+          .text(MENU_W / 2, MENU_H / 2, 'No scores yet — sign in and clear a wave to claim the top spot!', { ...FONT, fontSize: '13px', color: '#cdd6e4' })
           .setOrigin(0.5)
           .setDepth(12),
       );
@@ -844,7 +851,7 @@ export class MenuScene extends Phaser.Scene {
     rows.forEach((r, i) => {
       const col = i < 10 ? 0 : 1;
       const y = this.modalTop(H) + 70 + (i % 10) * 36;
-      const x = GAME_W / 2 - 460 + col * 480;
+      const x = MENU_W / 2 - 460 + col * 480;
       const mine = me !== null && r.user_id === me.id;
       const color = mine ? '#5ef078' : i === 0 ? '#ffe066' : '#e8edf5';
       this.modal.push(
@@ -863,8 +870,8 @@ export class MenuScene extends Phaser.Scene {
     this.openModal(H, 560);
     this.modalTitle(user ? 'ACCOUNT' : 'SIGN IN', H);
 
-    const cx = GAME_W / 2;
-    const top = GAME_H / 2 - H / 2;
+    const cx = MENU_W / 2;
+    const top = MENU_H / 2 - H / 2;
     const status = this.add
       .text(cx, top + H - 92, '', { ...FONT, fontSize: '12px', color: '#ffd75e', align: 'center', wordWrap: { width: 480 } })
       .setOrigin(0.5)

@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import * as THREE from 'three';
-import { GAME_H, GRID_H, GRID_W, IS_TOUCH, PLAYFIELD_H, TILE } from '../config';
+import { GAME_H, GAME_W, GRID_H, GRID_W, IS_TOUCH, PLAYFIELD_H, TILE } from '../config';
+import { DEFAULT_ZOOM, FIT_ZOOM } from '../scenes/boardCam';
 import { isTower, TOWERS } from '../data/buildings';
 import { computePathCells, pathWaypoints, RESERVES } from '../data/map';
 import { GameState } from '../state/GameState';
@@ -27,6 +28,23 @@ import {
   IsoRenderQuality,
   sampleIsoFrame,
 } from './isoQuality';
+
+/**
+ * The two views count zoom from different origins, and this reconciles them.
+ *
+ * Flat zoom is a pixel ratio: 1 means one board pixel per canvas pixel. Iso zoom
+ * is a framing: `fitCam` at 1 frames the *whole board*, whatever the viewport
+ * aspect. Those coincided exactly while the viewport was as tall as the board,
+ * which is why nothing had to say so before.
+ *
+ * On a phone the viewport is deliberately shorter (see `canvasMetrics`), so the
+ * whole board is on screen at `FIT_ZOOM` rather than at 1 — and without this
+ * mapping, toggling 2D↔3D mid-run would jump the framing. Where the two agree
+ * (`FIT_ZOOM === 1`: every desktop and tablet) this is the identity.
+ */
+function isoZoom(flatZoom: number): number {
+  return flatZoom / FIT_ZOOM;
+}
 
 /**
  * The isometric 3D view.
@@ -160,7 +178,11 @@ export class IsoView {
     private grid: GridSystem,
   ) {
     const parent = game.canvas.parentElement!;
-    parent.style.position = 'relative';
+    // Only *establish* a positioning context, never replace one. The parent is
+    // laid out with safe-area insets (`position: fixed` in index.html) so the
+    // canvas clears the notch; stamping `relative` over that would drop the
+    // insets and shift the whole game the first time 3D was switched on.
+    if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
     // The Phaser canvas is transparent in isometric mode and stacks above this
     // one, so its text and HUD land on top of the 3D world.
     game.canvas.style.position = 'relative';
@@ -174,7 +196,7 @@ export class IsoView {
     this.renderer = this.makeRenderer(ISO_QUALITY_PRESETS[this.quality].antialias);
     this.configureRenderer(this.quality);
 
-    this.cam = fitCam(0, 0, GRID_W * TILE, PLAYFIELD_H);
+    this.cam = fitCam(0, 0, GAME_W, PLAYFIELD_H, { zoom: isoZoom(DEFAULT_ZOOM) });
     this.camera = new THREE.OrthographicCamera(
       this.cam.left,
       this.cam.right,
@@ -282,7 +304,7 @@ export class IsoView {
    * `project` both read `this.cam`, so they follow automatically.
    */
   setView(zoom: number, panX: number, panY: number): void {
-    this.cam = fitCam(0, 0, GRID_W * TILE, PLAYFIELD_H, { zoom, panX, panY });
+    this.cam = fitCam(0, 0, GAME_W, PLAYFIELD_H, { zoom: isoZoom(zoom), panX, panY });
     this.camera.left = this.cam.left;
     this.camera.right = this.cam.right;
     this.camera.top = this.cam.top;

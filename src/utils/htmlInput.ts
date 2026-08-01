@@ -41,13 +41,21 @@ export function anchorInput(
 
   const reposition = (): void => {
     const r = canvas.getBoundingClientRect();
+    // Two hops, because the scene may not be drawn 1:1 onto the canvas: the
+    // title screen renders through a scaled camera so its layout survives a
+    // canvas shorter than 720px. Scene coords → canvas coords via the camera,
+    // then canvas coords → page pixels via the element's real size.
+    const cam = scene.cameras.main;
+    const z = cam.zoom;
+    const toCanvasX = (v: number): number => (v - cam.midPoint.x) * z + cam.width / 2;
+    const toCanvasY = (v: number): number => (v - cam.midPoint.y) * z + cam.height / 2;
     const sx = r.width / GAME_W;
     const sy = r.height / GAME_H;
-    node.style.left = `${r.left + window.scrollX + (cx - w / 2) * sx}px`;
-    node.style.top = `${r.top + window.scrollY + (cy - h / 2) * sy}px`;
-    node.style.width = `${w * sx}px`;
-    node.style.height = `${h * sy}px`;
-    node.style.fontSize = `${Math.max(10, Math.round(13 * sy))}px`;
+    node.style.left = `${r.left + window.scrollX + toCanvasX(cx - w / 2) * sx}px`;
+    node.style.top = `${r.top + window.scrollY + toCanvasY(cy - h / 2) * sy}px`;
+    node.style.width = `${w * z * sx}px`;
+    node.style.height = `${h * z * sy}px`;
+    node.style.fontSize = `${Math.max(10, Math.round(13 * z * sy))}px`;
   };
   reposition();
   requestAnimationFrame(reposition); // once more after layout settles
