@@ -149,6 +149,26 @@ export class GameScene extends Phaser.Scene {
   /** false while create() is mid-flight — reset()/applySnapshot() event bursts must not autosave a half-built scene */
   private ready = false;
   private ghost!: Phaser.GameObjects.Image;
+  private ghostArrow!: Phaser.GameObjects.Graphics;
+  /** Output arrows for every placed machine; repainted only when the board changes. */
+  private facingLayer!: Phaser.GameObjects.Graphics;
+  private facingDirty = true;
+  /**
+   * Touch only: a placement staged at a tile, waiting for CONFIRM.
+   *
+   * Tapping the board used to build immediately, which on a phone means a
+   * mis-aimed tap spends real money on a building in the wrong place — and the
+   * board is now pannable, so "the wrong place" can be off screen by the time
+   * you notice. Staging costs nothing until confirmed, and rotating while
+   * staged is what makes the facing legible before it matters rather than after.
+   */
+  private pending: { tx: number; ty: number } | null = null;
+  /** Where a sell-mode press began, held until `pointerup` says tap or sweep. */
+  private sellDown: { tx: number; ty: number } | null = null;
+  /** Tiles already erased by the in-flight sell drag, so one sweep sells each once. */
+  private swept = new Set<number>();
+  private sweepRefund = 0;
+  private sweepCount = 0;
   private rangeCircle!: Phaser.GameObjects.Arc;
   /** deposits live on their own layer: they thin out, run dry, and get added by prospecting */
   private oreLayer!: Phaser.GameObjects.Graphics;
@@ -262,7 +282,13 @@ export class GameScene extends Phaser.Scene {
     this.oreLayer = this.add.graphics().setDepth(0);
     this.production.onDepleted = (x, y) => this.onTileDepleted(x, y);
 
+    // Output arrows for every machine that has a facing. Depth 4 puts them over
+    // the buildings (1/3) and under the ghost — a miner's output direction was
+    // guesswork from the sprite alone, and on touch the only way to change it is
+    // to tap the thing, which rotates it without ever saying which way it went.
+    this.facingLayer = this.add.graphics().setDepth(4);
     this.ghost = this.add.image(0, 0, 'belt').setAlpha(0).setDepth(10);
+    this.ghostArrow = this.add.graphics().setDepth(11);
     this.rangeCircle = this.add
       .circle(0, 0, TOWERS.tower.range, 0xffe066, 0.07)
       .setStrokeStyle(1.5, 0xffe066, 0.6)
@@ -318,6 +344,7 @@ export class GameScene extends Phaser.Scene {
     GameState.events.off('ui:menu').on('ui:menu', () => this.exitToMenu());
     GameState.events.off('ui:prospect').on('ui:prospect', () => this.toggleSurveyMode());
     GameState.events.off('ui:rotate').on('ui:rotate', () => this.rotateBuildDir());
+    GameState.events.off('ui:confirm').on('ui:confirm', () => this.commitPending());
     GameState.events.off('ui:sellmode').on('ui:sellmode', () => this.toggleSellMode());
     GameState.events.off('ui:view').on('ui:view', () => this.toggleIso());
     GameState.events.off('ui:pickcard').on('ui:pickcard', (id: string) => this.onPickCard(id));
@@ -351,9 +378,15 @@ export class GameScene extends Phaser.Scene {
     this.sellMode = false;
     this.surveyMode = false;
     this.sellArmed = null;
+    // REBUILD restarts this scene but the instance keeps its fields; a staged
+    // placement or a half-finished erase sweep must not survive into a new run.
+    this.pending = null;
+    this.facingDirty = true;
+    this.beginSweep();
     GameState.events.emit('builddir', this.buildDir);
     GameState.events.emit('sellmode', false);
     GameState.events.emit('surveymode', false);
+    GameState.events.emit('pending', false);
     this.ready = true;
     this.emitCoach();
   }
@@ -363,6 +396,7 @@ export class GameScene extends Phaser.Scene {
       this.iso?.render(this);
       return;
     }
+    if (this.facingDirty) this.redrawFacing();
     if (GameState.frozen) {
       // Pause still lets you plan and build; a frozen ghost would just lie
       // about where the next click lands. (A pending card draw freezes too.)
@@ -1003,6 +1037,9 @@ export class GameScene extends Phaser.Scene {
     });
     on('cancel', () => {
       if (this.surveyMode) this.toggleSurveyMode();
+      // A staged placement is the innermost thing on screen, so it unwinds
+      // first — cancelling it should not also disarm the palette slot.
+      else if (this.pending) this.clearPending();
       else this.select(null);
     });
     on('sendWave', () => this.waveSystem.start());
@@ -1033,14 +1070,24 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       if (this.sellMode) {
-        const b = this.grid.cellAt(tx, ty)?.building;
-        if (b) this.requestSell(b);
-        else sfx.error();
+        // Deliberately does not sell yet. Like the long-press classifier, this
+        // press is ambiguous until it ends: released where it started it is a
+        // tap (and an expensive building still gets to ask twice), dragged it is
+        // an erase sweep and every prompt would be in the way. Selling here
+        // meant the sweep skipped its own first tile, so a dragged line lost
+        // everything *except* the building the player started on.
+        this.beginSweep();
+        this.sellDown = { tx, ty };
         return;
       }
       if (this.selected) {
         if (this.selected === 'belt') this.startStroke(tx, ty);
-        else this.tryPlace(this.selected, tx, ty, false);
+        else if (!IS_TOUCH) this.tryPlace(this.selected, tx, ty, false);
+        // Touch stages instead of building: a second tap on the same tile
+        // confirms, a tap anywhere else moves it, and CONFIRM does the same as
+        // the second tap for anyone who would rather press a button.
+        else if (this.pending && this.pending.tx === tx && this.pending.ty === ty) this.commitPending();
+        else this.stagePending(tx, ty);
       } else {
         // Deliberately does NOT act yet. This gesture is not classified until
         // pointerup: the same press becomes a tap (rotate / open the panel) or
@@ -1063,6 +1110,7 @@ export class GameScene extends Phaser.Scene {
      */
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
       this.endStroke();
+      this.endSweep();
       const tap = this.pendingTap;
       this.pendingTap = null;
       this.dragPan = null;
@@ -1115,6 +1163,28 @@ export class GameScene extends Phaser.Scene {
       if (this.selected === 'belt' && p.isDown && !p.rightButtonDown() && p.y < PLAYFIELD_H) {
         const t = this.tileAt(p.x, p.y);
         this.paintBeltTo(t.tx, t.ty);
+        return;
+      }
+      // Drag-erase, the mirror of drag-painting: sweeping a finger through a
+      // dead line pulls it up as fast as it went down. Only inside the explicit
+      // SELL mode, which is the confirmation — a tap still asks twice for the
+      // expensive ones, but stopping mid-sweep to answer a prompt per building
+      // would defeat the gesture.
+      if (this.sellMode && p.isDown && !p.rightButtonDown() && p.y < PLAYFIELD_H) {
+        // The same slop the pan uses. Without it a two-pixel wobble during a tap
+        // counts as a sweep, which is how an expensive tower would lose its
+        // confirmation prompt to a shaky finger.
+        if (Math.hypot(p.x - this.pressX, p.y - this.pressY) > PAN_SLOP) {
+          const t = this.tileAt(p.x, p.y);
+          this.sweepSell(t.tx, t.ty);
+        }
+        return;
+      }
+      // Nudge a staged placement by dragging: get it roughly right with the tap,
+      // then slide it onto the exact tile while watching the ghost.
+      if (this.pending && p.isDown && !p.rightButtonDown() && p.y < PLAYFIELD_H) {
+        const t = this.tileAt(p.x, p.y);
+        if (t.tx !== this.pending.tx || t.ty !== this.pending.ty) this.stagePending(t.tx, t.ty, true);
       }
     });
 
@@ -1328,6 +1398,7 @@ export class GameScene extends Phaser.Scene {
   /** Touch-only sell mode: no right button, so selling gets an explicit mode. */
   private toggleSellMode(): void {
     this.sellMode = !this.sellMode;
+    this.clearPending();
     if (this.sellMode) {
       this.select(null);
       if (this.surveyMode) {
@@ -1349,6 +1420,9 @@ export class GameScene extends Phaser.Scene {
     // right-click, so without this a player who taps BELT is stuck in belt mode.
     if (type !== null && type === this.selected) type = null;
     this.selected = type;
+    // Arming a different building must not leave the old one staged — the ghost
+    // would keep showing a press on a tile the player is now aiming a tower at.
+    this.clearPending();
     GameState.events.emit('selected', type);
     this.emitCoach();
     if (type && this.surveyMode) {
@@ -1425,6 +1499,7 @@ export class GameScene extends Phaser.Scene {
       b.ammoBar = this.add.rectangle(cx - 12, cy + 15, 24, 3, BAR_COLOR[type] ?? 0xffe066).setOrigin(0, 0.5).setDepth(6);
     }
     this.grid.place(b);
+    this.facingDirty = true;
     return b;
   }
 
@@ -1473,12 +1548,153 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Turn a placed belt/machine 90°. Free and reversible — four clicks is a full circle. */
+  // ---------- staged placement (touch) ----------
+
+  /** Park the armed building on a tile without paying for it. */
+  private stagePending(tx: number, ty: number, quiet = false): void {
+    if (!this.selected || this.selected === 'belt') return;
+    this.pending = { tx, ty };
+    if (!quiet) sfx.place();
+    GameState.events.emit('pending', true);
+  }
+
+  private clearPending(): void {
+    if (!this.pending) return;
+    this.pending = null;
+    GameState.events.emit('pending', false);
+  }
+
+  /**
+   * Build the staged placement. The slot stays armed afterwards, so laying a row
+   * of presses is tap-tap, tap-tap rather than a trip back to the palette; a
+   * placement that fails (no money, occupied tile) keeps the stage so the player
+   * can move it rather than losing it to a rejected tap.
+   */
+  private commitPending(): void {
+    const at = this.pending;
+    if (!at || !this.selected) return;
+    if (this.tryPlace(this.selected, at.tx, at.ty, false)) this.clearPending();
+  }
+
+  // ---------- drag-erase ----------
+
+  private beginSweep(): void {
+    this.swept.clear();
+    this.sellDown = null;
+    this.sweepRefund = 0;
+    this.sweepCount = 0;
+  }
+
+  /**
+   * Sell whatever the erase drag just crossed. Each tile once per sweep, or
+   * jittering a finger over one belt would try to sell it every frame.
+   */
+  private sweepSell(tx: number, ty: number): void {
+    const key = ty * GRID_W + tx;
+    if (this.swept.has(key)) return;
+    this.swept.add(key);
+    const b = this.grid.cellAt(tx, ty)?.building;
+    if (!b) return;
+    this.sweepRefund += Math.floor(b.invested / 2);
+    this.sweepCount += 1;
+    this.sell(b);
+  }
+
+  /**
+   * Report the sweep as one number. `sell` already floats a refund per building,
+   * which on a twenty-belt line is twenty overlapping labels saying nothing —
+   * the total is the thing the player actually wants to read.
+   */
+  private endSweep(): void {
+    const at = this.sellDown;
+    this.sellDown = null;
+    // Never moved far enough to be a sweep: it was a tap, and a tap still goes
+    // through requestSell — which unjams a carrier before demolishing it and
+    // makes anything expensive ask a second time.
+    if (at && this.sweepCount === 0) {
+      const b = this.grid.cellAt(at.tx, at.ty)?.building;
+      if (b) this.requestSell(b);
+      return;
+    }
+    if (this.sweepCount > 1) {
+      this.floatText(BOARD_W / 2, 200, `SOLD ${this.sweepCount}  ·  +$${this.sweepRefund}`, '#9aa7bd');
+    }
+    this.beginSweep();
+  }
+
   private rotateBuilding(b: Building, step = 1): void {
     b.dir = (((b.dir + step) % 4) + 4) % 4 as Dir;
     b.sprite.setRotation((b.dir * Math.PI) / 2);
     this.tweens.add({ targets: b.sprite, scale: 1.12, duration: 70, yoyo: true });
+    this.facingDirty = true;
     sfx.place();
     this.requestSave();
+  }
+
+  // ---------- output facing ----------
+
+  /** Unit vector per `Dir`. Art points East at rotation 0, so 0 is +x. */
+  private static readonly DIR_VEC: readonly (readonly [number, number])[] = [
+    [1, 0],
+    [0, 1],
+    [-1, 0],
+    [0, -1],
+  ];
+
+  /**
+   * A chevron on the output edge, pointing the way finished goods leave.
+   *
+   * `emphatic` is the staged-placement version: bigger, green, and drawn before
+   * anything is paid for. The quiet version rides on every placed machine,
+   * because "which way is this miner facing" is a question the sprite alone
+   * cannot answer and tapping to find out *rotates* it.
+   */
+  private drawFacingArrow(
+    g: Phaser.GameObjects.Graphics,
+    tx: number,
+    ty: number,
+    dir: Dir,
+    emphatic: boolean,
+  ): void {
+    const [ux, uy] = GameScene.DIR_VEC[dir & 3];
+    const nx = -uy;
+    const ny = ux;
+    const cx = tx * TILE + TILE / 2;
+    const cy = ty * TILE + TILE / 2;
+    const half = emphatic ? 8 : 5;
+    const len = emphatic ? 10 : 7;
+    const reach = TILE / 2 + (emphatic ? 5 : 1);
+    const px = cx + ux * reach;
+    const py = cy + uy * reach;
+    const pts: [number, number, number, number, number, number] = [
+      px,
+      py,
+      px - ux * len + nx * half,
+      py - uy * len + ny * half,
+      px - ux * len - nx * half,
+      py - uy * len - ny * half,
+    ];
+    // Dark outline first: the board runs from near-black road to pale ore, and
+    // a single flat colour disappears against one end of that or the other.
+    g.lineStyle(emphatic ? 3 : 2, 0x0e0f1a, 0.85);
+    g.strokeTriangle(...pts);
+    g.fillStyle(emphatic ? 0x5ef078 : 0xffe066, emphatic ? 1 : 0.9);
+    g.fillTriangle(...pts);
+  }
+
+  /**
+   * Repaint every machine's output arrow. Event-driven rather than per frame:
+   * the board only changes when something is built, turned or sold.
+   */
+  private redrawFacing(): void {
+    this.facingDirty = false;
+    const g = this.facingLayer.clear();
+    for (const b of this.grid.buildings) {
+      // Belts already say which way they run, with the chevron loop. Towers and
+      // the lab have no output to point at.
+      if (b.type === 'belt' || b.type === 'lab' || isTower(b.type)) continue;
+      this.drawFacingArrow(g, b.x, b.y, b.dir, false);
+    }
   }
 
   /** Advance the one in-world configuration this building owns. */
@@ -1561,6 +1777,7 @@ export class GameScene extends Phaser.Scene {
     b.mkPips?.forEach((p) => p.destroy());
     if (this.selTower === b) this.selectTower(null);
     this.grid.remove(b);
+    this.facingDirty = true;
     GameState.addMoney(refund, false); // recycled capital, not wave income
     this.floatText(b.x * TILE + 16, b.y * TILE + 8, `+$${refund}`, '#9aa7bd');
     this.burst(b.x * TILE + 16, b.y * TILE + 16, 0x9aa7bd, 8);
@@ -1607,6 +1824,37 @@ export class GameScene extends Phaser.Scene {
       g.strokeRect(s.x * TILE, s.y * TILE, s.w * TILE, s.h * TILE);
       return;
     }
+    // A staged placement pins the ghost to its tile instead of the pointer.
+    // On touch there is no hover, so a pointer-following ghost is just the last
+    // place a finger happened to touch — which is exactly the wrong thing to be
+    // showing while the player decides where this goes.
+    if (this.pending && this.selected) {
+      const sel = this.selected;
+      const gx = this.pending.tx * TILE + TILE / 2;
+      const gy = this.pending.ty * TILE + TILE / 2;
+      const canBuild = this.grid.canPlace(sel, this.pending.tx, this.pending.ty) && GameState.money >= costOf(sel);
+      const facing = !isTower(sel) && sel !== 'lab';
+      this.ghost
+        .setAlpha(0.85)
+        .setPosition(gx, gy)
+        .setRotation(facing ? (this.buildDir * Math.PI) / 2 : 0)
+        .setTint(canBuild ? 0x88ff88 : 0xff6666);
+      const g = this.ghostArrow.clear();
+      g.lineStyle(2, canBuild ? 0x5ef078 : 0xff5555, 0.95);
+      g.strokeRect(gx - TILE / 2 - 2, gy - TILE / 2 - 2, TILE + 4, TILE + 4);
+      if (facing) this.drawFacingArrow(g, this.pending.tx, this.pending.ty, this.buildDir, true);
+      // The outline is a Graphics, which has no isometric counterpart to mirror.
+      // The 3D view paints footprints on the ground itself, and a staged tile is
+      // exactly that — so it reuses the decal the survey footprint already uses.
+      this.iso?.setSurvey({ x: this.pending.tx, y: this.pending.ty, w: 1, h: 1 }, canBuild);
+      if (isTower(sel)) {
+        this.rangeCircle.setRadius(TOWERS[sel].range).setVisible(true).setPosition(gx, gy);
+      } else {
+        this.rangeCircle.setVisible(false);
+      }
+      return;
+    }
+    this.ghostArrow.clear();
     this.iso?.setSurvey(null);
 
     if (!this.selected || p.y >= PLAYFIELD_H) {
@@ -1622,6 +1870,14 @@ export class GameScene extends Phaser.Scene {
       } else {
         this.rangeCircle.setVisible(false);
       }
+      return;
+    }
+    // Touch has no hover: with a finger up, the "cursor" is wherever it last
+    // landed, so a ghost there is stale rather than a preview. Belts are the
+    // exception — their ghost tracks a live drag.
+    if (IS_TOUCH && !p.isDown && this.selected !== 'belt') {
+      this.ghost.setAlpha(0);
+      this.rangeCircle.setVisible(false);
       return;
     }
     const cx = tx * TILE + TILE / 2;

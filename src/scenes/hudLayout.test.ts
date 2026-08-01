@@ -199,9 +199,30 @@ describe('slot contents', () => {
 describe('touch ergonomics', () => {
   const touchDevices = DEVICES.filter((d) => d.opts.touch);
 
-  it('always provides the three touch-only controls', () => {
+  it('always provides the four touch-only controls', () => {
     for (const d of touchDevices) {
-      expect(hudLayout(d.opts).touch, d.name).toHaveLength(3);
+      expect(hudLayout(d.opts).touch, d.name).toHaveLength(4);
+    }
+  });
+
+  /**
+   * ROTATE was singled out by a playtester as too small to hit or read, and it
+   * is one of the most-used controls on a device with no `R` key. The pad is a
+   * 2×2 block of equal cells so it cannot quietly become the runt again.
+   */
+  it('gives every pad cell the same generous size', () => {
+    for (const d of touchDevices) {
+      const [rotate, confirm, sell, pause] = hudLayout(d.opts).touch;
+      for (const r of [confirm, sell, pause]) {
+        expect(r.w, d.name).toBe(rotate.w);
+        expect(r.h, d.name).toBe(rotate.h);
+      }
+      // and comfortably past the 44px guideline, not merely at it
+      expect(rotate.w, d.name).toBeGreaterThanOrEqual(100);
+      // two rows of two, not a row of four
+      expect(confirm.y, d.name).toBe(rotate.y);
+      expect(sell.y, d.name).toBeGreaterThan(rotate.y);
+      expect(pause.y, d.name).toBe(sell.y);
     }
   });
 

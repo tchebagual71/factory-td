@@ -358,6 +358,14 @@ The read-only audit behind 31 found more than the defects 31 fixed. What follows
     - **The title screen is drawn through a scaled camera** (`MENU_SCALE`/`MENU_W`/`MENU_H`). Its button stack needs ~720px and the canvas is now allowed to be shorter. Scaling the camera keeps one layout; reflowing would have meant a second one to keep correct. `MENU_SCALE` is 1 wherever the canvas is tall enough, so desktop is pixel-identical.
     - **Desktop is deliberately untouched.** `COMFORTABLE_TILE_CSS` gates the whole mechanism: a 21:9 monitor letterboxes a little and keeps all 20 rows, because a tile is already 48px there and hiding rows would cost information to buy legibility nobody was short of. `config.test.ts` pins the 16:9 and tablet canvases to their exact previous numbers for this reason.
 
+41. `[x]` **Touch build ergonomics** — shipped, straight from the same playtest as 40. Four complaints, four fixes:
+    - **Placement is staged, not immediate (touch only).** Tapping the board parks a ghost on the tile and charges nothing; ROTATE aims it, dragging nudges it, and ✓ PLACE — or a second tap on the same tile — buys it. A mis-aimed tap used to spend real money on a building in the wrong place, and now that the board pans, the wrong place can be off screen by the time you notice. **Belts are deliberately exempt**: drag-painting was reported as already perfect, and staging would break the one gesture that works. Desktop still builds on click (`else if (!IS_TOUCH)`), because a mouse does not miss.
+    - **A staged placement keeps the palette armed after it commits**, so a row of presses is tap-tap, tap-tap. A *failed* commit keeps the stage instead of dropping it — a rejected tap should let you move the thing, not lose it.
+    - **Every machine wears its output arrow** (`drawFacingArrow`/`redrawFacing`, event-driven, never per frame). "Which way is this miner facing" could not be answered from the sprite, and on touch the only way to change the facing is to *tap the machine*, which rotates it without saying which way it went. Belts are skipped — the chevron loop already says it — and towers and the lab have no output to point at. The staged ghost gets the same arrow in an emphatic green, so the facing is legible *before* you pay.
+    - **The touch pad is a 2×2 block of equal cells** (ROTATE / ✓ PLACE / SELL / PAUSE, `TOUCH_W` 232). ROTATE was half of a 180px row and was called out by name as too small to hit or read; it is now a 30px arrow glyph with a caption, and `hudLayout.test.ts` pins every cell to the same size so it cannot become the runt again.
+    - **Drag to erase, the mirror of drag-painting.** Inside SELL mode a drag pulls up everything it crosses. The mode *is* the confirmation, so the per-building prompt is skipped mid-sweep — but a **tap** still goes through `requestSell`, keeping both the unjam-first rule and the second ask on expensive buildings. Two traps, both hit while writing it: selling on `pointerdown` made the sweep skip its own first tile (the line vanished *except* where you started), so the press is classified on release like every other gesture here; and the sweep needs the same `PAN_SLOP` the pan uses, or a two-pixel wobble during a tap counts as a drag and quietly strips a tower of its confirmation.
+    - **The one gap:** `facingLayer` and the staged outline are `Graphics`, which the isometric mirror has no counterpart for. The staged *tile* is covered — it reuses `IsoView.setSurvey`, the existing "highlight this footprint on the ground" decal — but 3D has no per-machine output arrows. Fixing that means giving `IsoView` a real arrow model.
+
 ## Working with Codex (delegation contract)
 
 Implementation work is delegated to the Codex subagent wherever it is self-contained; the orchestrator keeps architecture context, sets the fence, and reviews. What makes this work:
@@ -375,7 +383,7 @@ Implementation work is delegated to the Codex subagent wherever it is self-conta
 
 ## Where to pick up
 
-Everything in the original ranked roadmap, the playability audit, and the post-audit backlog (32–40) is now shipped or explicitly partial — see the `[~]` entries above for exactly what remains inside each. The suite is **616 tests across 38 files**; `npm test`, `npm run typecheck` and `npm run build` are all green at the time of writing.
+Everything in the original ranked roadmap, the playability audit, and the post-audit backlog (32–41) is now shipped or explicitly partial — see the `[~]` entries above for exactly what remains inside each. The suite is **617 tests across 38 files**; `npm test`, `npm run typecheck` and `npm run build` are all green at the time of writing.
 
 Ranked by value, what is genuinely left:
 

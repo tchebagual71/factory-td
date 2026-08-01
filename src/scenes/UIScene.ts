@@ -423,10 +423,10 @@ export class UIScene extends Phaser.Scene {
       ? [
           // two rendered lines max — the rows below sit at a fixed 30px pitch
           ['Move', 'Drag bare ground to pan the board · pinch to zoom out to the whole map and back in.'],
-          ['Build', 'Three shelves: LOGI, PROD, GUNS. Tap a slot, then the board; tap it again to cancel.'],
-          ['Belts', 'Drag across the board to paint a line — corners included.'],
-          ['Rotate', 'ROTATE sets the facing before you build; tap a placed belt to turn it.'],
-          ['Sell', 'SELL, then tap a building — refunds half. Or long-press it. On a belt carrying a stuck item, the first tap clears the item instead.'],
+          ['Build', 'Tap a slot, then the board: the building is staged, not bought. Drag to nudge it, ROTATE to aim it, ✓ PLACE (or tap the same tile again) to buy it.'],
+          ['Belts', 'Drag across the board to paint a line — corners included. Belts build as you drag; they are not staged.'],
+          ['Rotate', 'ROTATE aims the staged building — the green arrow is where its output goes. Tap a placed belt or machine to turn it; its own arrow shows the new facing.'],
+          ['Sell', 'SELL, then tap a building — refunds half. Or drag to erase a whole line. Long-press works too. On a belt carrying a stuck item, the first tap clears the item instead.'],
           ['Upgrade', 'Tap a placed tower to open its upgrade panel.'],
           ['Wave', 'SEND WAVE. AUTO sends them back to back; ×1/×2/×3 is game speed.'],
           ['Logistics', 'LOGI shades belts by throughput and shows each tower’s ammo uptime.'],
@@ -651,20 +651,45 @@ export class UIScene extends Phaser.Scene {
    * mouse button. Only built on touch devices — a desktop keeps its shortcuts.
    */
   private buildTouchControls(layout: HudLayout): void {
-    const [r, s, p] = layout.touch;
+    const [r, c, s, p] = layout.touch;
     const ARROWS = ['→', '↓', '←', '↑'];
 
-    const rotate = this.hudButton(r.x, r.y, r.w, r.h, `↻ ${ARROWS[0]}`, 15, () => GameState.events.emit('ui:rotate'));
+    // The arrow is the label, not decoration on one: this button is the only
+    // way to aim a machine on a device with no `R` key, and a playtester could
+    // neither find it nor read which way it was pointing.
+    const rotate = this.hudButton(r.x, r.y, r.w, r.h, ARROWS[0], 30, () => GameState.events.emit('ui:rotate'));
     rotate.label.setColor('#ffe066');
-    GameState.events.on('builddir', (dir: number) => rotate.label.setText(`↻ ${ARROWS[dir & 3]}`));
+    this.add
+      .text(r.x + r.w / 2, r.y + r.h - 13, 'ROTATE', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#8892a6' })
+      .setOrigin(0.5);
+    rotate.label.setY(r.y + r.h / 2 - 7);
+    GameState.events.on('builddir', (dir: number) => rotate.label.setText(ARROWS[dir & 3]));
 
-    const sell = this.hudButton(s.x, s.y, s.w, s.h, 'SELL', 14, () => GameState.events.emit('ui:sellmode'));
+    // Lit only while something is staged. A confirm that looks available with
+    // nothing to confirm teaches the player it does nothing.
+    const confirm = this.hudButton(c.x, c.y, c.w, c.h, '✓', 30, () => GameState.events.emit('ui:confirm'));
+    const confirmCap = this.add
+      .text(c.x + c.w / 2, c.y + c.h - 13, 'PLACE', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#8892a6' })
+      .setOrigin(0.5);
+    confirm.label.setY(c.y + c.h / 2 - 7);
+    // Stroke and text only, never the fill: hudButton restores its own fill on
+    // pointerout, so a fill set here would survive exactly until the finger
+    // lifted off the button that set it.
+    const setConfirm = (armed: boolean): void => {
+      confirm.label.setColor(armed ? '#5ef078' : '#454b5e');
+      confirm.frame.setStrokeStyle(armed ? 3 : 2, armed ? 0x5ef078 : 0x2b3040);
+      confirmCap.setColor(armed ? '#7cf7c4' : '#4a5164');
+    };
+    setConfirm(false);
+    GameState.events.on('pending', setConfirm);
+
+    const sell = this.hudButton(s.x, s.y, s.w, s.h, 'SELL', 15, () => GameState.events.emit('ui:sellmode'));
     GameState.events.on('sellmode', (on: boolean) => {
       sell.label.setText(on ? 'SELL ✓' : 'SELL').setColor(on ? '#ff8b8b' : '#cdd6e4');
       sell.frame.setStrokeStyle(2, on ? 0xff5555 : 0x2b3040);
     });
 
-    const pause = this.hudButton(p.x, p.y, p.w, p.h, '❚❚', 15, () => GameState.togglePause());
+    const pause = this.hudButton(p.x, p.y, p.w, p.h, '❚❚', 17, () => GameState.togglePause());
     GameState.events.on('paused', (paused: boolean) => {
       pause.label.setText(paused ? '▶' : '❚❚').setColor(paused ? '#5ef078' : '#cdd6e4');
     });

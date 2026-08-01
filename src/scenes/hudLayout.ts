@@ -25,7 +25,7 @@ export interface HudLayout {
   /** columns/rows used *within* each category block */
   paletteCols: number[];
   paletteRows: number;
-  /** rotate / sell / pause, touch devices only */
+  /** rotate / confirm / sell / pause, in that order — touch devices only */
   touch: Rect[];
   preview: Rect;
   send: Rect;
@@ -46,7 +46,16 @@ export interface HudLayoutOpts {
 
 const PAD = 10;
 const CLUSTER_W = 380;
-const TOUCH_W = 180;
+/**
+ * The touch pad is four equal cells in a 2×2 block, not three in a T.
+ *
+ * ROTATE used to be one half of a 180px row, which put it at a ~39px target
+ * before the canvas fit was corrected and still read as the smallest control on
+ * a screen where it is one of the most used — a playtester called it out by
+ * name. Squaring the block buys every cell the same generous size and makes
+ * room for CONFIRM, which tap-to-place needs.
+ */
+const TOUCH_W = 232;
 /** compact bars pack the four toggles into a 2×2 block beside the send button */
 const COMPACT_TOGGLE_BLOCK = 188;
 /** breathing room between two category blocks — the visual "these are different things" cue */
@@ -93,15 +102,20 @@ export function hudLayout(o: HudLayoutOpts): HudLayout {
   });
 
   // ----- touch controls -----
+  // 2×2: the two controls a placement needs (ROTATE, CONFIRM) share the top
+  // row, with SELL and PAUSE under them.
   const touch: Rect[] = [];
   if (o.touch) {
     const th = Math.floor((availH - gap) / 2);
     const halfW = Math.floor((TOUCH_W - gap) / 2);
-    touch.push(
-      { x: touchX, y: top, w: halfW, h: th },
-      { x: touchX + halfW + gap, y: top, w: halfW, h: th },
-      { x: touchX, y: top + th + gap, w: TOUCH_W, h: th },
-    );
+    for (let i = 0; i < 4; i++) {
+      touch.push({
+        x: touchX + (i % 2) * (halfW + gap),
+        y: top + Math.floor(i / 2) * (th + gap),
+        w: halfW,
+        h: th,
+      });
+    }
   }
 
   // ----- wave cluster -----

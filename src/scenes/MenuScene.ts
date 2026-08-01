@@ -584,7 +584,9 @@ export class MenuScene extends Phaser.Scene {
     // The instructions have to name the control the player actually has. The
     // footer already adapted to touch while these steps still said "press R"
     // and "press SPACE" to someone holding a phone with no keyboard.
-    const turnIt = IS_TOUCH ? 'tap ROTATE before placing to turn it' : 'press R before placing to turn it';
+    const turnIt = IS_TOUCH
+      ? 'tap the map to stage it, ROTATE to aim it, then ✓ PLACE — the green arrow shows where its output goes'
+      : 'press R before placing to turn it';
     const sendIt = IS_TOUCH ? 'Tap SEND WAVE' : 'Press SPACE';
 
     const steps: [string, string][] = [
@@ -625,7 +627,7 @@ export class MenuScene extends Phaser.Scene {
           MENU_W / 2,
           top + H - 96,
           IS_TOUCH
-            ? 'The build bar is split LOGISTICS · PRODUCTION · GUNS. Tap a slot then tap the map (tap it again to cancel) · ROTATE turns it\nSELL then tap to refund half · tap a tower to upgrade · drag bare ground to pan, pinch to zoom · the [?] button in-game reopens this'
+            ? 'The build bar is split LOGISTICS · PRODUCTION · GUNS. Tap a slot then the map to stage it · ROTATE aims it · ✓ PLACE buys it\nSELL then tap or drag to erase · tap a tower to upgrade · drag bare ground to pan, pinch to zoom · the [?] button in-game reopens this'
             : 'The build bar is split LOGISTICS · PRODUCTION · GUNS — keys 1-9 are the factory, ZXCV the guns · H reopens this in-game\nR rotate (also turns whatever is under the cursor) · right-click sells · click a tower to upgrade · drag or wheel moves the board · L logistics · F speed · P pause',
           { ...FONT, fontSize: '11px', color: '#8892a6', align: 'center' },
         )
