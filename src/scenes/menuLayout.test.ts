@@ -102,4 +102,17 @@ describe('responsive menu layout', () => {
 
     expect(layout.settings.fxOffset).toBeGreaterThanOrEqual(14 + mutedWidth + 8);
   });
+
+  it.each([
+    ['roomy touch tablet', 1024, 768, true, 240],
+    ['tall desktop window', 1024, 600, false, 145],
+  ])('preserves the roomy composition on a %s', (_name, viewportW, viewportH, touch, titleY) => {
+    const canvas = canvasMetrics({ width: viewportW, height: viewportH, touch });
+    const fit = fittedScale(canvas.gameW, canvas.gameH, viewportW, viewportH);
+    const layout = menuLayout({ ...canvas, touch, hasSave: true, fitScale: fit });
+
+    expect(layout.designH).toBeGreaterThan(720);
+    expect(layout.compact).toBe(false);
+    expect(layout.title).toEqual({ y: titleY, size: 64 });
+  });
 });

@@ -52,7 +52,7 @@ export function menuLayout({ gameW, gameH, touch: _touch, hasSave, fitScale }: M
   const designH = valid ? gameH : FALLBACK_H;
   const displayScale = Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1;
   const roomyTypeTooSmall = renderedFontSize(16, 1, displayScale) < 11 || renderedFontSize(11, 1, displayScale) < 9;
-  const compact = valid && (designH < FALLBACK_H || roomyTypeTooSmall);
+  const compact = valid && designH <= FALLBACK_H && (designH < FALLBACK_H || roomyTypeTooSmall);
 
   if (!compact) {
     const top = Math.round((designH - FALLBACK_H) / 2);
