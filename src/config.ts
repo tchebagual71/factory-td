@@ -180,6 +180,12 @@ export const PLAYFIELD_H = metrics.playfieldH;
 /** True when the HUD has room for the two-row, big-button layout. */
 export const ROOMY_UI = UI_H >= UI_H_ROOMY;
 
+/** CSS scale Phaser FIT applies to the logical canvas on this viewport. */
+export const DISPLAY_SCALE = ((): number => {
+  if (!viewport.width || !viewport.height) return 1;
+  return Math.min(viewport.width / GAME_W, viewport.height / GAME_H);
+})();
+
 /**
  * The menu lays out in the real game canvas. A previous 720px virtual surface
  * was scaled once here and then again by Phaser FIT, turning small phone copy

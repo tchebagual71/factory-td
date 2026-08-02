@@ -3,6 +3,7 @@ export interface MenuLayoutOptions {
   gameH: number;
   touch: boolean;
   hasSave: boolean;
+  fitScale: number;
 }
 
 export interface MenuLayout {
@@ -12,7 +13,7 @@ export interface MenuLayout {
   designH: number;
   title: { y: number; size: number };
   subtitle: { y: number; size: number };
-  view: { labelSize: number };
+  view: { headingSize: number; buttonSize: number };
   account: { labelSize: number; buttonSize: number };
   main: {
     continueY: number | null;
@@ -24,7 +25,7 @@ export interface MenuLayout {
     halfLabelSize: number;
   };
   map: { y: number; headingSize: number; labelSize: number; blurbSize: number };
-  settings: { y: number; labelSize: number };
+  settings: { y: number; labelSize: number; fxOffset: number };
   best: { y: number; size: number };
   footer: { y: number; size: number; short: boolean };
 }
@@ -45,11 +46,13 @@ export function renderedFontSize(logicalSize: number, cameraZoom: number, fitSca
  * lays out directly in the phone canvas instead of shrinking that composition
  * through a second camera transform, which is what turned 11px copy into 6px.
  */
-export function menuLayout({ gameW, gameH, touch, hasSave }: MenuLayoutOptions): MenuLayout {
+export function menuLayout({ gameW, gameH, touch: _touch, hasSave, fitScale }: MenuLayoutOptions): MenuLayout {
   const valid = [gameW, gameH].every(Number.isFinite) && gameW > 0 && gameH > 0;
   const designW = valid ? gameW : FALLBACK_W;
   const designH = valid ? gameH : FALLBACK_H;
-  const compact = valid && touch && designH < FALLBACK_H;
+  const displayScale = Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1;
+  const roomyTypeTooSmall = renderedFontSize(16, 1, displayScale) < 11 || renderedFontSize(11, 1, displayScale) < 9;
+  const compact = valid && (designH < FALLBACK_H || roomyTypeTooSmall);
 
   if (!compact) {
     const top = Math.round((designH - FALLBACK_H) / 2);
@@ -66,7 +69,7 @@ export function menuLayout({ gameW, gameH, touch, hasSave }: MenuLayoutOptions):
       designH,
       title: { y: top + 130, size: 64 },
       subtitle: { y: top + 185, size: 15 },
-      view: { labelSize: 12 },
+      view: { headingSize: 13, buttonSize: 12 },
       account: { labelSize: 13, buttonSize: 12 },
       main: {
         continueY,
@@ -78,7 +81,7 @@ export function menuLayout({ gameW, gameH, touch, hasSave }: MenuLayoutOptions):
         halfLabelSize: 14,
       },
       map: { y: mapY, headingSize: 11, labelSize: 13, blurbSize: 11 },
-      settings: { y: mapY + 88, labelSize: 12 },
+      settings: { y: mapY + 88, labelSize: 12, fxOffset: 62 },
       best: { y: mapY + 128, size: 14 },
       footer: { y: designH - 26, size: 11, short: false },
     };
@@ -90,6 +93,8 @@ export function menuLayout({ gameW, gameH, touch, hasSave }: MenuLayoutOptions):
   const newRunY = hasSave ? first + 52 : first;
   const actionsY = newRunY + 52;
   const secondaryY = actionsY + 52;
+  const primarySize = Math.max(18, Math.ceil(11 / displayScale));
+  const secondarySize = Math.max(14, Math.ceil(9 / displayScale));
 
   return {
     compact: true,
@@ -97,21 +102,21 @@ export function menuLayout({ gameW, gameH, touch, hasSave }: MenuLayoutOptions):
     designW,
     designH,
     title: { y: veryShort ? 50 : 68, size: veryShort ? 40 : 48 },
-    subtitle: { y: veryShort ? 82 : 108, size: veryShort ? 16 : 18 },
-    view: { labelSize: 18 },
-    account: { labelSize: 18, buttonSize: 18 },
+    subtitle: { y: veryShort ? 82 : 108, size: primarySize },
+    view: { headingSize: primarySize, buttonSize: primarySize },
+    account: { labelSize: primarySize, buttonSize: primarySize },
     main: {
       continueY,
       newRunY,
       actionsY,
       secondaryY,
       buttonH: 46,
-      fullLabelSize: 18,
-      halfLabelSize: 18,
+      fullLabelSize: primarySize,
+      halfLabelSize: primarySize,
     },
-    map: { y: designH - 165, headingSize: 14, labelSize: 18, blurbSize: 14 },
-    settings: { y: designH - 82, labelSize: 14 },
-    best: { y: designH - 48, size: 18 },
-    footer: { y: designH - 18, size: 14, short: true },
+    map: { y: designH - 165, headingSize: secondarySize, labelSize: primarySize, blurbSize: secondarySize },
+    settings: { y: designH - 82, labelSize: secondarySize, fxOffset: 86 },
+    best: { y: designH - 48, size: primarySize },
+    footer: { y: designH - 18, size: secondarySize, short: true },
   };
 }

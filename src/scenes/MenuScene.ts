@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { IS_TOUCH, MENU_H, MENU_W, TILE } from '../config';
+import { DISPLAY_SCALE, IS_TOUCH, MENU_H, MENU_W, TILE } from '../config';
 import { BOARD_CX, BOARD_CZ, toView } from '../iso/isoMath';
 import { ACHIEVEMENTS } from '../data/achievements';
 import {
@@ -56,7 +56,13 @@ export class MenuScene extends Phaser.Scene {
     this.confirmingNewRun = false;
     this.modal = [];
     const save = loadLocal();
-    this.layout = menuLayout({ gameW: MENU_W, gameH: MENU_H, touch: IS_TOUCH, hasSave: Boolean(save) });
+    this.layout = menuLayout({
+      gameW: MENU_W,
+      gameH: MENU_H,
+      touch: IS_TOUCH,
+      hasSave: Boolean(save),
+      fitScale: DISPLAY_SCALE,
+    });
     // Depth -2 so the mode backdrop (-1) sits above it and the buttons (0)
     // above that. The backdrop is rebuilt on toggle, so it cannot rely on
     // display-list insertion order to stay behind the UI.
@@ -166,7 +172,9 @@ export class MenuScene extends Phaser.Scene {
         .setOrigin(0.5);
     }
     const footer = this.layout.footer.short
-      ? 'Tap HOW TO PLAY · tap a build slot then the map · pinch to zoom · [?] help'
+      ? IS_TOUCH
+        ? 'Tap HOW TO PLAY · tap a build slot then the map · pinch to zoom · [?] help'
+        : 'Read HOW TO PLAY · 1-9 factory · ZXCV guns · H help'
       : IS_TOUCH
         ? 'New here? Tap HOW TO PLAY · tap a build slot then tap the map · drag to pan, pinch to zoom · SELL refunds 50% · [?] in-game help'
         : 'New here? Read HOW TO PLAY · 1-9 factory · ZXCV guns · R rotate · drag paints belts · right-click sells · SPACE wave · L logistics · H help';
@@ -302,7 +310,7 @@ export class MenuScene extends Phaser.Scene {
   private buildViewToggle(): void {
     const supported = isoSupported();
     const label = this.add
-      .text(16, 16, 'VIEW', { ...FONT, fontSize: `${this.layout.view.labelSize}px`, fontStyle: 'bold', color: '#8892a6' })
+      .text(16, 16, 'VIEW', { ...FONT, fontSize: `${this.layout.view.headingSize}px`, fontStyle: 'bold', color: '#8892a6' })
       .setOrigin(0, 0);
     label.setVisible(supported);
     if (!supported) return;
@@ -313,7 +321,7 @@ export class MenuScene extends Phaser.Scene {
       .setStrokeStyle(2, 0x2b3040)
       .setInteractive({ useHandCursor: true });
     const text = this.add
-      .text(91, 57, '', { ...FONT, fontSize: `${this.layout.view.labelSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
+      .text(91, 57, '', { ...FONT, fontSize: `${this.layout.view.buttonSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(0.5);
     const paint = () => {
       const iso = renderMode() === 'iso';
@@ -740,7 +748,7 @@ export class MenuScene extends Phaser.Scene {
      * through — and on a weak phone it is frame budget spent on nothing the
      * simulation needs.
      */
-    const fxX = x0 + total + 62;
+    const fxX = x0 + total + this.layout.settings.fxOffset;
     const fxBtn = this.add
       .rectangle(fxX, y - 5, 250, 26, 0x1e2233)
       .setOrigin(0, 0)
