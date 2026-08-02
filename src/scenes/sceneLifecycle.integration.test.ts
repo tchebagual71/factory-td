@@ -6,9 +6,31 @@ import { OverlayScheduler } from './overlayScheduler';
 
 const tally = (): WaveTally => ({ kills: 0, leaked: 0, income: 0, fired: {}, produced: {}, delivered: {}, toLab: {}, magStart: 0, magEnd: 0, starved: 0 });
 
+class InputEmitter {
+  private handlers = new Map<string, ((...args: unknown[]) => void)[]>();
+
+  on(event: string, handler: (...args: unknown[]) => void): this {
+    const handlers = this.handlers.get(event) ?? [];
+    handlers.push(handler);
+    this.handlers.set(event, handlers);
+    return this;
+  }
+
+  emit(event: string, ...args: unknown[]): void {
+    for (const handler of this.handlers.get(event) ?? []) handler(...args);
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
-  GameState.events.off('missioncomplete').off('inspector').off('boardoverlay').off('boardoverlayrequest');
+  GameState.events
+    .off('missioncomplete')
+    .off('inspector')
+    .off('boardoverlay')
+    .off('boardoverlayrequest')
+    .off('ui:touchdown')
+    .off('ui:touchup')
+    .off('ui:touchupoutside');
 });
 
 describe('production scene lifecycle seams', () => {
@@ -240,14 +262,19 @@ describe('production scene lifecycle seams', () => {
 
   it('resolves a touch upgrade only for its owning pointer on the same button release', () => {
     const tryUpgrade = vi.fn();
+    const tower = { type: 'tower', x: 4, y: 5, mk: 2, path: null };
     const scene = Object.assign(Object.create(GameScene.prototype), {
       touchGesture: { kind: 'idle' as const },
       touchIntent: null,
+      touchDeliveries: new WeakMap<object, Set<string>>(),
       input: { manager: { pointers: [{ id: 7, isDown: true, y: 180 }] } },
       pendingTap: null,
       sellDown: null,
       dragPan: null,
       pinch: null,
+      selTower: tower,
+      towerSelectionVersion: 3,
+      grid: { cellAt: () => ({ building: tower }) },
       endStroke: vi.fn(),
       endSweep: vi.fn(),
       overHud: vi.fn(() => true),
@@ -271,11 +298,19 @@ describe('production scene lifecycle seams', () => {
 
     capture.call(scene, { id: 7, x: 1100, y: 180, wasTouch: true }, 1);
     expect(tryUpgrade).not.toHaveBeenCalled();
-    expect(scene.touchIntent).toEqual({ kind: 'upgrade', choice: 1, pointerId: 7 });
+    expect(scene.touchIntent).toEqual({
+      kind: 'upgrade',
+      choice: 1,
+      pointerId: 7,
+      target: tower,
+      mk: 2,
+      path: null,
+      selectionVersion: 3,
+    });
 
     finish.call(scene, { id: 8, x: 1100, y: 180, wasCanceled: false }, false, 1);
     expect(tryUpgrade).not.toHaveBeenCalled();
-    expect(scene.touchIntent).toEqual({ kind: 'upgrade', choice: 1, pointerId: 7 });
+    expect(scene.touchIntent).toMatchObject({ kind: 'upgrade', choice: 1, pointerId: 7, target: tower });
 
     finish.call(scene, { id: 7, x: 1100, y: 180, wasCanceled: false }, false, 1);
     expect(tryUpgrade).toHaveBeenCalledOnce();
@@ -286,14 +321,19 @@ describe('production scene lifecycle seams', () => {
 
   it('cancels a touch upgrade released over the other upgrade button', () => {
     const tryUpgrade = vi.fn();
+    const tower = { type: 'tower', x: 4, y: 5, mk: 2, path: null };
     const scene = Object.assign(Object.create(GameScene.prototype), {
       touchGesture: { kind: 'idle' as const },
       touchIntent: null,
+      touchDeliveries: new WeakMap<object, Set<string>>(),
       input: { manager: { pointers: [{ id: 9, isDown: true, y: 180 }] } },
       pendingTap: null,
       sellDown: null,
       dragPan: null,
       pinch: null,
+      selTower: tower,
+      towerSelectionVersion: 1,
+      grid: { cellAt: () => ({ building: tower }) },
       endStroke: vi.fn(),
       endSweep: vi.fn(),
       overHud: vi.fn(() => true),
@@ -321,5 +361,155 @@ describe('production scene lifecycle seams', () => {
     expect(tryUpgrade).not.toHaveBeenCalled();
     expect(scene.touchGesture).toEqual({ kind: 'idle' });
     expect(scene.touchIntent).toBeNull();
+  });
+
+  const upgradeDrifts: [string, {
+    selected?: 'other';
+    mk?: number;
+    path?: string;
+    selectionVersion?: number;
+    missing?: boolean;
+  }][] = [
+    ['selected tower changed', { selected: 'other' }],
+    ['tower mark changed', { mk: 3 }],
+    ['tower path changed', { path: 'sniper' }],
+    ['selection version changed', { selectionVersion: 5 }],
+    ['tower disappeared', { missing: true }],
+  ];
+
+  it.each(upgradeDrifts)('drops a captured upgrade when the %s before release', (_name, drift) => {
+    const tower = { type: 'tower', x: 4, y: 5, mk: 2, path: null as null | string };
+    const other = { type: 'tower', x: 6, y: 7, mk: 1, path: null };
+    const tryUpgrade = vi.fn();
+    const scene = {
+      selTower: drift.selected ? other : tower,
+      towerSelectionVersion: drift.selectionVersion ?? 4,
+      grid: { cellAt: () => (drift.missing ? null : { building: tower }) },
+      touchIntent: {
+        kind: 'upgrade',
+        choice: 0,
+        pointerId: 7,
+        target: tower,
+        mk: 2,
+        path: null,
+        selectionVersion: 4,
+      },
+      tryUpgrade,
+    };
+    if (drift.mk) tower.mk = drift.mk;
+    if (drift.path) tower.path = drift.path;
+
+    resolve.call(scene);
+
+    expect(tryUpgrade).not.toHaveBeenCalled();
+    expect(scene.touchIntent).toBeNull();
+  });
+
+  it('forwards HUD-captured touch lifecycle through the top scene without duplicate delivery', () => {
+    const uiInput = new InputEmitter();
+    const ui = { input: uiInput };
+    const setupUi = (UIScene.prototype as unknown as {
+      setupTouchForwarding(this: typeof ui): void;
+    }).setupTouchForwarding;
+
+    const boardPointer = {
+      id: 1,
+      identifier: 101,
+      x: 96,
+      y: 112,
+      isDown: true,
+      wasTouch: true,
+      wasCanceled: false,
+      event: {},
+    };
+    const hudPointer = {
+      id: 2,
+      identifier: 202,
+      x: 400,
+      y: 700,
+      isDown: true,
+      wasTouch: true,
+      wasCanceled: false,
+      event: {},
+    };
+    const startStroke = vi.fn();
+    const endSweep = vi.fn();
+    const scene = Object.assign(Object.create(GameScene.prototype), {
+      touchGesture: { kind: 'idle' as const },
+      touchIntent: null,
+      touchDeliveries: new WeakMap<object, Set<string>>(),
+      input: { manager: { pointers: [boardPointer, hudPointer] } },
+      pendingTap: null,
+      sellDown: null,
+      dragPan: null,
+      pinch: null,
+      selected: 'belt',
+      startStroke,
+      endStroke: vi.fn(),
+      endSweep,
+      overHud: vi.fn(() => false),
+    });
+    const setupGame = (GameScene.prototype as unknown as {
+      setupForwardedTouchLifecycle(this: typeof scene): void;
+    }).setupForwardedTouchLifecycle;
+    const routeDown = (GameScene.prototype as unknown as {
+      routeTouchPointerDown(
+        this: typeof scene,
+        p: typeof boardPointer,
+        capture?: () => void,
+      ): void;
+    }).routeTouchPointerDown;
+    const finish = (GameScene.prototype as unknown as {
+      finishTouchPointer(
+        this: typeof scene,
+        p: typeof boardPointer,
+        outside: boolean,
+      ): void;
+    }).finishTouchPointer;
+
+    const hudAction = vi.fn();
+    uiInput.on('pointerdown', hudAction);
+    setupGame.call(scene);
+    setupUi.call(ui);
+
+    routeDown.call(scene, boardPointer, () => {
+      scene.touchIntent = { kind: 'belt', tx: 3, ty: 4 };
+    });
+    expect(scene.touchGesture).toMatchObject({ kind: 'pending-single', owner: 1 });
+    expect(scene.touchIntent).toEqual({ kind: 'belt', tx: 3, ty: 4 });
+
+    uiInput.emit('pointerdown', hudPointer, [{}]);
+
+    expect(hudAction).toHaveBeenCalledOnce();
+    expect(startStroke).not.toHaveBeenCalled();
+    expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+    expect(scene.touchIntent).toBeNull();
+
+    hudPointer.isDown = false;
+    hudPointer.event = {};
+    uiInput.emit('pointerup', hudPointer, [{}]);
+    expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+
+    boardPointer.isDown = false;
+    boardPointer.wasCanceled = true;
+    boardPointer.event = {};
+    uiInput.emit('pointerup', boardPointer, [{}]);
+
+    expect(scene.touchGesture).toEqual({ kind: 'idle' });
+    expect(scene.touchIntent).toBeNull();
+    expect(endSweep).toHaveBeenCalledOnce();
+
+    finish.call(scene, boardPointer, false);
+    expect(endSweep).toHaveBeenCalledOnce();
+
+    boardPointer.isDown = true;
+    boardPointer.wasCanceled = false;
+    boardPointer.event = {};
+    routeDown.call(scene, boardPointer, () => {
+      scene.touchIntent = { kind: 'belt', tx: 8, ty: 9 };
+    });
+
+    expect(scene.touchGesture).toMatchObject({ kind: 'pending-single', owner: 1 });
+    expect(scene.touchIntent).toEqual({ kind: 'belt', tx: 8, ty: 9 });
   });
 });

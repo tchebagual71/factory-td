@@ -108,7 +108,31 @@ export class UIScene extends Phaser.Scene {
     super('ui');
   }
 
+  /**
+   * Interactive objects in this top scene hide captured pointer phases from
+   * GameScene. Forward those phases after the HUD object handler has run so a
+   * second touch can cancel board work without changing the HUD action.
+   */
+  private setupTouchForwarding(): void {
+    this.input.on(
+      'pointerdown',
+      (p: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => {
+        if (p.wasTouch && over.length > 0) GameState.events.emit('ui:touchdown', p);
+      },
+    );
+    this.input.on(
+      'pointerup',
+      (p: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => {
+        if (p.wasTouch && over.length > 0) GameState.events.emit('ui:touchup', p);
+      },
+    );
+    this.input.on('pointerupoutside', (p: Phaser.Input.Pointer) => {
+      if (p.wasTouch) GameState.events.emit('ui:touchupoutside', p);
+    });
+  }
+
   create(): void {
+    this.setupTouchForwarding();
     // ----- top status strip (pure geometry: see hudLayout.topStrip) -----
     const top = STRIP;
     this.stripBottom = top.stats.y + top.h;

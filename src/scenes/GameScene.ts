@@ -90,7 +90,15 @@ type TouchIntent =
   | { kind: 'survey'; tx: number; ty: number }
   | { kind: 'sell'; tx: number; ty: number }
   | { kind: 'inspect'; tx: number; ty: number }
-  | { kind: 'upgrade'; choice: 0 | 1; pointerId: number };
+  | {
+      kind: 'upgrade';
+      choice: 0 | 1;
+      pointerId: number;
+      target: Building;
+      mk: number;
+      path: PathId | null;
+      selectionVersion: number;
+    };
 
 /** Mk-pip / float-text tint per specialization path. */
 const PATH_COLORS: Record<PathId, number> = {
@@ -160,6 +168,8 @@ export class GameScene extends Phaser.Scene {
   private pendingTap: { tx: number; ty: number } | null = null;
   private touchGesture: TouchGesture = idleTouchGesture();
   private touchIntent: TouchIntent | null = null;
+  /** Native touch phases may arrive both directly and through UIScene. */
+  private touchDeliveries = new WeakMap<object, Set<string>>();
   private saveDirty = false;
   private saveTimer = 0;
   /** false while create() is mid-flight — reset()/applySnapshot() event bursts must not autosave a half-built scene */
@@ -250,6 +260,8 @@ export class GameScene extends Phaser.Scene {
   private dragPan: { x: number; y: number } | null = null;
 
   private selTower: Building | null = null;
+  /** Changes on every inspector selection, including away-and-back changes. */
+  private towerSelectionVersion = 0;
   private selRing!: Phaser.GameObjects.Rectangle;
   /** The single centre-screen banner slot — see `retireBanner`. */
   private banner: Phaser.GameObjects.Text | null = null;
@@ -281,6 +293,11 @@ export class GameScene extends Phaser.Scene {
     this.floaters = 0; // restart wipes the tweens, so their onComplete never decrements
     this.bursts = []; // and it destroys the pooled emitters — never reuse the dead ones
     this.burstIdx = 0;
+    this.touchGesture = idleTouchGesture();
+    this.touchIntent = null;
+    this.touchDeliveries = new WeakMap<object, Set<string>>();
+    this.selTower = null;
+    this.towerSelectionVersion = 0;
     GameState.reset();
     // UIScene sleeps across a rebuild, but this scene instance retains fields.
     // Clear the old armed slot before either save hydration or coach emission.
@@ -381,6 +398,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Scene events from the UI (off first — create() re-runs on restart)
+    this.setupForwardedTouchLifecycle();
     GameState.events.off('ui:select').on('ui:select', (t: BuildingType) => this.select(t));
     GameState.events.off('ui:startwave').on('ui:startwave', () => this.waveSystem.start());
     GameState.events.off('ui:menu').on('ui:menu', () => this.exitToMenu());
@@ -956,6 +974,7 @@ export class GameScene extends Phaser.Scene {
 
   private selectTower(b: Building | null): void {
     this.selTower = b;
+    this.towerSelectionVersion++;
     this.panelMagShown = -1; // a different tower may share an ammo count but not a cap
     if (b) {
       this.selRing.setPosition(b.x * TILE + TILE / 2, b.y * TILE + TILE / 2).setVisible(true);
@@ -1297,14 +1316,7 @@ export class GameScene extends Phaser.Scene {
       // deselect the tower underneath and shut the panel it lives in.
       if (p.y >= PLAYFIELD_H || this.overHud(p.x, p.y)) return;
       if (IS_TOUCH && p.wasTouch) {
-        const down = this.boardPointersDown();
-        const transition = touchDown(this.touchGesture, { id: p.id, x: p.x, y: p.y }, down);
-        this.touchGesture = transition.state;
-        if (transition.cancelBoard) {
-          this.cancelTouchBoardAction();
-          return;
-        }
-        this.captureTouchIntent(p);
+        this.routeTouchPointerDown(p, () => this.captureTouchIntent(p));
         return;
       }
       this.pressAt = this.time.now;
@@ -1474,6 +1486,45 @@ export class GameScene extends Phaser.Scene {
     ).length;
   }
 
+  private claimTouchDelivery(p: Phaser.Input.Pointer, phase: 'down' | 'up'): boolean {
+    const event = p.event;
+    if (!event || (typeof event !== 'object' && typeof event !== 'function')) return true;
+    const nativeEvent = event as object;
+    let phases = this.touchDeliveries.get(nativeEvent);
+    if (!phases) {
+      phases = new Set<string>();
+      this.touchDeliveries.set(nativeEvent, phases);
+    }
+    const claim = `${phase}:${p.id}`;
+    if (phases.has(claim)) return false;
+    phases.add(claim);
+    return true;
+  }
+
+  private routeTouchPointerDown(p: Phaser.Input.Pointer, capture?: () => void): void {
+    if (!this.claimTouchDelivery(p, 'down')) return;
+    const down = this.boardPointersDown();
+    const transition = touchDown(this.touchGesture, { id: p.id, x: p.x, y: p.y }, down);
+    this.touchGesture = transition.state;
+    if (transition.cancelBoard) {
+      this.cancelTouchBoardAction();
+      return;
+    }
+    capture?.();
+  }
+
+  private setupForwardedTouchLifecycle(): void {
+    GameState.events
+      .off('ui:touchdown')
+      .on('ui:touchdown', (p: Phaser.Input.Pointer) => this.routeTouchPointerDown(p));
+    GameState.events
+      .off('ui:touchup')
+      .on('ui:touchup', (p: Phaser.Input.Pointer) => this.finishTouchPointer(p, false));
+    GameState.events
+      .off('ui:touchupoutside')
+      .on('ui:touchupoutside', (p: Phaser.Input.Pointer) => this.finishTouchPointer(p, true));
+  }
+
   private captureTouchIntent(p: Phaser.Input.Pointer): void {
     this.pressAt = this.time.now;
     this.pressX = p.x;
@@ -1493,16 +1544,21 @@ export class GameScene extends Phaser.Scene {
   }
 
   private captureUpgradeTouch(p: Phaser.Input.Pointer, choice: 0 | 1): void {
-    const down = this.boardPointersDown();
-    const transition = touchDown(this.touchGesture, { id: p.id, x: p.x, y: p.y }, down);
-    this.touchGesture = transition.state;
-    if (transition.cancelBoard) {
-      this.cancelTouchBoardAction();
-      return;
-    }
-    this.pendingTap = null;
-    this.dragPan = null;
-    this.touchIntent = { kind: 'upgrade', choice, pointerId: p.id };
+    this.routeTouchPointerDown(p, () => {
+      this.pendingTap = null;
+      this.dragPan = null;
+      const target = this.selTower;
+      if (!target || !isTower(target.type)) return;
+      this.touchIntent = {
+        kind: 'upgrade',
+        choice,
+        pointerId: p.id,
+        target,
+        mk: target.mk,
+        path: target.path,
+        selectionVersion: this.towerSelectionVersion,
+      };
+    });
   }
 
   private handleUpgradePointerDown(p: Phaser.Input.Pointer, choice: 0 | 1): void {
@@ -1520,6 +1576,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private finishTouchPointer(p: Phaser.Input.Pointer, outside: boolean, upgradeChoice?: 0 | 1): void {
+    if (!this.claimTouchDelivery(p, 'up')) return;
     const transition = touchUp(this.touchGesture, p.id, this.boardPointersDown(p.id));
     this.touchGesture = transition.state;
     const intent = this.touchIntent;
@@ -1550,6 +1607,13 @@ export class GameScene extends Phaser.Scene {
     this.touchIntent = null;
     if (!intent) return;
     if (intent.kind === 'upgrade') {
+      if (
+        this.selTower !== intent.target
+        || this.towerSelectionVersion !== intent.selectionVersion
+        || intent.target.mk !== intent.mk
+        || intent.target.path !== intent.path
+        || this.grid.cellAt(intent.target.x, intent.target.y)?.building !== intent.target
+      ) return;
       this.tryUpgrade(intent.choice);
     } else if (intent.kind === 'belt') {
       if (this.selected !== 'belt') return;
