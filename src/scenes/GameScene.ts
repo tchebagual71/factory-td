@@ -659,7 +659,7 @@ export class GameScene extends Phaser.Scene {
    */
   shake(duration: number, intensity: number): void {
     if (reducedFx()) return;
-    this.shake(duration, intensity);
+    this.cameras.main.shake(duration, intensity);
   }
 
   flash(duration: number, r: number, g: number, b: number): void {
