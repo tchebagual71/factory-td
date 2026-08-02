@@ -107,8 +107,9 @@ function makeChainable(): Record<string, unknown> {
 
 /**
  * Stand-in for GameScene. Includes the juice helpers the systems call
- * (`floatText`, `burst`, `bigText`, camera shake) so a system under test can be
- * driven through a real wave instead of only having its pure bits poked.
+ * (`floatText`, `burst`, `bigText`, `edgeAlert`, camera shake) so a system under
+ * test can be driven through a real wave instead of only having its pure bits
+ * poked.
  */
 export function makeScene(): Phaser.Scene {
   return {
@@ -125,7 +126,17 @@ export function makeScene(): Phaser.Scene {
     cameras: { main: { shake: () => undefined, flash: () => undefined } },
     floatText: () => undefined,
     bigText: () => undefined,
+    // The wave-clear payoff banner. Records its arguments so a test can pin the
+    // invariant that matters: the figure counted up on screen is exactly the
+    // figure banked, never a second computation of the bonus.
+    bigCount: function (this: Record<string, unknown>, prefix: string, amount: number) {
+      (this.bigCountCalls as [string, number][]).push([prefix, amount]);
+    },
+    bigCountCalls: [] as [string, number][],
     burst: () => undefined,
+    // Off-screen markers for leaks and incoming waves. A no-op here, but it must
+    // exist: WaveSystem calls it on every leak and every wave start.
+    edgeAlert: () => undefined,
     // WaveSystem samples this at the start and end of every wave for the report
     // card's magazine line. No towers in a bare test world, hence zero.
     magazineTotal: () => 0,

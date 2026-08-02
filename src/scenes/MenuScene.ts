@@ -24,6 +24,8 @@ import { progress } from '../state/progress';
 import { isoSupported, renderMode, toggleRenderMode } from '../state/renderMode';
 import { achievementCells, achievementLayout } from './achievementLayout';
 import { anchorInput } from '../utils/htmlInput';
+import { reducedFx, toggleReducedFx } from '../utils/feel';
+import { sharpenText } from '../utils/sharpText';
 import { getVolume, isMuted, setVolume, sfx, toggleMute } from '../utils/sfx';
 
 const FONT = { fontFamily: 'monospace' };
@@ -50,6 +52,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   create(): void {
+    sharpenText(this);
     this.confirmingNewRun = false;
     this.modal = [];
     // Depth -2 so the mode backdrop (-1) sits above it and the buttons (0)
@@ -408,8 +411,14 @@ export class MenuScene extends Phaser.Scene {
     );
   }
 
-  private modalClose(height: number): void {
-    const y = MENU_H / 2 + height / 2 - 44;
+  /**
+   * `yOverride` exists for the achievements modal, which also draws a pager in
+   * this strip. That module owns the whole footer (`grid.closeY`), so passing it
+   * here is what stops the pager and CLOSE being placed by two different rules —
+   * which is exactly how they came to overlap.
+   */
+  private modalClose(height: number, yOverride?: number): void {
+    const y = yOverride ?? MENU_H / 2 + height / 2 - 44;
     const close = this.add
       .rectangle(MENU_W / 2, y, 180, 44, 0x2e7d4f)
       .setStrokeStyle(2, 0x5ef078)
@@ -694,7 +703,9 @@ export class MenuScene extends Phaser.Scene {
     const SW = 22;
     const gap = 4;
     const total = SEGMENTS * SW + (SEGMENTS - 1) * gap;
-    const x0 = MENU_W / 2 - total / 2;
+    // Offset left to make room for the effects toggle beside it: this is one
+    // settings row, and the button stack below has no vertical slack to give.
+    const x0 = MENU_W / 2 - total / 2 - 150;
     const bars: Phaser.GameObjects.Rectangle[] = [];
 
     this.add
@@ -727,6 +738,35 @@ export class MenuScene extends Phaser.Scene {
       bars.push(bar);
     }
     paint();
+
+    /*
+     * Motion sits with volume because it is the same kind of control: how loud
+     * the game is, in the other sense. A boss wave at ×3 speed shakes and
+     * flashes several times a second, which some players simply cannot play
+     * through — and on a weak phone it is frame budget spent on nothing the
+     * simulation needs.
+     */
+    const fxX = x0 + total + 62;
+    const fxBtn = this.add
+      .rectangle(fxX, y - 5, 250, 26, 0x1e2233)
+      .setOrigin(0, 0)
+      .setStrokeStyle(2, 0x2b3040)
+      .setInteractive({ useHandCursor: true });
+    const fxLabel = this.add
+      .text(fxX + 125, y + 8, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .setOrigin(0.5);
+    const paintFx = () => {
+      const off = reducedFx();
+      fxLabel.setText(off ? 'SCREEN SHAKE & FLASH: OFF' : 'SCREEN SHAKE & FLASH: ON');
+      fxLabel.setColor(off ? '#8892a6' : '#cdd6e4');
+      fxBtn.setStrokeStyle(2, off ? 0x2b3040 : 0x5ef078);
+    };
+    fxBtn.on('pointerdown', () => {
+      toggleReducedFx();
+      paintFx();
+      sfx.place();
+    });
+    paintFx();
   }
 
   // ---------- achievements ----------
@@ -798,7 +838,7 @@ export class MenuScene extends Phaser.Scene {
       );
     }
 
-    this.modalClose(grid.modalH);
+    this.modalClose(grid.modalH, grid.closeY);
   }
 
   /** One pager arrow. Returns its parts so the caller can register them for teardown. */

@@ -277,7 +277,7 @@ export class CombatSystem {
       progress.record('moneyEarned', bonus);
       progress.record('skewers');
       this.scene.floatText(bl.sprite.x, bl.sprite.y - 24, `SKEWER ×${bl.kills}  +$${bonus}`, '#6bd4ff');
-      this.scene.cameras.main.shake(70, 0.002);
+      this.scene.shake(70, 0.002);
     }
     return true;
   }
@@ -300,7 +300,7 @@ export class CombatSystem {
       if (this.wave.hit(e, dmg, stats.ammoType)) kills += 1;
     }
     this.scene.burst(ix, iy, 0xff9f43, 22);
-    this.scene.cameras.main.shake(90, 0.003);
+    this.scene.shake(90, 0.003);
     if (kills >= 3) {
       const bonus = kills * 3;
       GameState.addMoney(bonus);

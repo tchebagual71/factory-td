@@ -5,6 +5,7 @@ import { BUILD_CATEGORIES, BUILD_INFO, buildGroupSizes, categoryOf } from '../da
 import { ComboState, comboColor, comboExpired, comboNow, comboTier } from '../data/combo';
 import { activeMap, prospectCost, prospectKind } from '../data/map';
 import { ActiveMission, MissionDef, missionDef, missionProgress } from '../data/missions';
+import { rarityStyle, sortForReveal } from '../data/rarity';
 import { ResearchCard, researchForLevel } from '../data/research';
 import { gradeRun } from '../data/score';
 import { earlySendBonus, waveDef, WAVE_KIND_LABEL } from '../data/waves';
@@ -14,8 +15,9 @@ import { meta } from '../state/meta';
 import { progress } from '../state/progress';
 import { renderMode } from '../state/renderMode';
 import { BuildingType } from '../types';
+import { sharpenText } from '../utils/sharpText';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
-import { fitCardCopy, hudCardCopyLimits, HudLayout, hudLayout, overlayZones, slotContent, topStrip } from './hudLayout';
+import { cardDrawLayout, comboAnchor, fitCardCopy, gameOverLayout, hudCardCopyLimits, HudLayout, hudLayout, legendBand, overlayZones, reportCard, slotContent, STRIP } from './hudLayout';
 import { overlayPlan } from './overlayPolicy';
 import { boardOverlayVisibility, nextMissionId, presentedMissionId, type BoardOverlayVisibility } from './overlayPresentation';
 import { OverlayScheduler } from './overlayScheduler';
@@ -24,6 +26,8 @@ import { binding, key } from './keymap';
 import { UI_COLOR, UI_FONT, UI_SPACE, controlVisual } from './uiTheme';
 
 const FONT = { fontFamily: UI_FONT.mono };
+/** A board short enough that HUD chrome has to earn its pixels. See `overlayZones`. */
+const CRAMPED_BOARD = PLAYFIELD_H < 420;
 
 interface ToastNotice {
   name: string;
@@ -53,6 +57,14 @@ export class UIScene extends Phaser.Scene {
   private slotAffordable = new Map<BuildingType, boolean>();
   private helpLayer: Phaser.GameObjects.GameObject[] = [];
   /** bottom edge of the status strip — anything that floats over the board hangs off this */
+  /** Tab chrome and the shelf each palette slot belongs to — tabbed (touch) bars only. */
+  private tabParts: { frame: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text; color: number }[] = [];
+  private slotShelf: { container: Phaser.GameObjects.Container; group: number }[] = [];
+  private shelf = 0;
+  /** Pending auto-hide for the UNDO chip, cancelled if another sale re-arms it. */
+  private undoHide?: Phaser.Time.TimerEvent;
+  /** Pending fade for the transient zoom readout. */
+  private zoomHide?: Phaser.Time.TimerEvent;
   private stripBottom = 38;
   private descText!: Phaser.GameObjects.Text;
   private overlay: Phaser.GameObjects.GameObject[] = [];
@@ -98,8 +110,9 @@ export class UIScene extends Phaser.Scene {
   }
 
   create(): void {
+    sharpenText(this);
     // ----- top status strip (pure geometry: see hudLayout.topStrip) -----
-    const top = topStrip(GAME_W, IS_TOUCH);
+    const top = STRIP;
     this.stripBottom = top.stats.y + top.h;
     const chipFont = IS_TOUCH ? UI_FONT.touchPrimary : UI_FONT.desktopPrimary;
     const cellW = Math.floor((top.stats.w - UI_SPACE[1] * 2) / 3);
@@ -116,15 +129,20 @@ export class UIScene extends Phaser.Scene {
         .rectangle(x, top.stats.y + 2, cellW - UI_SPACE[0], top.h - UI_SPACE[0], UI_COLOR.surfaceRaised.hex, 0.98)
         .setOrigin(0)
         .setStrokeStyle(1, UI_COLOR.line.hex);
-      this.add
-        .text(x + UI_SPACE[0], top.stats.y + 4, label, {
-          fontFamily: UI_FONT.mono, fontSize: IS_TOUCH ? '8px' : '7px', fontStyle: 'bold', color: UI_COLOR.textMuted.css,
-        })
-        .setOrigin(0, 0);
+      // The caption is dropped where the board is short: "$450", "♥20" and
+      // "Wave 1" already say what they are, and on a phone these three words
+      // were three lines of noise across the top of the playfield.
+      if (!CRAMPED_BOARD) {
+        this.add
+          .text(x + UI_SPACE[0], top.stats.y + 4, label, {
+            fontFamily: UI_FONT.mono, fontSize: IS_TOUCH ? '8px' : '7px', fontStyle: 'bold', color: UI_COLOR.textMuted.css,
+          })
+          .setOrigin(0, 0);
+      }
       this.add.rectangle(x + UI_SPACE[0], top.stats.y + top.h - 3, cellW - UI_SPACE[2], 1, accent, 0.9).setOrigin(0);
     });
     const valueX = (i: number) => top.stats.x + UI_SPACE[1] + i * cellW + UI_SPACE[0];
-    const valueY = top.stats.y + top.h - (IS_TOUCH ? 8 : 6);
+    const valueY = CRAMPED_BOARD ? top.stats.y + top.h / 2 + 8 : top.stats.y + top.h - (IS_TOUCH ? 8 : 6);
     this.moneyText = this.add
       .text(valueX(0), valueY, '', { fontFamily: UI_FONT.mono, fontSize: `${chipFont}px`, fontStyle: 'bold', color: UI_COLOR.money.css })
       .setOrigin(0, 1);
@@ -144,7 +162,7 @@ export class UIScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     this.prospectText = this.add
       .text(top.survey.x + top.survey.w / 2, cy, '', {
-        fontFamily: UI_FONT.mono, fontSize: IS_TOUCH ? '14px' : '12px', fontStyle: 'bold', color: UI_COLOR.text.css,
+        fontFamily: UI_FONT.mono, fontSize: `${IS_TOUCH ? 14 : 12}px`, fontStyle: 'bold', color: UI_COLOR.text.css,
       })
       .setOrigin(0.5);
     prospectBtn.on('pointerover', () => prospectBtn.setFillStyle(controlVisual('hover').fill, 0.98));
@@ -244,6 +262,12 @@ export class UIScene extends Phaser.Scene {
       roomy: ROOMY_UI,
       touch: IS_TOUCH,
       groups: buildGroupSizes(),
+      // Tabs only where the bar is genuinely short of room — a phone. A desktop
+      // shows all thirteen at once and always should, and so does a tablet,
+      // whose 4:3 screen already spends its surplus height on a roomy bar.
+      // Swapping a glance for a tap is a cost, only worth paying to buy back a
+      // board that would otherwise be under a third of the screen.
+      tabbed: IS_TOUCH && UI_H < 200,
     });
 
     this.add.rectangle(layout.deck.x, layout.deck.y, layout.deck.w, layout.deck.h, UI_COLOR.surface.hex).setOrigin(0);
@@ -252,15 +276,23 @@ export class UIScene extends Phaser.Scene {
     // Palette construction shows its contextual hint immediately, so its target
     // has to exist before the slots are created.
     this.buildCoach();
+    if (layout.tabs.length > 0) this.buildTabs(layout);
     this.buildPalette(layout);
+    // LOGISTICS opens: belts are the first thing anyone places.
+    if (layout.tabs.length > 0) this.showShelf(0);
     if (IS_TOUCH) this.buildTouchControls(layout);
+    this.buildUndoChip();
+    this.buildZoomReadout();
     this.buildWaveCluster(layout);
 
-    // Hangs below the status strip: at y=10 it ran straight through the survey
-    // and research chips, which are exactly what you are reading past.
+    // Below the objective card and the toast, not merely below the strip: this
+    // is ~860px of centred text and it used to lie straight across the objective
+    // card. See `legendY`.
+    const band = legendBand(overlayZones(GAME_W, PLAYFIELD_H, top.stats.y + top.h, IS_TOUCH), IS_TOUCH);
     const legend = this.add
-      .text(GAME_W / 2, top.stats.y + top.h + 6, 'LOGISTICS  ·  tower % = ammo uptime last wave  ·  green belts flowing, red jammed  ·  orange rings = starved or backed up', {
+      .text(band.x + band.w / 2, band.y, 'LOGISTICS  ·  tower % = ammo uptime last wave  ·  green belts flowing, red jammed  ·  orange rings = starved or backed up', {
         ...FONT, fontSize: '11px', color: '#cdd6e4', backgroundColor: '#000000cc', padding: { x: 8, y: 4 },
+        align: 'center', wordWrap: { width: band.w - 16 },
       })
       .setOrigin(0.5, 0)
       .setDepth(30)
@@ -268,11 +300,18 @@ export class UIScene extends Phaser.Scene {
     GameState.events.on('overlay', (on: boolean) => legend.setVisible(on));
 
     // ----- kill streak meter -----
-    // Top RIGHT, hanging off the strip: top-left is the achievement toasts and
-    // top-centre is the logistics legend. Hidden below tier 1 (see combo.ts) so
-    // ordinary trickle kills never put chrome on screen.
+    // In the gap between the objective card and the achievement toast, not hard
+    // against the right edge: the toast zone *is* the right edge, so the old
+    // placement put an achievement unlock on top of the streak counter. Hidden
+    // below tier 1 (see combo.ts) so ordinary trickle kills never put chrome on
+    // screen. See `comboAnchor`.
+    const combo = comboAnchor(
+      overlayZones(GAME_W, PLAYFIELD_H, top.stats.y + top.h, IS_TOUCH),
+      this.stripBottom,
+      IS_TOUCH,
+    );
     this.comboText = this.add
-      .text(GAME_W - 10, this.stripBottom + 8, '', {
+      .text(combo.x, combo.y, '', {
         ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 4,
       })
       .setOrigin(1, 0)
@@ -293,7 +332,13 @@ export class UIScene extends Phaser.Scene {
       this.refreshStats();
       this.refreshPreview();
     });
-    ev.on('phase', () => this.refreshWaveBtn());
+    ev.on('phase', () => {
+      this.refreshWaveBtn();
+      // The report describes the wave you just finished, so sending the next one
+      // is exactly the moment it stops being useful — and the moment you want
+      // the whole board back.
+      if (GameState.phase === 'wave') this.closeReportNow();
+    });
     ev.on('selected', (t: BuildingType | null) => this.refreshSelection(t));
     ev.on('coach', (message: CoachMessage) => this.refreshCoach(message));
     ev.on('inspector', (open: boolean) => {
@@ -392,7 +437,12 @@ export class UIScene extends Phaser.Scene {
     // Height follows the content instead of a guessed constant — the build
     // reference grows by a row whenever a building is added to the palette.
     const refH = BUILD_CATEGORIES.length * 28 + BUILD_INFO.length * 16;
-    const H = Math.min(GAME_H - 40, 66 + Math.max(226, refH) + 76);
+    // The panel is sized to whichever column is taller. 226 was the *controls*
+    // column's allowance and had gone stale exactly like the 30px row pitch
+    // below it — that column is ~345 now, so the panel was never tall enough to
+    // hold it and the last row ran under the CLOSE button.
+    const controlsH = 345;
+    const H = Math.min(GAME_H - 40, 66 + Math.max(controlsH, refH) + 76);
     const x = GAME_W / 2 - W / 2;
     const y = GAME_H / 2 - H / 2;
 
@@ -426,7 +476,7 @@ export class UIScene extends Phaser.Scene {
           ['Build', 'Tap a slot, then the board: the building is staged, not bought. Drag to nudge it, ROTATE to aim it, ✓ PLACE (or tap the same tile again) to buy it.'],
           ['Belts', 'Drag across the board to paint a line — corners included. Belts build as you drag; they are not staged.'],
           ['Rotate', 'ROTATE aims the staged building — the green arrow is where its output goes. Tap a placed belt or machine to turn it; its own arrow shows the new facing.'],
-          ['Sell', 'SELL, then tap a building — refunds half. Or drag to erase a whole line. Long-press works too. On a belt carrying a stuck item, the first tap clears the item instead.'],
+          ['Sell', 'SELL, then tap a building — refunds half. Or drag to erase a whole line. Long-press works too. Tap ↶ UNDO to put a sale back. On a belt carrying a stuck item, the first tap clears the item instead.'],
           ['Upgrade', 'Tap a placed tower to open its upgrade panel.'],
           ['Wave', 'SEND WAVE. AUTO sends them back to back; ×1/×2/×3 is game speed.'],
           ['Logistics', 'LOGI shades belts by throughput and shows each tower’s ammo uptime.'],
@@ -435,25 +485,39 @@ export class UIScene extends Phaser.Scene {
       : [
           // Every key here is read from `keymap.ts`, so a rebind can never leave
           // this reference quietly lying to the player.
-          ['Move', `Drag bare ground or middle-drag to pan · wheel zooms · ${key('zoomReset')} resets the view.`],
+          ['Move', `Drag bare ground or middle-drag to pan · wheel zooms (${key('zoomIn')}/${key('zoomOut')} too) · ${key('zoomReset')} resets the view.`],
           ['Build', `Pick from the three shelves in the bar, or use the hotkeys listed here. ${key('cancel')} cancels.`],
           ['Belts', 'Hold and drag to paint a line; it turns corners with your drag.'],
           ['Rotate', `${key('rotate')} turns whatever is under the cursor, or the pending build on bare ground. Shift+wheel turns it either way.`],
-          ['Sell', 'Right-click a building — refunds half. Expensive ones ask twice. On a belt carrying a stuck item, the first right-click clears the item instead.'],
+          ['Sell', `Right-click a building — refunds half, and right-drag erases a whole line. Expensive ones ask twice; ${key('undo')} puts the last sale back. On a belt carrying a stuck item, the first right-click clears the item instead.`],
           ['Upgrade', `Click a placed tower, then ${key('upgradeA')} (or ${key('upgradeB')} for the second path at Mk3).`],
           ['Wave', `${key('sendWave')} sends it · ${key('speed')} cycles speed ×1/×2/×3 · ${key('pause')} pauses.`],
           ['Logistics', `${key('overlay')} shades belts by throughput and shows each tower’s ammo uptime · ${key('mute')} mutes.`],
           ['View', `${key('view')} swaps the flat board for the 3D isometric one, as does the 2D/3D chip.`],
         ];
+    // The row pitch follows the text Phaser actually rendered, rather than a
+    // fixed 30px that assumed "two lines max".
+    //
+    // That assumption quietly stopped holding: items 41 and 42 added the staged
+    // placement, UNDO and unjam-first rules to these strings, and `Sell` reached
+    // ~200 characters — five wrapped lines running straight through the three
+    // rows beneath it. The left column of the only controls reference in the
+    // game was unreadable, on desktop as well as touch, because the pitch never
+    // depended on the canvas. Measuring means copy can grow again without
+    // silently colliding.
+    //
+    // The wrap is 366 rather than 320 because the column has room to x + 500
+    // (where the build reference starts) and wider lines mean fewer of them.
     let cy = y + 66;
     for (const [head, body] of controls) {
-      this.helpLayer.push(
-        this.add.text(x + 30, cy, head, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#6bd4ff' }).setDepth(82),
-        this.add
-          .text(x + 116, cy, body, { ...FONT, fontSize: '11px', color: '#cdd6e4', wordWrap: { width: 320 }, lineSpacing: 2 })
-          .setDepth(82),
-      );
-      cy += 30;
+      const label = this.add
+        .text(x + 30, cy, head, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#6bd4ff' })
+        .setDepth(82);
+      const text = this.add
+        .text(x + 116, cy, body, { ...FONT, fontSize: '11px', color: '#cdd6e4', wordWrap: { width: 366 }, lineSpacing: 2 })
+        .setDepth(82);
+      this.helpLayer.push(label, text);
+      cy += Math.max(24, text.height + 5);
     }
 
     // ----- build reference, grouped exactly like the palette -----
@@ -540,6 +604,45 @@ export class UIScene extends Phaser.Scene {
    * One row of small slots on a 16:9 desktop bar; two rows of big, finger-sized
    * slots whenever the bar is roomy (tablets and touch).
    */
+  /**
+   * Category tabs: only one shelf's slots are on screen at a time.
+   *
+   * Built before the slots so the tab strip sits under them in the display
+   * list, and wired afterwards via `showShelf`.
+   */
+  private buildTabs(layout: HudLayout): void {
+    layout.tabs.forEach((t, gi) => {
+      const cat = BUILD_CATEGORIES[gi];
+      const frame = this.add
+        .rectangle(t.x, t.y, t.w, t.h, UI_COLOR.surface.hex)
+        .setOrigin(0)
+        .setStrokeStyle(2, cat.color, 0.45)
+        .setInteractive({ useHandCursor: true });
+      const label = this.add
+        .text(t.x + t.w / 2, t.y + t.h / 2, cat.short, {
+          ...FONT, fontSize: '12px', fontStyle: 'bold', color: cat.css,
+        })
+        .setOrigin(0.5);
+      frame.on('pointerdown', () => {
+        sfx.place();
+        this.showShelf(gi);
+      });
+      this.tabParts.push({ frame, label, color: cat.color });
+    });
+  }
+
+  /** Reveal one category's slots and light its tab. */
+  private showShelf(index: number): void {
+    this.shelf = index;
+    this.tabParts.forEach((t, gi) => {
+      const on = gi === index;
+      t.frame.setFillStyle(on ? UI_COLOR.surfaceRaised.hex : UI_COLOR.surface.hex);
+      t.frame.setStrokeStyle(on ? 3 : 2, t.color, on ? 1 : 0.4);
+      t.label.setAlpha(on ? 1 : 0.55);
+    });
+    for (const { container, group } of this.slotShelf) container.setVisible(group === index);
+  }
+
   private buildPalette(layout: HudLayout): void {
     const bh = layout.slots[0].h;
     const inner = slotContent(bh);
@@ -566,6 +669,7 @@ export class UIScene extends Phaser.Scene {
       const cat = categoryOf(info.type)!;
       this.slotColor.set(info.type, cat.color);
       const container = this.add.container(x, y);
+      this.slotShelf.push({ container, group: BUILD_CATEGORIES.findIndex((c) => c.id === cat.id) });
       const frame = this.add
         .rectangle(0, 0, bw, bh, UI_COLOR.surfaceRaised.hex)
         .setOrigin(0)
@@ -693,6 +797,73 @@ export class UIScene extends Phaser.Scene {
     GameState.events.on('paused', (paused: boolean) => {
       pause.label.setText(paused ? '▶' : '❚❚').setColor(paused ? '#5ef078' : '#cdd6e4');
     });
+  }
+
+  /**
+   * A brief readout whenever the board zoom changes.
+   *
+   * Zoom and pan exist on every device but announced themselves nowhere: on
+   * desktop they were `+`/`-`/`HOME`/wheel with nothing on screen saying so, and
+   * a player who nudged the wheel by accident had no way to tell what had
+   * happened or how to undo it. Fades on its own — a permanent readout would be
+   * clutter for a value that is 1 almost all the time.
+   */
+  private buildZoomReadout(): void {
+    const label = this.add
+      .text(GAME_W - 12, PLAYFIELD_H - 12, '', {
+        ...FONT,
+        fontSize: '12px',
+        fontStyle: 'bold',
+        color: '#cdd6e4',
+        backgroundColor: '#0e0f1acc',
+        padding: { x: 7, y: 4 },
+      })
+      .setOrigin(1, 1)
+      .setDepth(44)
+      .setAlpha(0);
+
+    let last = 1;
+    GameState.events.on('zoom', (zoom: number) => {
+      if (Math.abs(zoom - last) < 0.001) return;
+      last = zoom;
+      const reset = IS_TOUCH ? 'pinch to fit' : `[${key('zoomReset')}] resets`;
+      label.setText(`⤢ ${Math.round(zoom * 100)}%  ·  ${reset}`).setAlpha(1);
+      this.zoomHide?.remove();
+      this.zoomHide = this.time.delayedCall(1600, () => {
+        this.tweens.add({ targets: label, alpha: 0, duration: 350 });
+      });
+    });
+  }
+
+  /**
+   * A transient UNDO offer after a sale, the way every mail client offers one.
+   *
+   * Selling is the only irreversible action in the game and a drag now removes
+   * a whole line at once, so the safety net has to be reachable without a
+   * keyboard. Deliberately not a permanent pad button: it is meaningless most
+   * of the time, and the pad's four cells are all doing work already.
+   */
+  private buildUndoChip(): void {
+    const w = IS_TOUCH ? 132 : 104;
+    const h = IS_TOUCH ? 46 : 32;
+    const x = UI_SPACE[2];
+    const y = PLAYFIELD_H - h - UI_SPACE[2];
+    const chip = this.hudButton(x, y, w, h, '↶ UNDO', IS_TOUCH ? 15 : 13, () =>
+      GameState.events.emit('ui:undo'),
+    );
+    const show = (on: boolean): void => {
+      chip.frame.setVisible(on);
+      chip.label.setVisible(on);
+      if (on) chip.frame.setInteractive({ useHandCursor: true });
+      else chip.frame.disableInteractive();
+      this.undoHide?.remove();
+      // Fades from view but the action stays available to the keyboard, exactly
+      // like an editor: the chip is the reminder, not the mechanism.
+      if (on) this.undoHide = this.time.delayedCall(7000, () => show(false));
+    };
+    chip.label.setColor('#ffd166');
+    show(false);
+    GameState.events.on('undo', show);
   }
 
   /** Wave button + speed/auto/logistics/menu, stacked to fill whatever bar height we have. */
@@ -898,6 +1069,9 @@ export class UIScene extends Phaser.Scene {
     this.summaryCard.destroy();
     this.summaryCard = null;
     this.overlayScheduler.closeReport();
+    // The board's pointer guard shields the card while it is up; it has to be
+    // told the moment it comes down, or a chunk of playfield stays unbuildable.
+    GameState.events.emit('report', false);
   }
 
   private clearActiveToast(): void {
@@ -979,12 +1153,14 @@ export class UIScene extends Phaser.Scene {
   private showWaveSummary(wave: number, t: WaveTally): void {
     this.dismissReport();
     this.overlayScheduler.openReport();
-    const W = 288;
-    const H = 158;
-    // Low in the board viewport, but never spilling onto the build bar — the
-    // viewport is shorter than the board on a phone, so 372 is not always inside it.
-    const y = Math.min(372, PLAYFIELD_H - H - 12);
-    const c = this.add.container(GAME_W / 2 - W / 2, y).setDepth(45).setAlpha(0);
+    // Low in the board viewport, but never spilling onto the build bar. The
+    // entrance offset lives in the layout too: this used to be built at the
+    // clamped y and then tweened to a literal 360, which put it behind the bar
+    // on every phone. See `reportCard`.
+    const R = reportCard(GAME_W, PLAYFIELD_H);
+    const W = R.w;
+    const H = R.h;
+    const c = this.add.container(R.x, R.fromY).setDepth(45).setAlpha(0);
     const short = ammoDeficits(t);
     const deficit = short.length > 0;
     const fired = ammoTotal(t.fired);
@@ -1033,21 +1209,26 @@ export class UIScene extends Phaser.Scene {
     c.add(rows);
     this.summaryCard = c;
     this.applyOverlayPlan();
-    this.tweens.add({ targets: c, alpha: 1, y: 360, duration: 220, ease: 'Back.out' });
-    this.tweens.add({
-      targets: c,
-      alpha: 0,
-      delay: 4200,
-      duration: 400,
-      onComplete: () => {
-        c.destroy();
-        if (this.summaryCard === c) {
-          this.summaryCard = null;
-          this.overlayScheduler.closeReport();
-          this.restoreLowerOverlays();
-        }
-      },
-    });
+    this.tweens.add({ targets: c, alpha: 1, y: R.y, duration: 220, ease: 'Back.out' });
+
+    // No fade timer. This used to vanish after 4.2s, which made "I looked at the
+    // board for a second and missed it" a permanent loss — there is no way to
+    // reopen the card, and it carries the only per-ammo diagnosis in the game.
+    //
+    // Tuning that number was never the fix: the card's useful life *is* the
+    // build phase, because it exists to tell you what to build next. So it lasts
+    // exactly that long — cleared when the next wave starts (`phase`), or by a
+    // tap for anyone who wants the board back sooner.
+    bg.setInteractive({ useHandCursor: true });
+    bg.on('pointerdown', () => this.closeReportNow());
+    GameState.events.emit('report', true);
+  }
+
+  /** Tear the report down and hand the board back to the ambient overlays. */
+  private closeReportNow(): void {
+    if (!this.summaryCard) return;
+    this.dismissReport();
+    this.restoreLowerOverlays();
   }
 
   /**
@@ -1062,77 +1243,136 @@ export class UIScene extends Phaser.Scene {
     this.dismissReport();
     this.clearActiveToast();
     this.clearCards();
+    // Bounded by the *playfield*, not the canvas: the build bar is opaque and
+    // owns everything below it. See `cardDrawLayout`.
+    const L = cardDrawLayout(GAME_W, PLAYFIELD_H, STRIP.h + STRIP.stats.y, cards.length, IS_TOUCH);
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.72).setOrigin(0).setDepth(70).setInteractive();
     const title = this.add
-      .text(GAME_W / 2, 96, `RESEARCH  ·  LEVEL ${level}`, {
-        ...FONT, fontSize: '30px', fontStyle: 'bold', color: '#7cf7c4', stroke: '#000', strokeThickness: 6,
+      .text(L.title.x, L.title.y, `RESEARCH  ·  LEVEL ${level}`, {
+        ...FONT, fontSize: `${L.title.size}px`, fontStyle: 'bold', color: '#7cf7c4', stroke: '#000', strokeThickness: 6,
       })
-      .setOrigin(0.5)
+      .setOrigin(0.5, 0)
       .setDepth(71);
-    const sub = this.add
-      .text(GAME_W / 2, 132, 'Your factory earned this. Choose one — it lasts the rest of the run.', {
-        ...FONT, fontSize: '13px', color: '#cdd6e4',
-      })
-      .setOrigin(0.5)
-      .setDepth(71);
-    this.cardLayer.push(dim, title, sub);
+    this.cardLayer.push(dim, title);
+    // The title alone says what this is; the sentence is the first thing to go
+    // when the board is short.
+    if (L.sub.show) {
+      this.cardLayer.push(this.add
+        .text(L.sub.x, L.sub.y, 'Your factory earned this. Choose one — it lasts the rest of the run.', {
+          ...FONT, fontSize: `${L.sub.size}px`, color: '#cdd6e4',
+        })
+        .setOrigin(0.5, 0)
+        .setDepth(71));
+    }
 
-    const W = 280;
-    const H = 210;
-    const gap = 28;
-    const total = cards.length * W + (cards.length - 1) * gap;
-    cards.forEach((card, i) => {
-      const x = GAME_W / 2 - total / 2 + i * (W + gap);
-      const y = 190;
+    // Ordinary cards first, the best one last: the reveal needs somewhere to
+    // build to. Purely a display order — `draw()` already chose the cards, and
+    // each hotkey follows the card dealt into its slot.
+    const dealt = sortForReveal(cards);
+    dealt.forEach((card, i) => {
+      const r = rarityStyle(card);
+      const slot = L.cards[i];
+      const { x, y, w: W, h: H } = slot;
       const frame = this.add
         .rectangle(x, y, W, H, 0x1a1830)
         .setOrigin(0)
-        .setStrokeStyle(3, 0x474170)
+        .setStrokeStyle(r.stroke, r.hex, 0.85)
         .setDepth(71)
         .setInteractive({ useHandCursor: true });
-      const name = this.add
-        .text(x + W / 2, y + 34, card.name, { ...FONT, fontSize: '16px', fontStyle: 'bold', color: '#7cf7c4', align: 'center', wordWrap: { width: W - 30 } })
-        .setOrigin(0.5, 0)
-        .setDepth(72);
-      const desc = this.add
-        .text(x + W / 2, y + 92, card.desc, {
-          ...FONT, fontSize: '13px', color: '#cdd6e4', align: 'center', wordWrap: { width: W - 40 }, lineSpacing: 4,
+      // Rarity band across the top: colour is the fast read, the badge word
+      // below it is the one that survives a colourblind player (item 37).
+      const band = this.add.rectangle(x, y, W, 4, r.hex).setOrigin(0).setDepth(72);
+      const badge = this.add
+        .text(x + W / 2, y + 12, r.label, {
+          ...FONT, fontSize: `${L.badgeSize}px`, fontStyle: 'bold', color: r.css,
         })
         .setOrigin(0.5, 0)
         .setDepth(72);
+      const name = this.add
+        .text(x + W / 2, y + 12 + L.badgeSize + 10, card.name, {
+          ...FONT, fontSize: `${L.nameSize}px`, fontStyle: 'bold', color: r.css,
+          align: 'center', wordWrap: { width: W - 24 },
+        })
+        .setOrigin(0.5, 0)
+        .setDepth(72);
+      const desc = this.add
+        .text(x + W / 2, y + L.descCy, card.desc, {
+          ...FONT, fontSize: `${L.descSize}px`, color: '#cdd6e4',
+          align: 'center', wordWrap: { width: W - 32 }, lineSpacing: 4,
+        })
+        .setOrigin(0.5, 0.5)
+        .setDepth(72);
       const stacks = GameState.taken[card.id] ?? 0;
       const held = this.add
-        .text(x + W / 2, y + H - 26, stacks > 0 ? `already taken ×${stacks}` : '', {
-          ...FONT, fontSize: '11px', color: '#8892a6',
+        .text(x + W / 2, y + H - 20, stacks > 0 ? `already taken ×${stacks}` : '', {
+          ...FONT, fontSize: `${L.metaSize}px`, color: '#8892a6',
         })
         .setOrigin(0.5)
         .setDepth(72);
       const key = this.add
-        .text(x + 10, y + 8, `[${i + 1}]`, { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#8892a6' }).setDepth(72);
+        .text(x + 8, y + 10, `[${i + 1}]`, {
+          ...FONT, fontSize: `${L.metaSize}px`, fontStyle: 'bold', color: '#8892a6',
+        }).setDepth(72);
+      const parts = [frame, band, badge, name, desc, held, key];
 
-      frame.on('pointerover', () => frame.setFillStyle(0x272348).setStrokeStyle(3, 0x7cf7c4));
-      frame.on('pointerout', () => frame.setFillStyle(0x1a1830).setStrokeStyle(3, 0x474170));
+      /**
+       * Every y-tween below targets an *absolute* position derived from where
+       * the part was laid out, never a `+=`/`-=` offset. Relative offsets stack:
+       * a hover that lands mid-deal, or a fast in-out-in across the frame edge,
+       * leaves the card permanently displaced from its own layout.
+       */
+      const restY = parts.map((o) => o.y);
+      const settle = (offset: number, duration: number, ease: string, delay = 0): void => {
+        parts.forEach((o, k) =>
+          this.tweens.add({ targets: o, y: restY[k] + offset, duration, ease, delay }));
+      };
+
+      // Hover lifts the whole card rather than just recolouring it — the card
+      // you are about to commit to should physically come forward. Held off
+      // until the deal finishes, so the two animations never own y at once.
+      let revealed = false;
+      frame.on('pointerover', () => {
+        frame.setFillStyle(0x272348);
+        if (!revealed) return;
+        parts.forEach((o) => this.tweens.killTweensOf(o));
+        settle(-6, 110, 'Quad.out');
+      });
+      frame.on('pointerout', () => {
+        frame.setFillStyle(0x1a1830);
+        if (!revealed) return;
+        parts.forEach((o) => this.tweens.killTweensOf(o));
+        settle(0, 110, 'Quad.out');
+      });
       frame.on('pointerdown', () => this.pickCard(card.id));
 
-      // stagger the entrance so three cards read as a deal, not a popup
-      frame.setAlpha(0);
-      [name, desc, held, key].forEach((o) => o.setAlpha(0));
-      this.tweens.add({ targets: [frame, name, desc, held, key], alpha: 1, duration: 180, delay: 70 * i });
-      this.cardLayer.push(frame, name, desc, held, key);
+      // The deal: each card drops in and overshoots, one after the next, with
+      // its rarity's sting. A rarer card dwells fractionally longer before the
+      // one after it, so a keystone arriving last is felt as well as seen.
+      const drop = 18;
+      parts.forEach((o, k) => { o.setAlpha(0); o.y = restY[k] - drop; });
+      const delay = 90 * i + 60 * r.rank;
+      this.tweens.add({ targets: parts, alpha: 1, duration: 140, delay });
+      settle(0, 260, 'Back.out', delay);
+      this.time.delayedCall(delay, () => {
+        sfx.cardReveal(r.notes);
+        revealed = true;
+      });
+      this.cardLayer.push(...parts);
     });
 
     // number keys pick too — the mouse should never be mandatory
     const keys = ['ONE', 'TWO', 'THREE'];
-    cards.forEach((card, i) => {
+    dealt.forEach((card, i) => {
+      if (i >= keys.length) return;
       const handler = () => this.pickCard(card.id);
       this.input.keyboard?.once(`keydown-${keys[i]}`, handler);
       this.cardKeyHandlers.push({ key: `keydown-${keys[i]}`, handler });
     });
-    sfx.waveClear();
     this.applyOverlayPlan();
   }
 
   private pickCard(id: string): void {
+    sfx.cardPick();
     this.clearCards(); // destroy first: GameScene may immediately deal the next level
     GameState.events.emit('ui:pickcard', id);
     this.restoreLowerOverlays();
@@ -1266,6 +1506,14 @@ export class UIScene extends Phaser.Scene {
    */
   private refreshSelection(t: BuildingType | null): void {
     this.selectedType = t;
+    // Follow the selection onto its own shelf. A hotkey (or a touchscreen
+    // laptop's keyboard) can arm a building whose tab is not the open one, and
+    // an armed slot the player cannot see is worse than no feedback at all.
+    if (t && this.tabParts.length > 0) {
+      const cat = categoryOf(t);
+      const gi = cat ? BUILD_CATEGORIES.findIndex((c) => c.id === cat.id) : -1;
+      if (gi >= 0 && gi !== this.shelf) this.showShelf(gi);
+    }
     for (const [type, frame] of this.paletteFrames) {
       const state = this.paletteState.get(type);
       if (type === t) {
@@ -1287,21 +1535,25 @@ export class UIScene extends Phaser.Scene {
     this.clearAllToasts();
     this.applyOverlayPlan();
     const score = gradeRun({ wave: GameState.wave, tally: GameState.tally });
+    // Centred and measured, never positioned: `GAME_H` bottoms out around 400
+    // and the old fixed rows put REBUILD/MENU off the canvas entirely. See
+    // `gameOverLayout`.
+    const L = gameOverLayout(GAME_W, GAME_H, IS_TOUCH);
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.7).setOrigin(0).setDepth(50);
     const title = this.add
-      .text(GAME_W / 2, 260, 'FACTORY DESTROYED', { ...FONT, fontSize: '48px', fontStyle: 'bold', color: '#ff5555', stroke: '#000', strokeThickness: 8 })
+      .text(GAME_W / 2, L.title.y, 'FACTORY DESTROYED', { ...FONT, fontSize: `${L.title.size}px`, fontStyle: 'bold', color: '#ff5555', stroke: '#000', strokeThickness: 8 })
       .setOrigin(0.5)
       .setDepth(51);
     const sub = this.add
-      .text(GAME_W / 2, 320, `You survived to wave ${GameState.wave}`, { ...FONT, fontSize: '18px', color: '#cdd6e4' })
+      .text(GAME_W / 2, L.sub.y, `You survived to wave ${GameState.wave}`, { ...FONT, fontSize: `${L.sub.size}px`, color: '#cdd6e4' })
       .setOrigin(0.5)
       .setDepth(51);
     const best = this.add
       .text(
         GAME_W / 2,
-        348,
+        L.best.y,
         newBest ? '★ NEW PERSONAL BEST ★' : `Personal best: wave ${Math.max(progress.stats.bestWave, GameState.wave)}`,
-        { ...FONT, fontSize: newBest ? '16px' : '14px', fontStyle: newBest ? 'bold' : 'normal', color: '#ffe066' },
+        { ...FONT, fontSize: `${newBest ? L.best.size : L.best.size - 2}px`, fontStyle: newBest ? 'bold' : 'normal', color: '#ffe066' },
       )
       .setOrigin(0.5)
       .setDepth(51);
@@ -1313,20 +1565,23 @@ export class UIScene extends Phaser.Scene {
     // whole reason to look at a defeat screen, and this is the "one more run"
     // hook — every run, however bad, moved the Workshop forward.
     const scrap = this.add
-      .text(GAME_W / 2, 374, '', { ...FONT, fontSize: '17px', fontStyle: 'bold', color: '#7cf7c4' })
+      .text(GAME_W / 2, L.scrap.y, '', { ...FONT, fontSize: `${L.scrap.size}px`, fontStyle: 'bold', color: '#7cf7c4' })
       .setOrigin(0.5)
       .setDepth(51);
     // A compact verdict beside SCRAP: the tier is the hook, and the three
     // supporting numbers make the next-run prescription legible at a glance.
+    // First thing dropped on a canvas too short for the whole stack — the tier
+    // is a diagnosis, and the buttons are the way out.
     const grade = this.add
       .text(
         GAME_W / 2,
-        410,
+        L.grade.y,
         `${score.tier}  ${score.verdict}   ·   ${score.points}/100\nWave ${score.wave}   ·   ${score.delivered} delivered   ·   ${score.efficiency}% useful\n${score.advice}`,
-        { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4', align: 'center' },
+        { ...FONT, fontSize: `${L.grade.size}px`, fontStyle: 'bold', color: '#cdd6e4', align: 'center' },
       )
       .setOrigin(0.5)
-      .setDepth(51);
+      .setDepth(51)
+      .setVisible(L.grade.show);
     const counter = { n: 0 };
     scrap.setText(`⚙ +0 SCRAP   (${meta.scrap - scrapEarned} banked)`);
     this.tweens.add({
@@ -1346,22 +1601,23 @@ export class UIScene extends Phaser.Scene {
         sfx.coin();
       },
     });
+    const B = L.buttons;
     const btn = this.add
-      .rectangle(GAME_W / 2 - 125, 480, 220, 52, 0x2e7d4f)
+      .rectangle(GAME_W / 2 - B.dx, B.y, B.w, B.h, 0x2e7d4f)
       .setStrokeStyle(2, 0x5ef078)
       .setDepth(51)
       .setInteractive({ useHandCursor: true });
     const btnText = this.add
-      .text(GAME_W / 2 - 125, 480, 'REBUILD', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#ffffff' })
+      .text(GAME_W / 2 - B.dx, B.y, 'REBUILD', { ...FONT, fontSize: `${B.size}px`, fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5)
       .setDepth(52);
     const menuBtn = this.add
-      .rectangle(GAME_W / 2 + 125, 480, 220, 52, 0x1e2233)
+      .rectangle(GAME_W / 2 + B.dx, B.y, B.w, B.h, 0x1e2233)
       .setStrokeStyle(2, 0x2b3040)
       .setDepth(51)
       .setInteractive({ useHandCursor: true });
     const menuBtnText = this.add
-      .text(GAME_W / 2 + 125, 480, 'MENU', { ...FONT, fontSize: '20px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(GAME_W / 2 + B.dx, B.y, 'MENU', { ...FONT, fontSize: `${B.size}px`, fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(0.5)
       .setDepth(52);
     this.overlay = [dim, title, sub, best, scrap, grade, btn, btnText, menuBtn, menuBtnText];

@@ -40,7 +40,8 @@ export type GameAction =
   | 'mute'
   | 'zoomIn'
   | 'zoomOut'
-  | 'zoomReset';
+  | 'zoomReset'
+  | 'undo';
 
 export interface KeyBinding {
   action: GameAction;
@@ -77,6 +78,10 @@ export const KEYS: KeyBinding[] = [
   { action: 'zoomIn', label: '+', key: 'PLUS', owner: 'game' },
   { action: 'zoomOut', label: '-', key: 'MINUS', owner: 'game' },
   { action: 'zoomReset', label: 'HOME', key: 'HOME', owner: 'game' },
+  // Not Ctrl+Z: Z is the gun tower, and `keymap.test.ts` refuses a key claimed
+  // twice across KEYS and BUILD_INFO — which is exactly the collision it exists
+  // to catch. BACKSPACE is free and already means "take that back".
+  { action: 'undo', label: 'BKSP', key: 'BACKSPACE', owner: 'game' },
 ];
 
 const BY_ACTION = new Map(KEYS.map((k) => [k.action, k]));

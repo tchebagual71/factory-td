@@ -32,7 +32,7 @@ import { GameState } from '../state/GameState';
 import { meta } from '../state/meta';
 import { clearLocal, consumePendingLoad, consumePendingMap, saveLocal } from '../state/persistence';
 import { progress } from '../state/progress';
-import { captureRun, SaveV1 } from '../state/serialize';
+import { captureBuilding, captureRun, SavedBuilding, SaveV1 } from '../state/serialize';
 import { CombatSystem } from '../systems/CombatSystem';
 import { ConveyorSystem } from '../systems/ConveyorSystem';
 import { GridSystem, minedResource } from '../systems/GridSystem';
@@ -53,11 +53,13 @@ import {
   screenToBoard,
   zoomAbout,
 } from './boardCam';
-import { inspectorLayout, overlayHit, overlayZones, stripHit, topStrip } from './hudLayout';
+import { contains, inspectorLayout, overlayHit, overlayZones, reportCard, STRIP, stripHit } from './hudLayout';
 import type { BoardOverlayVisibility } from './overlayPresentation';
 import { isHudObject } from './hudObjects';
 import { binding, GameAction, phaserKeyName } from './keymap';
 import { coachMessage } from './coach';
+import { HAPTIC, haptic, reducedFx } from '../utils/feel';
+import { sharpenText } from '../utils/sharpText';
 import { sfx } from '../utils/sfx';
 import type { IsoView } from '../iso/IsoView';
 import { renderMode, setRenderMode } from '../state/renderMode';
@@ -162,9 +164,24 @@ export class GameScene extends Phaser.Scene {
    * you notice. Staging costs nothing until confirmed, and rotating while
    * staged is what makes the facing legible before it matters rather than after.
    */
-  private pending: { tx: number; ty: number } | null = null;
-  /** Where a sell-mode press began, held until `pointerup` says tap or sweep. */
-  private sellDown: { tx: number; ty: number } | null = null;
+  private pending: { tx: number; ty: number; kind: 'build' | 'survey' } | null = null;
+  /**
+   * The buildings the last sell gesture removed, newest group only.
+   *
+   * A group, not a single building, because an erase sweep should undo as the
+   * one action it felt like rather than twenty.
+   */
+  private undoSales: SavedBuilding[] = [];
+  /** Live off-screen markers, and when the last one was raised — both are throttles. */
+  private edgeAlerts = 0;
+  private edgeAlertAt = 0;
+  /**
+   * Where a sell press began, held until `pointerup` says tap or sweep.
+   *
+   * `right` distinguishes the desktop gesture, which additionally means "clear
+   * the armed slot" when it lands on bare ground.
+   */
+  private sellDown: { tx: number; ty: number; right: boolean } | null = null;
   /** Tiles already erased by the in-flight sell drag, so one sweep sells each once. */
   private swept = new Set<number>();
   private sweepRefund = 0;
@@ -196,7 +213,7 @@ export class GameScene extends Phaser.Scene {
   private isoLoading = false;
 
   /** Top-strip geometry — the panel hangs off it, and the board ignores clicks on it. */
-  private strip = topStrip(GAME_W, IS_TOUCH);
+  private strip = STRIP;
 
   /**
    * Board zoom/pan, shared by both renderers. A view setting, never part of a
@@ -220,6 +237,10 @@ export class GameScene extends Phaser.Scene {
 
   private selTower: Building | null = null;
   private selRing!: Phaser.GameObjects.Rectangle;
+  /** The single centre-screen banner slot — see `retireBanner`. */
+  private banner: Phaser.GameObjects.Text | null = null;
+  /** Is the wave report up? It now persists through build phase, so it shields. */
+  private reportOpen = false;
   private panel!: Phaser.GameObjects.Container;
   private panelBg!: Phaser.GameObjects.Rectangle;
   private panelTitle!: Phaser.GameObjects.Text;
@@ -241,6 +262,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
+    sharpenText(this);
     this.ready = false;
     this.saveDirty = false;
     this.floaters = 0; // restart wipes the tweens, so their onComplete never decrements
@@ -345,6 +367,7 @@ export class GameScene extends Phaser.Scene {
     GameState.events.off('ui:prospect').on('ui:prospect', () => this.toggleSurveyMode());
     GameState.events.off('ui:rotate').on('ui:rotate', () => this.rotateBuildDir());
     GameState.events.off('ui:confirm').on('ui:confirm', () => this.commitPending());
+    GameState.events.off('ui:undo').on('ui:undo', () => this.undoLastSale());
     GameState.events.off('ui:sellmode').on('ui:sellmode', () => this.toggleSellMode());
     GameState.events.off('ui:view').on('ui:view', () => this.toggleIso());
     GameState.events.off('ui:pickcard').on('ui:pickcard', (id: string) => this.onPickCard(id));
@@ -356,6 +379,11 @@ export class GameScene extends Phaser.Scene {
     this.boardOverlay = { objective: false, coach: false, inspector: false };
     GameState.events.emit('inspector', false);
     GameState.events.emit('coachreset');
+    // UIScene owns the report; GameScene only needs to know whether to shield
+    // the board under it. Blanket `.off` because this scene alone consumes it.
+    GameState.events.off('report').on('report', (open: boolean) => {
+      this.reportOpen = open;
+    });
     GameState.events.emit('boardoverlayrequest');
     GameState.events.off('levelup').on('levelup', () => this.offerCards());
     // Targeted off/on (other scenes listen to these events too; stable refs survive restarts)
@@ -383,6 +411,11 @@ export class GameScene extends Phaser.Scene {
     this.pending = null;
     this.facingDirty = true;
     this.beginSweep();
+    this.undoSales = [];
+    // A restart destroys the tweens that would have decremented this, so a
+    // leaked count would silently suppress every marker for the rest of the run.
+    this.edgeAlerts = 0;
+    GameState.events.emit('undo', false);
     GameState.events.emit('builddir', this.buildDir);
     GameState.events.emit('sellmode', false);
     GameState.events.emit('surveymode', false);
@@ -620,20 +653,180 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
+   * Screenshake and screen flash, in one place so one setting can govern them.
+   *
+   * Every caller used to reach for `cameras.main.shake` directly, which meant
+   * there was no seam to put a preference behind — and on a boss wave at ×3
+   * speed those fire several times a second.
+   */
+  shake(duration: number, intensity: number): void {
+    if (reducedFx()) return;
+    this.shake(duration, intensity);
+  }
+
+  flash(duration: number, r: number, g: number, b: number): void {
+    if (reducedFx()) return;
+    this.cameras.main.flash(duration, r, g, b);
+  }
+
+  /**
+   * Point at something that just happened on a part of the board you cannot see.
+   *
+   * The viewport is shorter than the board on a phone, so roughly half the map
+   * is off screen at any moment — and the events that lose you the run are
+   * exactly the ones you are not looking at. A leak used to be a floating `-1♥`
+   * drawn at the exit, which is invisible if the exit is off screen: the only
+   * evidence was the lives counter quietly dropping.
+   *
+   * Drawn as Text so it lands on the HUD camera (see `hudObjects`) and stays
+   * pinned to the viewport edge rather than scrolling away with the board.
+   */
+  edgeAlert(bx: number, by: number, label: string, color: string): void {
+    // Cheap guards first: a wave of leaks must not stack forty labels on one
+    // edge, and the alert is worthless if you can already see what it points at.
+    if (this.edgeAlerts >= 3 || this.time.now - this.edgeAlertAt < 400) return;
+    const p = this.project(bx, by);
+    const top = this.strip.stats.y + this.strip.h;
+    const m = 26;
+    if (p.x >= 0 && p.x <= GAME_W && p.y >= top && p.y <= PLAYFIELD_H) return;
+
+    const x = Phaser.Math.Clamp(p.x, m, GAME_W - m);
+    const y = Phaser.Math.Clamp(p.y, top + m, PLAYFIELD_H - m);
+    const dx = p.x - x;
+    const dy = p.y - y;
+    const arrow = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? '▶' : '◀') : dy > 0 ? '▼' : '▲';
+
+    this.edgeAlerts += 1;
+    this.edgeAlertAt = this.time.now;
+    const t = this.add
+      .text(x, y, `${arrow} ${label}`, {
+        fontFamily: 'monospace',
+        fontSize: '13px',
+        fontStyle: 'bold',
+        color,
+        backgroundColor: '#0e0f1acc',
+        padding: { x: 6, y: 3 },
+      })
+      .setOrigin(0.5)
+      .setDepth(35);
+    this.tweens.add({
+      targets: t,
+      alpha: 0,
+      duration: 700,
+      delay: 900,
+      onComplete: () => {
+        this.edgeAlerts -= 1;
+        t.destroy();
+      },
+    });
+  }
+
+  /**
    * A banner across the middle of the board viewport. Screen space, not board
    * space (Text is HUD — see `hudObjects`), so it is placed as a fraction of
    * the viewport rather than at a literal 260px: the viewport is shorter than
    * the board on a phone, and a fixed offset landed it on the build bar.
    */
-  bigText(msg: string): void {
+  /**
+   * There is exactly one banner slot, and a new banner takes it.
+   *
+   * Every one of these draws at the same `(GAME_W / 2, PLAYFIELD_H * 0.41)`, and
+   * nothing stopped two coexisting: with AUTO-send at ×3 an early wave clears
+   * well inside the banner's life, so two gold headlines rendered exactly on top
+   * of each other and neither could be read. Verified by firing two clears 900ms
+   * apart — both landed at (640, 173) at full alpha.
+   *
+   * Replacing rather than queueing is deliberate: these are all "what just
+   * happened" messages, so the newest is the only one still worth reading.
+   */
+  private retireBanner(): void {
+    if (!this.banner) return;
+    this.tweens.killTweensOf(this.banner);
+    this.banner.destroy();
+    this.banner = null;
+  }
+
+  private newBanner(msg: string): Phaser.GameObjects.Text {
+    this.retireBanner();
     const y = Math.round(PLAYFIELD_H * 0.41);
     const t = this.add
       .text(GAME_W / 2, y, msg, { fontFamily: 'monospace', fontSize: '32px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 6 })
       .setOrigin(0.5)
       .setScale(0.3)
       .setDepth(30);
+    this.banner = t;
     this.tweens.add({ targets: t, scale: 1, duration: 250, ease: 'Back.out' });
-    this.tweens.add({ targets: t, alpha: 0, y: y - 50, delay: 1300, duration: 600, onComplete: () => t.destroy() });
+    return t;
+  }
+
+  /** Fade the banner out, but only clear the slot if it is still this one. */
+  private fadeBanner(t: Phaser.GameObjects.Text, delay: number): void {
+    const y = t.y;
+    this.tweens.add({
+      targets: t,
+      alpha: 0,
+      y: y - 50,
+      delay,
+      duration: 600,
+      onComplete: () => {
+        t.destroy();
+        if (this.banner === t) this.banner = null;
+      },
+    });
+  }
+
+  bigText(msg: string): void {
+    this.fadeBanner(this.newBanner(msg), 1300);
+  }
+
+  /**
+   * The wave-clear payoff: the bonus **ticks up** instead of arriving complete.
+   *
+   * This game already knows the principle — the game-over card counts the SCRAP
+   * payout up, on the stated grounds that "a number that ticks is the whole
+   * reason to look at a defeat screen". Wave clear happens thirty times more
+   * often per run and was doing the opposite: `bigText` slammed the final figure
+   * on screen with nothing to watch, so the single most repeated reward in the
+   * game had no *moment* in it.
+   *
+   * The shape is fanfare → count → coin, which is the arcade payout structure
+   * (and Vampire Survivors' chest): the flourish says something happened, the
+   * climbing ticks make you wait for it, the final pop pays. `sfx.countTick`
+   * rises with progress so the wait resolves upward rather than just repeating.
+   *
+   * It pays exactly what `completeWave` already banked — this is presentation
+   * only and never touches the wallet, the same contract `data/combo.ts` keeps.
+   */
+  bigCount(prefix: string, amount: number): void {
+    const label = (n: number): string => `${prefix}+$${n}`;
+    const t = this.newBanner(label(0));
+
+    const counter = { n: 0 };
+    this.tweens.add({
+      targets: counter,
+      n: amount,
+      duration: 620,
+      ease: 'Cubic.out',
+      onUpdate: () => {
+        // The counter tween targets a plain object, so killing the banner's own
+        // tweens does not stop it: a wave clearing mid-count retires this text
+        // while this callback is still writing to it. `active` goes false on
+        // destroy, and is the only thing standing between here and a write to a
+        // dead GameObject every frame until the tween ends.
+        if (!t.active) return;
+        t.setText(label(Math.round(counter.n)));
+        sfx.countTick(amount > 0 ? counter.n / amount : 1);
+      },
+      onComplete: () => {
+        if (!t.active) return;
+        // Land on the exact figure banked, never a rounding artefact of the tween.
+        t.setText(label(amount));
+        t.setScale(1.16);
+        this.tweens.add({ targets: t, scale: 1, duration: 160 });
+        sfx.coin();
+      },
+    });
+    this.fadeBanner(t, 1600);
   }
 
   /**
@@ -673,8 +866,13 @@ export class GameScene extends Phaser.Scene {
     // transforms container children's hit areas along with their art, so the
     // targets grow with the panel.
     const layout = inspectorLayout(IS_TOUCH);
-    const s = layout.scale;
-    const zone = overlayZones(GAME_W, PLAYFIELD_H, this.strip.stats.y + this.strip.h, IS_TOUCH).inspector;
+    const zones = overlayZones(GAME_W, PLAYFIELD_H, this.strip.stats.y + this.strip.h, IS_TOUCH);
+    const zone = zones.inspector;
+    // Not `layout.scale`: the zone knows how much room is actually left under the
+    // toast, and on a phone that is less than the panel's authored height. Using
+    // the authored scale drew a 320px panel into a 268px gap and put both upgrade
+    // buttons behind the build bar.
+    const s = zones.inspectorScale;
     this.panel = this.add
       .container(zone.x, zone.y)
       .setScale(s)
@@ -842,7 +1040,7 @@ export class GameScene extends Phaser.Scene {
     if (b.mk === MAX_MK) progress.record('maxedTowers');
     this.burst(cx, cy, pipColor, 20);
     this.floatText(cx, cy - 16, newPath ? `${pathOf(b.type, newPath).name}!` : `Mk${b.mk}!`, '#ffe066');
-    this.cameras.main.shake(80, 0.002);
+    this.shake(80, 0.002);
     sfx.waveClear();
     this.refreshPanel();
   }
@@ -900,7 +1098,7 @@ export class GameScene extends Phaser.Scene {
 
     this.bigText(card.name);
     this.burst(640, 300, 0x7cf7c4, 26);
-    this.cameras.main.shake(90, 0.002);
+    this.shake(90, 0.002);
     sfx.waveClear();
     this.requestSave();
 
@@ -969,27 +1167,37 @@ export class GameScene extends Phaser.Scene {
     for (const t of save.tiles ?? []) this.grid.setReserves(t.x, t.y, t.n);
     this.depositsDirty = true;
 
-    for (const sb of save.buildings) {
-      if (!this.grid.canRestore(sb.x, sb.y)) continue; // stale save vs map change — skip
-      const b = this.placeBuilding(sb.t, sb.x, sb.y, sb.d);
-      b.mk = sb.mk ?? 1;
-      b.path = sb.path ?? null;
-      if (sb.ammo !== undefined) b.ammo = sb.ammo;
-      b.fed = sb.fed ?? 0;
-      b.timer = sb.timer ?? 0;
-      b.crafting = sb.crafting ?? false;
-      b.inputs = { ...(sb.in ?? {}) };
-      b.outputBuf = sb.outBuf ?? 0;
-      b.outIdx = sb.outIdx ?? 0;
-      b.filter = sb.filter ?? null;
-      b.invested = sb.inv;
-      this.paintSorterFilter(b);
-      for (let mk = 2; mk <= b.mk; mk++) this.addMkPip(b, mk);
-    }
+    for (const sb of save.buildings) this.restoreBuilding(sb);
     for (const si of save.items) {
       this.conveyor.restoreItem(si.t, si.cx, si.cy, si.px, si.py, si.a ?? 1);
     }
     this.emitCoach();
+  }
+
+  /**
+   * Rebuild one saved building, with every field the save format carries.
+   *
+   * Shared by save-restore and undo-a-sale, which is what keeps the two honest:
+   * undo restores a Mk3 sniper with its magazine and its fed count, not a bare
+   * tower at the same tile.
+   */
+  private restoreBuilding(sb: SavedBuilding): Building | null {
+    if (!this.grid.canRestore(sb.x, sb.y)) return null; // stale save vs map change — skip
+    const b = this.placeBuilding(sb.t, sb.x, sb.y, sb.d);
+    b.mk = sb.mk ?? 1;
+    b.path = sb.path ?? null;
+    if (sb.ammo !== undefined) b.ammo = sb.ammo;
+    b.fed = sb.fed ?? 0;
+    b.timer = sb.timer ?? 0;
+    b.crafting = sb.crafting ?? false;
+    b.inputs = { ...(sb.in ?? {}) };
+    b.outputBuf = sb.outBuf ?? 0;
+    b.outIdx = sb.outIdx ?? 0;
+    b.filter = sb.filter ?? null;
+    b.invested = sb.inv;
+    this.paintSorterFilter(b);
+    for (let mk = 2; mk <= b.mk; mk++) this.addMkPip(b, mk);
+    return b;
   }
 
   // ---------- input & placement ----------
@@ -1042,6 +1250,7 @@ export class GameScene extends Phaser.Scene {
       else if (this.pending) this.clearPending();
       else this.select(null);
     });
+    on('undo', () => this.undoLastSale());
     on('sendWave', () => this.waveSystem.start());
     on('speed', () => GameState.cycleSpeed());
     on('pause', () => GameState.togglePause());
@@ -1060,13 +1269,21 @@ export class GameScene extends Phaser.Scene {
       this.dragPan = null;
       const { tx, ty } = this.tileAt(p.x, p.y);
       if (p.rightButtonDown()) {
-        const b = this.grid.cellAt(tx, ty)?.building;
-        if (b) this.requestSell(b);
-        else this.select(null);
+        // Classified on release, exactly like the touch sell gesture: a click
+        // sells this tile (and an expensive one still asks twice), a drag erases
+        // the run it crosses. Desktop had no equivalent of drag-to-erase at all,
+        // which left the more destructive input with the fewer tools.
+        this.beginSweep();
+        this.beginSaleGroup();
+        this.sellDown = { tx, ty, right: true };
         return;
       }
       if (this.surveyMode) {
-        this.placeSurvey(tx, ty);
+        // A survey costs money and its price climbs every time, so a mis-aimed
+        // tap is exactly as expensive as a mis-aimed building — same staging.
+        if (!IS_TOUCH) this.placeSurvey(tx, ty);
+        else if (this.pending?.kind === 'survey' && this.pending.tx === tx && this.pending.ty === ty) this.commitPending();
+        else this.stagePending(tx, ty, false, 'survey');
         return;
       }
       if (this.sellMode) {
@@ -1077,7 +1294,8 @@ export class GameScene extends Phaser.Scene {
         // meant the sweep skipped its own first tile, so a dragged line lost
         // everything *except* the building the player started on.
         this.beginSweep();
-        this.sellDown = { tx, ty };
+        this.beginSaleGroup();
+        this.sellDown = { tx, ty, right: false };
         return;
       }
       if (this.selected) {
@@ -1122,7 +1340,10 @@ export class GameScene extends Phaser.Scene {
       const b = this.grid.cellAt(tap.tx, tap.ty)?.building;
 
       if (held >= LONG_PRESS_MS) {
-        if (b) this.requestSell(b);
+        if (b) {
+          this.beginSaleGroup();
+          this.requestSell(b);
+        }
         return;
       }
       // Sorters spend their tap on configuration; R and Shift+wheel still go
@@ -1170,7 +1391,9 @@ export class GameScene extends Phaser.Scene {
       // SELL mode, which is the confirmation — a tap still asks twice for the
       // expensive ones, but stopping mid-sweep to answer a prompt per building
       // would defeat the gesture.
-      if (this.sellMode && p.isDown && !p.rightButtonDown() && p.y < PLAYFIELD_H) {
+      // Gated on the press itself rather than on the mode, so SELL-mode drags
+      // and desktop right-drags run the identical sweep.
+      if (this.sellDown && p.isDown && p.y < PLAYFIELD_H) {
         // The same slop the pan uses. Without it a two-pixel wobble during a tap
         // counts as a sweep, which is how an expensive tower would lose its
         // confirmation prompt to a shaky finger.
@@ -1184,7 +1407,11 @@ export class GameScene extends Phaser.Scene {
       // then slide it onto the exact tile while watching the ghost.
       if (this.pending && p.isDown && !p.rightButtonDown() && p.y < PLAYFIELD_H) {
         const t = this.tileAt(p.x, p.y);
-        if (t.tx !== this.pending.tx || t.ty !== this.pending.ty) this.stagePending(t.tx, t.ty, true);
+        // Carry the kind across, or nudging a staged survey would silently turn
+        // it into a staged building.
+        if (t.tx !== this.pending.tx || t.ty !== this.pending.ty) {
+          this.stagePending(t.tx, t.ty, true, this.pending.kind);
+        }
       }
     });
 
@@ -1210,6 +1437,12 @@ export class GameScene extends Phaser.Scene {
    */
   private overHud(x: number, y: number): boolean {
     const zones = overlayZones(GAME_W, PLAYFIELD_H, this.strip.stats.y + this.strip.h, IS_TOUCH);
+    // The wave report now stays up for the whole build phase (it is the only
+    // per-ammo diagnosis in the game and used to vanish after 4.2s). That makes
+    // it a real obstacle rather than a flash, so it has to be shielded like any
+    // other card — otherwise a tap meant to dismiss it also plants a building on
+    // the tile underneath, which is the exact bug `stripHit` was added for.
+    if (this.reportOpen && contains(reportCard(GAME_W, PLAYFIELD_H), x, y)) return true;
     return this.overPanel(x, y) || stripHit(this.strip, x, y) || overlayHit(zones, x, y, {
       objective: this.boardOverlay.objective,
       coach: this.boardOverlay.coach,
@@ -1529,6 +1762,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     const b = this.placeBuilding(type, tx, ty, dir);
+    haptic(HAPTIC.place);
     b.sprite.setScale(0.5);
     this.tweens.add({ targets: b.sprite, scale: 1, duration: 130, ease: 'Back.out' });
     sfx.place();
@@ -1550,10 +1784,10 @@ export class GameScene extends Phaser.Scene {
   /** Turn a placed belt/machine 90°. Free and reversible — four clicks is a full circle. */
   // ---------- staged placement (touch) ----------
 
-  /** Park the armed building on a tile without paying for it. */
-  private stagePending(tx: number, ty: number, quiet = false): void {
-    if (!this.selected || this.selected === 'belt') return;
-    this.pending = { tx, ty };
+  /** Park the armed building — or a survey footprint — on a tile without paying for it. */
+  private stagePending(tx: number, ty: number, quiet = false, kind: 'build' | 'survey' = 'build'): void {
+    if (kind === 'build' && (!this.selected || this.selected === 'belt')) return;
+    this.pending = { tx, ty, kind };
     if (!quiet) sfx.place();
     GameState.events.emit('pending', true);
   }
@@ -1572,7 +1806,16 @@ export class GameScene extends Phaser.Scene {
    */
   private commitPending(): void {
     const at = this.pending;
-    if (!at || !this.selected) return;
+    if (!at) return;
+    if (at.kind === 'survey') {
+      // placeSurvey leaves survey mode itself on success, and reports its own
+      // failure — so clearing unconditionally would strand a rejected site.
+      const before = GameState.surveys;
+      this.placeSurvey(at.tx, at.ty);
+      if (GameState.surveys !== before) this.clearPending();
+      return;
+    }
+    if (!this.selected) return;
     if (this.tryPlace(this.selected, at.tx, at.ty, false)) this.clearPending();
   }
 
@@ -1583,6 +1826,59 @@ export class GameScene extends Phaser.Scene {
     this.sellDown = null;
     this.sweepRefund = 0;
     this.sweepCount = 0;
+  }
+
+  /**
+   * Open a fresh undo group. Called when a sale gesture *begins*, never when it
+   * ends — `endSweep` runs `beginSweep`, so clearing there wiped the group the
+   * sweep had just filled and made a dragged line the one thing you could not
+   * take back.
+   */
+  private beginSaleGroup(): void {
+    this.undoSales = [];
+  }
+
+  // ---------- undo ----------
+
+  /**
+   * Put back what the last sale — or the last erase sweep — took away.
+   *
+   * Selling is the only irreversible thing in the game, it refunds half, and a
+   * drag now removes a whole line in one gesture. That combination needs a way
+   * back that is not "rebuild it and eat the loss".
+   */
+  private undoLastSale(): void {
+    if (this.undoSales.length === 0) return;
+    const group = this.undoSales;
+    this.undoSales = [];
+    // Hand back exactly what selling paid out, so undo is not a money press.
+    let owed = 0;
+    let restored = 0;
+    for (const sb of group) owed += Math.floor(sb.inv / 2);
+    if (!GameState.spend(owed)) {
+      sfx.error();
+      this.floatText(BOARD_W / 2, 200, `UNDO needs $${owed}`, '#ff5555');
+      // Keep the group: the player may sell something else and try again.
+      this.undoSales = group;
+      return;
+    }
+    for (const sb of group) {
+      const b = this.restoreBuilding(sb);
+      if (b) restored += 1;
+      else GameState.addMoney(Math.floor(sb.inv / 2), false); // tile no longer free
+    }
+    if (restored > 0) {
+      sfx.place();
+      haptic(HAPTIC.place);
+      this.floatText(BOARD_W / 2, 200, `RESTORED ${restored}`, '#7cf7c4');
+      // Deliberately does NOT record a rebuild. Undo is money-neutral, so
+      // sell→undo→sell→undo would farm that achievement for free — the same
+      // hole `lastSold` already exists to close for sell-then-rebuild.
+    }
+    this.lastSold = null;
+    this.emitCoach();
+    this.requestSave();
+    GameState.events.emit('undo', false);
   }
 
   /**
@@ -1614,6 +1910,9 @@ export class GameScene extends Phaser.Scene {
     if (at && this.sweepCount === 0) {
       const b = this.grid.cellAt(at.tx, at.ty)?.building;
       if (b) this.requestSell(b);
+      // Right-clicking bare ground has always cleared the armed slot; the sell
+      // gesture now owns that press, so it has to keep doing it.
+      else if (at.right) this.select(null);
       return;
     }
     if (this.sweepCount > 1) {
@@ -1765,6 +2064,10 @@ export class GameScene extends Phaser.Scene {
   private sell(b: Building): void {
     if (this.sellArmed === b) this.sellArmed = null;
     const refund = Math.floor(b.invested / 2);
+    // Snapshot before anything is destroyed. Captured through the save format's
+    // own function, so undo restores a Mk3 sniper complete with its path, its
+    // magazine and its fed count rather than a fresh tower on the same tile.
+    this.undoSales.push(captureBuilding(b));
     if (b.item) this.conveyor.destroyItem(b.item);
     // A recoil or pulse tween outliving its target would keep writing to a dead
     // object every frame.
@@ -1782,7 +2085,9 @@ export class GameScene extends Phaser.Scene {
     this.floatText(b.x * TILE + 16, b.y * TILE + 8, `+$${refund}`, '#9aa7bd');
     this.burst(b.x * TILE + 16, b.y * TILE + 16, 0x9aa7bd, 8);
     sfx.sell();
+    haptic(HAPTIC.sell);
     progress.record('sold');
+    GameState.events.emit('undo', true);
     this.lastSold = { type: b.type, x: b.x, y: b.y };
     this.requestSave();
     this.emitCoach();
@@ -1809,11 +2114,14 @@ export class GameScene extends Phaser.Scene {
       this.ghost.setAlpha(0);
       this.rangeCircle.setVisible(false);
       const g = this.surveyGhost.clear();
-      if (p.y >= PLAYFIELD_H) {
+      // A staged site holds still; otherwise the footprint tracks the pointer,
+      // which on touch means the last place a finger landed. Hide it there.
+      const staged = this.pending?.kind === 'survey' ? this.pending : null;
+      if (!staged && (p.y >= PLAYFIELD_H || (IS_TOUCH && !p.isDown))) {
         this.iso?.setSurvey(null);
         return;
       }
-      const s = this.surveyOrigin(tx, ty);
+      const s = this.surveyOrigin(staged ? staged.tx : tx, staged ? staged.ty : ty);
       const ok = this.grid.isClearArea(s.x, s.y, s.w, s.h);
       // The footprint is a Graphics fill, which has no 3D counterpart to mirror
       // — the isometric view paints it on the ground itself.
@@ -1918,6 +2226,9 @@ export class GameScene extends Phaser.Scene {
   private toggleSurveyMode(): void {
     if (GameState.gameOver) return;
     this.surveyMode = !this.surveyMode;
+    // Leaving survey mode must not leave its footprint staged, and entering it
+    // must not inherit a staged building from the palette.
+    this.clearPending();
     if (this.surveyMode) {
       this.select(null);
       if (this.sellMode) this.toggleSellMode();
@@ -1974,7 +2285,7 @@ export class GameScene extends Phaser.Scene {
     const cy = spot.y * TILE + (h * TILE) / 2;
     this.burst(cx, cy, kind === 'ore' ? 0xff9f43 : 0x6bd4ff, 26);
     this.floatText(cx, cy - 12, `${kind.toUpperCase()} FOUND`, '#5ef078');
-    this.cameras.main.shake(120, 0.003);
+    this.shake(120, 0.003);
     sfx.waveClear();
     this.requestSave();
   }

@@ -28,7 +28,10 @@ afterEach(() => {
 describe('canvas sizing', () => {
   it('calculates a touch-safe, aspect-aware HUD height for each viewport', async () => {
     const { uiHeightForViewport } = await loadConfig();
-    expect(uiHeightForViewport({ width: 844, height: 390, touch: true })).toBeGreaterThanOrEqual(220);
+    // 168, not 220: the touch palette is tabbed (one shelf at a time), so the
+    // bar no longer needs two rows of thirteen slots. That bar was 40% of a
+    // phone screen — see `uiHeightForViewport`.
+    expect(uiHeightForViewport({ width: 844, height: 390, touch: true })).toBeGreaterThanOrEqual(168);
     expect(uiHeightForViewport({ width: 1440, height: 900, touch: false })).toBe(160);
     expect(uiHeightForViewport({ width: 1920, height: 1080, touch: false })).toBe(80);
   });

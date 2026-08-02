@@ -15,6 +15,7 @@ import {
 import { cloneTally, emptyTally, GameState } from '../state/GameState';
 import { progress } from '../state/progress';
 import { Enemy, ItemType } from '../types';
+import { HAPTIC, haptic } from '../utils/feel';
 import { sfx } from '../utils/sfx';
 import type { GameScene } from '../scenes/GameScene';
 
@@ -89,7 +90,12 @@ export class WaveSystem {
       progress.record('moneyEarned', early);
       this.scene.floatText(640, 300, `EARLY SEND  +$${early}`, '#5ef078');
     }
+    // Where they are actually coming in, for a player whose view is parked on
+    // the far end of the factory. No-ops when the entrance is already on screen.
+    const entry = pathPx()[0];
+    if (entry) this.scene.edgeAlert(entry.x, entry.y, 'WAVE IN', '#ffe066');
     sfx.waveStart();
+    if (this.def.kind === 'boss') haptic(HAPTIC.boss);
   }
 
   update(dt: number): void {
@@ -245,11 +251,11 @@ export class WaveSystem {
 
     this.scene.floatText(e.x, e.y - 10, `+$${e.bounty}`, tier > 0 ? comboColor(combo.count) : '#ffe066');
     this.scene.burst(e.x, e.y, 0xff5555, e.leak > 1 ? 26 : 12);
-    if (e.leak > 1) this.scene.cameras.main.shake(150, 0.005);
+    if (e.leak > 1) this.scene.shake(150, 0.005);
     const milestone = comboMilestone(combo.count);
     if (milestone) {
       this.scene.bigText(`${combo.count}× ${milestone}`);
-      this.scene.cameras.main.shake(120, 0.003);
+      this.scene.shake(120, 0.003);
     }
     sfx.coin(comboPitch(combo.count));
     e.sprite.destroy();
@@ -267,9 +273,14 @@ export class WaveSystem {
     GameState.events.emit('combo', GameState.combo);
     GameState.loseLives(e.leak);
     this.scene.floatText(e.x - 20, e.y, `-${e.leak}♥`, '#ff5555');
-    this.scene.cameras.main.shake(180, 0.006);
-    this.scene.cameras.main.flash(150, 120, 20, 20);
+    // That float is drawn at the exit, which on a phone is often off screen —
+    // leaving a silently draining lives counter as the only evidence. This
+    // points at it from the edge, and no-ops when the exit is already in view.
+    this.scene.edgeAlert(e.x, e.y, `LEAK -${e.leak}♥`, '#ff5555');
+    this.scene.shake(180, 0.006);
+    this.scene.flash(150, 120, 20, 20);
     sfx.leak();
+    haptic(HAPTIC.leak);
     e.sprite.destroy();
     e.hpBar.destroy();
     e.aura?.destroy();
@@ -359,7 +370,9 @@ export class WaveSystem {
   private completeWave(): void {
     const bonus = Math.round(waveClearBonus(GameState.wave) * GameState.mods.clearCash);
     GameState.addMoney(bonus);
-    this.scene.bigText(`WAVE ${GameState.wave} CLEAR  +$${bonus}`);
+    // Counts up rather than arriving complete — the most repeated reward in the
+    // game deserves a moment. See `GameScene.bigCount`.
+    this.scene.bigCount(`WAVE ${GameState.wave} CLEAR  `, bonus);
     sfx.waveClear();
     progress.record('wavesCleared');
     progress.record('moneyEarned', bonus);

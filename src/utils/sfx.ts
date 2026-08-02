@@ -129,4 +129,33 @@ export const sfx = {
     setTimeout(() => blip(659, 0.09, 'square', 0.07), 90);
     setTimeout(() => blip(784, 0.16, 'square', 0.07), 180);
   },
+  /**
+   * One card landing in the level-up draw. `notes` comes from the card's rarity
+   * (`data/rarity.ts`), so a keystone plays a longer, higher arpeggio than a
+   * standard card and the deal is audible before it is read.
+   *
+   * Ungated: a draw is at most three cards and is the moment the whole run
+   * builds to. The ambient voice budget exists for hundred-kill waves.
+   */
+  cardReveal: (notes: readonly number[]) => {
+    notes.forEach((f, i) => setTimeout(() => blip(f, 0.11, 'triangle', 0.055), i * 70));
+  },
+  /**
+   * One tick of a counting payout. `p` is 0..1 progress, so the pitch *climbs*
+   * to the payoff rather than repeating one note — the difference between a
+   * number changing and a number being paid out.
+   *
+   * Gated like the ambient sounds: the count updates every frame, and 40 blips
+   * in 600ms is a buzz rather than an arpeggio.
+   */
+  countTick: (p: number) => {
+    if (!gated('count', 55)) return;
+    const t = Math.min(1, Math.max(0, p));
+    blip(520 + 620 * t, 0.04, 'square', 0.03);
+  },
+  /** Confirming a pick — a decisive two-note answer to the reveal's question. */
+  cardPick: () => {
+    blip(784, 0.08, 'square', 0.08);
+    setTimeout(() => blip(1175, 0.18, 'square', 0.08), 70);
+  },
 };

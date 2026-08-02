@@ -3,7 +3,7 @@ import { GRID_W } from '../config';
 import { MACHINES } from '../data/buildings';
 import { makeBuilding, makeSprite } from '../test/helpers';
 import { Building, ItemEnt } from '../types';
-import { captureRun, SaveV1, validateSave } from './serialize';
+import { captureBuilding, captureRun, SaveV1, validateSave } from './serialize';
 
 const SNAPSHOT = { money: 320, lives: 17, wave: 8, speed: 2 as const, auto: true };
 
@@ -316,5 +316,35 @@ describe('validateSave rejects values that would break restoration', () => {
     asm.inputs.crystal = 6;
     asm.outputBuf = 2; // outputCap
     expect(validateSave(JSON.parse(JSON.stringify(captureRun([asm], [], SNAPSHOT))))).not.toBeNull();
+  });
+});
+
+/**
+ * Undo-a-sale snapshots through this exact function, which is the whole reason
+ * it was split out of `captureRun`. If it ever stops carrying a field, undo
+ * silently hands back a *worse* building than the one that was sold — the kind
+ * of loss a player would blame on the game rather than report.
+ */
+describe('captureBuilding', () => {
+  it('carries everything that makes a building worth getting back', () => {
+    const t = towerAt(4, 4);
+    t.fed = 37;
+    const sb = captureBuilding(t);
+    expect(sb).toMatchObject({ t: 'tower', x: 4, y: 4, mk: 3, path: 'sniper', ammo: 11, fed: 37, inv: 640 });
+  });
+
+  it('is the same snapshot the save file stores, field for field', () => {
+    const b = makeBuilding('assembler', 7, 3, 2);
+    b.inputs = { ammo: 2, crystal: 1 };
+    b.outputBuf = 1;
+    b.invested = 120;
+    const [saved] = captureRun([b], [], SNAPSHOT).buildings;
+    expect(captureBuilding(b)).toEqual(saved);
+  });
+
+  it('keeps a sorter’s filter, so undo cannot quietly unprotect a line', () => {
+    const s = makeBuilding('sorter', 2, 2);
+    s.filter = 'shell';
+    expect(captureBuilding(s).filter).toBe('shell');
   });
 });

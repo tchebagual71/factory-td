@@ -8,6 +8,8 @@
  * the device by Phaser's FIT scaler.
  */
 
+import { GAME_W, IS_TOUCH } from '../config';
+
 export interface Rect {
   x: number;
   y: number;
@@ -22,6 +24,14 @@ export interface HudLayout {
   slots: Rect[];
   /** one header strip per category, above that category's block of slots */
   groupHeaders: Rect[];
+  /**
+   * One tab per category, when `tabbed`. Empty otherwise.
+   *
+   * In tabbed mode only the selected category's slots are on screen, so slots
+   * from *different* categories deliberately share the same coordinates — they
+   * are never visible at the same time.
+   */
+  tabs: Rect[];
   /** columns/rows used *within* each category block */
   paletteCols: number[];
   paletteRows: number;
@@ -42,6 +52,16 @@ export interface HudLayoutOpts {
   touch: boolean;
   /** slots per category block, in display order; blocks are laid out left to right */
   groups: number[];
+  /**
+   * Show one category at a time behind tabs instead of all three side by side.
+   *
+   * Thirteen slots in two rows is what forced the phone's build bar to 40% of
+   * the screen, leaving the board — the thing you actually play — with under a
+   * third. Tabs cut the widest row from thirteen slots to five, which fits one
+   * row of large slots in a much shorter bar. The shelves already existed as a
+   * concept, so this promotes them rather than inventing anything to learn.
+   */
+  tabbed?: boolean;
 }
 
 const PAD = 10;
@@ -85,21 +105,45 @@ export function hudLayout(o: HudLayoutOpts): HudLayout {
 
   const slots: Rect[] = [];
   const groupHeaders: Rect[] = [];
-  let gx = PAD;
-  o.groups.forEach((count, gi) => {
-    const cols = paletteCols[gi];
-    const blockW = cols * bw + (cols - 1) * gap;
-    groupHeaders.push({ x: gx, y: top, w: blockW, h: headerH });
-    for (let i = 0; i < count; i++) {
-      slots.push({
-        x: gx + (i % cols) * (bw + gap),
-        y: top + headerH + Math.floor(i / cols) * (bh + gap),
-        w: bw,
-        h: bh,
-      });
-    }
-    gx += blockW + GROUP_GAP;
-  });
+  const tabs: Rect[] = [];
+
+  if (o.tabbed) {
+    // One row, sized for the widest category, with a tab strip above it. Slots
+    // of different categories share coordinates on purpose — only one category
+    // is ever drawn, so they cannot collide on screen.
+    const tabH = Math.max(22, Math.min(36, Math.floor(availH * 0.24)));
+    const cols = Math.max(1, ...o.groups);
+    const tabW = Math.floor((paletteRight - PAD - (o.groups.length - 1) * gap) / o.groups.length);
+    const tabbedBw = Math.floor((paletteRight - PAD - (cols - 1) * gap) / cols);
+    const tabbedBh = availH - tabH - gap;
+    o.groups.forEach((count, gi) => {
+      tabs.push({ x: PAD + gi * (tabW + gap), y: top, w: tabW, h: tabH });
+      for (let i = 0; i < count; i++) {
+        slots.push({
+          x: PAD + i * (tabbedBw + gap),
+          y: top + tabH + gap,
+          w: tabbedBw,
+          h: tabbedBh,
+        });
+      }
+    });
+  } else {
+    let gx = PAD;
+    o.groups.forEach((count, gi) => {
+      const cols = paletteCols[gi];
+      const blockW = cols * bw + (cols - 1) * gap;
+      groupHeaders.push({ x: gx, y: top, w: blockW, h: headerH });
+      for (let i = 0; i < count; i++) {
+        slots.push({
+          x: gx + (i % cols) * (bw + gap),
+          y: top + headerH + Math.floor(i / cols) * (bh + gap),
+          w: bw,
+          h: bh,
+        });
+      }
+      gx += blockW + GROUP_GAP;
+    });
+  }
 
   // ----- touch controls -----
   // 2×2: the two controls a placement needs (ROTATE, CONFIRM) share the top
@@ -148,8 +192,9 @@ export function hudLayout(o: HudLayoutOpts): HudLayout {
     deck: { x: 0, y: o.barY, w: o.gameW, h: o.barH },
     slots,
     groupHeaders,
-    paletteCols,
-    paletteRows,
+    tabs,
+    paletteCols: o.tabbed ? o.groups.map(() => Math.max(1, ...o.groups)) : paletteCols,
+    paletteRows: o.tabbed ? 1 : paletteRows,
     touch,
     preview: { x: clusterX, y: top, w: CLUSTER_W, h: previewH },
     send: { x: sendX, y: sendY, w: sendW, h: rowH },
@@ -162,6 +207,18 @@ export interface OverlayZones {
   inspector: Rect;
   toast: Rect;
   coach: Rect;
+  /**
+   * Scale the inspector container must be drawn at to fit `inspector`.
+   *
+   * The panel is authored at a fixed size and scaled as a whole (Phaser
+   * transforms child hit areas with the art, so targets grow with it). This zone
+   * already knew how much room was left under the toast and clamped `inspector.h`
+   * to it — but GameScene drew the panel at its authored 320px anyway, so on a
+   * phone the two upgrade buttons, which are the entire point of the panel, were
+   * cut off by the build bar. Returning the scale here is what stops the zone and
+   * the thing drawn into it from disagreeing again.
+   */
+  inspectorScale: number;
 }
 
 /** Production inspector geometry, shared by GameScene and responsive tests. */
@@ -198,20 +255,31 @@ export function overlayZones(gameW: number, playfieldH: number, stripBottom: num
   const top = Math.min(playfieldH, Math.max(0, stripBottom + pad));
   const objectiveW = touch ? 320 : 280;
   const inspectorLayoutDef = inspectorLayout(touch);
-  const inspectorW = inspectorLayoutDef.panel.w * inspectorLayoutDef.scale + (touch ? 0 : 22);
   const toastW = touch ? 300 : 260;
-  const objectiveH = touch ? 84 : 56;
-  const toastH = touch ? 78 : 48;
+  // On a short board these cards are the difference between a playfield and a
+  // wall of panels: at 84px each, the objective and the coach covered a third
+  // of a phone's playfield between them. They shrink with the board rather than
+  // sitting at a size chosen for a 640px one.
+  const cramped = playfieldH < 420;
+  const objectiveH = cramped ? 40 : touch ? 84 : 56;
+  const toastH = cramped ? 44 : touch ? 78 : 48;
   const inspectorH = touch ? inspectorLayoutDef.panel.h * inspectorLayoutDef.scale : 150;
-  const coachH = touch ? 84 : 56;
+  const coachH = cramped ? 40 : touch ? 84 : 56;
 
   const objective: Rect = { x: pad, y: top, w: objectiveW, h: objectiveH };
   const toast: Rect = { x: gameW - pad - toastW, y: top, w: toastW, h: toastH };
+  // The room actually left under the toast. If the authored panel is taller than
+  // this it has to scale down as a whole — clamping only the zone's height, as
+  // this used to, just meant the panel overhung a rectangle nobody enforced.
+  const inspectorY = toast.y + toast.h + pad;
+  const room = Math.max(0, playfieldH - inspectorY);
+  const inspectorScale =
+    inspectorLayoutDef.scale * Math.min(1, room / Math.max(1, inspectorLayoutDef.panel.h));
   const inspector: Rect = {
-    x: gameW - pad - inspectorW,
-    y: toast.y + toast.h + pad,
-    w: inspectorW,
-    h: Math.max(0, Math.min(inspectorH, playfieldH - (toast.y + toast.h + pad))),
+    x: gameW - pad - inspectorLayoutDef.panel.w * inspectorScale - (touch ? 0 : 22),
+    y: inspectorY,
+    w: inspectorLayoutDef.panel.w * inspectorScale + (touch ? 0 : 22),
+    h: touch ? inspectorLayoutDef.panel.h * inspectorScale : Math.min(inspectorH, room),
   };
   const coach: Rect = {
     x: Math.max(pad, Math.floor((gameW - (touch ? 520 : 420)) / 2)),
@@ -219,7 +287,55 @@ export function overlayZones(gameW: number, playfieldH: number, stripBottom: num
     w: Math.min(touch ? 520 : 420, Math.max(0, gameW - 2 * pad)),
     h: coachH,
   };
-  return { objective, inspector, toast, coach };
+  return { objective, inspector, toast, coach, inspectorScale };
+}
+
+/**
+ * Top edge of the `[L]` logistics legend.
+ *
+ * The legend hung at a fixed offset below the status strip — which is the same
+ * band the objective card and the achievement toast already occupy, placed by
+ * `overlayZones`. It is ~860px of centred text, so it ran straight across the
+ * objective card whenever the overlay was on. Item 26 records moving it off the
+ * *strip* for the same reason; it was simply moved onto the next thing down.
+ *
+ * Deriving it from the zones is what makes "below everything already up there"
+ * a rule rather than a number that goes stale the next time a card is added.
+ */
+export function legendBand(zones: OverlayZones, touch: boolean): { x: number; y: number; w: number } {
+  const pad = touch ? 12 : 8;
+  const y = Math.max(zones.objective.y + zones.objective.h, zones.toast.y + zones.toast.h) + 6;
+  // Width matters as much as the drop. On a short board the upgrade panel starts
+  // higher, so clearing the cards vertically is not enough — the legend has to
+  // stop before the panel's left edge or it simply collides lower down. The
+  // caller word-wraps to this width and centres inside it.
+  const x = pad;
+  const w = Math.max(0, zones.inspector.x - pad - x);
+  return { x, y, w };
+}
+
+/**
+ * Widest the kill-streak meter ever renders: `200× TOTAL SATURATION` at 20px
+ * bold monospace. Declared rather than measured so the anchor stays pure.
+ */
+export const COMBO_METER_MAX_W = 260;
+
+/**
+ * Right edge and top of the kill-streak meter, which is drawn `setOrigin(1, 0)`.
+ *
+ * It was pinned to `GAME_W - 10` under a comment reading "Top RIGHT ... top-left
+ * is the achievement toasts". That is simply wrong: `overlayZones.toast` is at
+ * `gameW - pad - toastW`, the *same* corner. Measured on a phone, the meter sat
+ * at x 1156–1270 against a toast zone of 968–1268 — so an achievement unlocking
+ * mid-streak landed on top of the streak counter, which is precisely the moment
+ * both exist to celebrate.
+ *
+ * It now right-aligns to the *left* of the toast zone, in the gap between the
+ * objective card and the toast, which is empty in every layout.
+ */
+export function comboAnchor(zones: OverlayZones, stripBottom: number, touch: boolean): { x: number; y: number } {
+  const pad = touch ? 12 : 8;
+  return { x: zones.toast.x - pad, y: stripBottom + 8 };
 }
 
 /** The board's pointer guard uses the exact same overlay reservations as the HUD. */
@@ -232,6 +348,240 @@ export function overlayHit(
   return (visible.objective && contains(zones.objective, x, y)) ||
     (visible.coach && contains(zones.coach, x, y)) ||
     (visible.inspector && contains(zones.inspector, x, y));
+}
+
+/** The research level-up draw: header, then a row of cards. */
+export interface CardDrawLayout {
+  /** Centred; `y` is the top edge, so the header can shrink without drifting. */
+  title: { x: number; y: number; size: number };
+  sub: { x: number; y: number; size: number; show: boolean };
+  cards: Rect[];
+  nameSize: number;
+  descSize: number;
+  metaSize: number;
+  badgeSize: number;
+  /**
+   * Centre of the description block, as an offset from the card's top edge —
+   * drawn with `setOrigin(0.5, 0.5)`.
+   *
+   * The description used to start at `H / 2` and flow down, which reads as a
+   * short line stranded in a mostly empty card: a one-line effect left the
+   * bottom 40% blank. Centring it in the room left between the name and the
+   * "already taken" footer is what makes the card look composed rather than
+   * unfinished, and it is why this is geometry rather than a magic number at
+   * the call site.
+   */
+  descCy: number;
+}
+
+/**
+ * The level-up draw, sized to the board it has to sit on.
+ *
+ * This was three 280×210 cards nailed to `y: 190` — coordinates chosen when
+ * every canvas was 1280×720. Since item 40 the *viewport* onto the board can be
+ * as short as `MIN_PLAYFIELD_H` (320), and a card row ending at y=400 then
+ * renders 80px underneath the build bar: the single most important reward moment
+ * in the game, half-hidden, on the device most people would play it on.
+ *
+ * So it is derived, and bounded by `playfieldH` rather than the canvas — the
+ * bottom bar is opaque and owns everything below it. Space is spent in priority
+ * order, because the cards are the thing being read and the header is chrome:
+ *
+ * 1. the subtitle is dropped first (the title already says what this is),
+ * 2. then the type scale steps down,
+ * 3. and the cards take **all** the height that leaves.
+ *
+ * The card height is a hard `min` against the room actually available, never a
+ * floor, so this cannot overflow the playfield however short it gets.
+ */
+export function cardDrawLayout(
+  gameW: number,
+  playfieldH: number,
+  stripBottom: number,
+  count: number,
+  touch: boolean,
+): CardDrawLayout {
+  const n = Math.max(1, Math.floor(count));
+  const pad = 16;
+  const top = Math.max(0, stripBottom) + pad;
+  const bottom = Math.max(top, playfieldH - pad);
+  const avail = bottom - top;
+
+  // A phone's playfield is ~320–420px against a desktop's 640. Below this the
+  // header has to give way rather than eat the cards.
+  const cramped = avail < 320;
+  const showSub = avail >= 260;
+  const titleSize = cramped ? 20 : 30;
+  const subSize = cramped ? 11 : 13;
+  const headerH = titleSize + 6 + (showSub ? subSize + 12 : 10);
+
+  // 184, not the 210 the fixed layout used. Seen side by side on a real render,
+  // 210 left a dead band across the bottom third of every card: the worst case
+  // this has to hold is a two-line name, a three-line effect and the "already
+  // taken" footer, which is ~150. A card sized to content reads as composed; one
+  // sized to a guess reads as unfinished.
+  const cardH = Math.min(touch ? 208 : 184, Math.max(0, avail - headerH));
+  const cardsTop = top + headerH;
+
+  const gap = cramped ? 14 : 28;
+  const cardW = Math.max(
+    0,
+    Math.min(280, Math.floor((gameW - 2 * pad - (n - 1) * gap) / n)),
+  );
+  const rowW = n * cardW + (n - 1) * gap;
+  const x0 = Math.round((gameW - rowW) / 2);
+
+  const cards: Rect[] = [];
+  for (let i = 0; i < n; i += 1) {
+    cards.push({ x: x0 + i * (cardW + gap), y: cardsTop, w: cardW, h: cardH });
+  }
+
+  const nameSize = cramped ? 14 : 16;
+  const descSize = cramped ? 11 : 13;
+  const metaSize = cramped ? 10 : 11;
+  const badgeSize = cramped ? 9 : 11;
+
+  // Room the name occupies at the top (badge inset + badge + gap + up to two
+  // wrapped lines) and the footer at the bottom; the description centres in
+  // whatever is left between them.
+  const nameBlockH = 12 + badgeSize + 10 + nameSize * 2.2;
+  const footerH = 28;
+  const descCy = nameBlockH + Math.max(0, cardH - nameBlockH - footerH) / 2;
+
+  return {
+    title: { x: gameW / 2, y: top, size: titleSize },
+    sub: { x: gameW / 2, y: top + titleSize + 6, size: subSize, show: showSub },
+    cards,
+    nameSize,
+    descSize,
+    metaSize,
+    badgeSize,
+    descCy,
+  };
+}
+
+/** The post-wave report card, plus where its entrance animation starts. */
+export interface ReportCardLayout extends Rect {
+  /** `y` the card animates *from*; it settles on `y`. */
+  fromY: number;
+}
+
+/**
+ * The wave report card — low in the board viewport, never on the build bar.
+ *
+ * The creation site already clamped this correctly, and then a tween threw the
+ * clamp away by animating to a literal `y: 360`. On a phone the card is built at
+ * 252 and slid to 360, which puts its bottom edge at 518 against a 422 playfield
+ * — **96px behind the build bar, after every single wave**. Desktop hid it,
+ * because there 360 happens to sit 12px above the computed 372.
+ *
+ * So the destination is derived here and the entrance is expressed as an offset
+ * from it, which is the only arrangement where the animation cannot contradict
+ * the layout. Same lesson as items 44 and 45: a fixed `y` in an overlay is a bug
+ * signature — including one hiding inside a tween.
+ */
+export function reportCard(gameW: number, playfieldH: number, w = 288, h = 158): ReportCardLayout {
+  const pad = 12;
+  const y = Math.max(pad, Math.min(372, playfieldH - h - pad));
+  return { x: Math.round(gameW / 2 - w / 2), y, w, h, fromY: y + 24 };
+}
+
+/** The end-of-run card. `y` values are row *centres*, matching `setOrigin(0.5)`. */
+export interface GameOverLayout {
+  title: { y: number; size: number };
+  sub: { y: number; size: number };
+  best: { y: number; size: number };
+  scrap: { y: number; size: number };
+  grade: { y: number; size: number; show: boolean };
+  /** Two buttons, centred at `gameW / 2 ± dx`. */
+  buttons: { y: number; w: number; h: number; dx: number; size: number };
+}
+
+/**
+ * The end-of-run card — the "one more run" hook, and the screen that must never
+ * be unreachable.
+ *
+ * Every row used to be a fixed `y`, with REBUILD and MENU at 480. `GAME_H` is
+ * `uiH + playfieldH` and bottoms out around **400** (a 1400×420 browser window
+ * takes the short-board path at `COMFORTABLE_TILE_CSS`), which put both buttons
+ * 106px off the bottom of the canvas: a defeat screen with no way out of it, on
+ * the one screen a player most wants to leave.
+ *
+ * So the stack is *centred and measured* rather than positioned. Space is spent
+ * in the same priority order the card draw uses — shrink first, drop the grade
+ * block only if shrinking will not do it — with two hard rules:
+ *
+ * - **the buttons are never dropped and never scaled below a finger**, because
+ *   losing them is a softlock rather than a cosmetic regression, and
+ * - if the stack still cannot fit, it is shifted up so the buttons stay on
+ *   canvas and the *title* clips instead. A clipped headline is readable; an
+ *   unreachable button is not.
+ *
+ * At every canvas the game actually produces the scale is 1, so this is the
+ * shipped desktop card exactly — only its anchor changed.
+ */
+export function gameOverLayout(gameW: number, gameH: number, touch: boolean): GameOverLayout {
+  const pad = 16;
+  const avail = Math.max(0, gameH - 2 * pad);
+
+  // The shipped 1280×720 proportions, kept as the natural size.
+  const TITLE = 48, SUB = 18, BEST = 16, SCRAP = 17, GRADE = 12;
+  const GRADE_LINES = 3, LINE = 1.35;
+  // Touch has room to spare here (the stack needs ~290 of ~557) and no keyboard
+  // fallback, so its buttons are bigger rather than merely scaled.
+  const BTN_H = touch ? 64 : 52;
+  const BTN_W = touch ? 260 : 220;
+  const GAP = [22, 10, 12, 20, 26]; // after title / sub / best / scrap / grade
+
+  const stackH = (k: number, grade: boolean): number => {
+    const g = GAP.map((v) => v * k);
+    let h = TITLE * k + g[0] + SUB * k + g[1] + BEST * k + g[2] + SCRAP * k;
+    h += grade ? g[3] + GRADE * k * GRADE_LINES * LINE : 0;
+    return h + g[4] + BTN_H * k;
+  };
+
+  const MIN_K = 0.6;
+  let grade = true;
+  let k = Math.min(1, avail / Math.max(1, stackH(1, true)));
+  if (k < MIN_K) {
+    grade = false;
+    k = Math.min(1, avail / Math.max(1, stackH(1, false)));
+  }
+  k = Math.max(MIN_K, k);
+
+  const g = GAP.map((v) => v * k);
+  const total = stackH(k, grade);
+  let cursor = Math.max(pad, (gameH - total) / 2);
+
+  const row = (h: number, gap: number): number => {
+    const centre = cursor + h / 2;
+    cursor += h + gap;
+    return centre;
+  };
+
+  const title = { y: row(TITLE * k, g[0]), size: Math.round(TITLE * k) };
+  const sub = { y: row(SUB * k, g[1]), size: Math.round(SUB * k) };
+  const best = { y: row(BEST * k, g[2]), size: Math.round(BEST * k) };
+  const scrap = { y: row(SCRAP * k, grade ? g[3] : 0), size: Math.round(SCRAP * k) };
+  const gradeH = GRADE * k * GRADE_LINES * LINE;
+  const gradeRow = { y: grade ? row(gradeH, g[4]) : cursor, size: Math.round(GRADE * k), show: grade };
+  if (!grade) cursor += g[4];
+  const btnH = BTN_H * k;
+  const buttons = {
+    y: cursor + btnH / 2,
+    w: BTN_W * k,
+    h: btnH,
+    dx: (BTN_W * k) / 2 + 15 * k,
+    size: Math.round(20 * k),
+  };
+
+  // Last resort: keep the buttons on canvas, clipping the headline instead.
+  const overflow = buttons.y + btnH / 2 - (gameH - pad);
+  if (overflow > 0) {
+    for (const r of [title, sub, best, scrap, gradeRow, buttons]) r.y -= overflow;
+  }
+
+  return { title, sub, best, scrap, grade: gradeRow, buttons };
 }
 
 /**
@@ -367,6 +717,20 @@ export function topStrip(gameW: number, touch: boolean): TopStripLayout {
 
   return { h, stats, survey, research, map, help, mute, view };
 }
+
+/**
+ * The one top strip the whole game uses.
+ *
+ * GameScene and UIScene each used to build their own from the same arguments,
+ * which was fine only while there were no arguments that could differ. Now that
+ * the geometry depends on the device's canvas scale, two independent calls are
+ * a standing invitation for `stripHit` to shield pixels the HUD is not drawing
+ * on — so the derived value is computed once, here, and imported by both.
+ *
+ * Everything above stays pure and takes its inputs explicitly; this is the only
+ * device-bound line in the module.
+ */
+export const STRIP: TopStripLayout = topStrip(GAME_W, IS_TOUCH);
 
 export function overlaps(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;

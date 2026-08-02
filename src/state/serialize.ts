@@ -146,27 +146,37 @@ export function captureRun(
     patches: terrain.patches,
     tiles: terrain.tiles,
     map: terrain.map,
-    buildings: buildings.map((b) => {
-      const sb: SavedBuilding = { t: b.type, x: b.x, y: b.y, d: b.dir, inv: b.invested };
-      if (b.mk > 1) sb.mk = b.mk;
-      if (b.path) sb.path = b.path;
-      if (b.ammo > 0) sb.ammo = b.ammo;
-      if (b.fed > 0) sb.fed = b.fed;
-      if (b.timer > 0) sb.timer = b.timer;
-      if (b.crafting) sb.crafting = true;
-      const buffered = Object.entries(b.inputs).filter(([, n]) => (n ?? 0) > 0);
-      if (buffered.length > 0) sb.in = Object.fromEntries(buffered);
-      if (b.outputBuf > 0) sb.outBuf = b.outputBuf;
-      if (b.outIdx > 0) sb.outIdx = b.outIdx;
-      if (b.type === 'sorter' && b.filter) sb.filter = b.filter;
-      return sb;
-    }),
+    buildings: buildings.map(captureBuilding),
     items: items.map((it) => {
       const si: SavedItem = { t: it.type, cx: it.cx, cy: it.cy, px: it.sprite.x, py: it.sprite.y };
       if (it.sprite.alpha < 1) si.a = it.sprite.alpha;
       return si;
     }),
   };
+}
+
+/**
+ * One building in save form.
+ *
+ * Split out of `captureRun` so undo-a-sale can snapshot a building through the
+ * exact same function the save file uses. That is the point: a field added here
+ * for persistence is automatically carried across an undo too, rather than
+ * quietly restoring a tower that has forgotten its upgrade path.
+ */
+export function captureBuilding(b: Building): SavedBuilding {
+  const sb: SavedBuilding = { t: b.type, x: b.x, y: b.y, d: b.dir, inv: b.invested };
+  if (b.mk > 1) sb.mk = b.mk;
+  if (b.path) sb.path = b.path;
+  if (b.ammo > 0) sb.ammo = b.ammo;
+  if (b.fed > 0) sb.fed = b.fed;
+  if (b.timer > 0) sb.timer = b.timer;
+  if (b.crafting) sb.crafting = true;
+  const buffered = Object.entries(b.inputs).filter(([, n]) => (n ?? 0) > 0);
+  if (buffered.length > 0) sb.in = Object.fromEntries(buffered);
+  if (b.outputBuf > 0) sb.outBuf = b.outputBuf;
+  if (b.outIdx > 0) sb.outIdx = b.outIdx;
+  if (b.type === 'sorter' && b.filter) sb.filter = b.filter;
+  return sb;
 }
 
 const BUILDING_TYPES: readonly BuildingType[] = [

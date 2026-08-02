@@ -47,6 +47,10 @@ describe('UIScene description handoff', () => {
         text: object,
       },
       slotColor: new Map(),
+      // Tabbed bars record which shelf each slot belongs to, so the stub needs
+      // somewhere for buildPalette to put that.
+      slotShelf: [],
+      tabParts: [],
       paletteFrames: new Map(),
       paletteButtons: new Map(),
       paletteState: new Map(),
@@ -81,6 +85,10 @@ describe('UIScene description handoff', () => {
         text: object,
       },
       slotColor: new Map(),
+      // Tabbed bars record which shelf each slot belongs to, so the stub needs
+      // somewhere for buildPalette to put that.
+      slotShelf: [],
+      tabParts: [],
       paletteFrames: new Map(),
       paletteButtons: new Map(),
       paletteState: new Map(),

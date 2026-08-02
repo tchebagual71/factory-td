@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ACHIEVEMENTS } from '../data/achievements';
-import { achievementCells, achievementLayout, AchLayoutOpts } from './achievementLayout';
+import { achievementCells, achievementLayout, AchLayoutOpts, CLOSE_BTN } from './achievementLayout';
 
 /**
  * The bug this file exists to prevent: the modal was a fixed 560px tall and the
@@ -130,5 +130,54 @@ describe('growth headroom', () => {
     const desktop = achievementLayout({ gameW: 1280, gameH: 720, count: COUNT, touch: false });
     expect(COUNT).toBeGreaterThan(desktop.rowsPerPage * desktop.cols - desktop.perPage + 1);
     expect(desktop.pages).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * The pager and the CLOSE button share the modal's bottom strip.
+ *
+ * They used to be placed by two different rules — `pagerY = bottom - 68` here,
+ * and MenuScene's `modalClose` independently at `bottom - 44` — both 44px tall
+ * and 24px apart, so they overlapped on every device. With 28 achievements the
+ * list is two pages, making the pager the only route to the second half, and a
+ * tap near its inner edge closed the modal instead of paging.
+ */
+describe('pager clears the CLOSE button', () => {
+  const rect = (cx: number, cy: number, w: number, h: number) =>
+    ({ l: cx - w / 2, r: cx + w / 2, t: cy - h / 2, b: cy + h / 2 });
+  const hits = (a: ReturnType<typeof rect>, b: ReturnType<typeof rect>) =>
+    a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+
+  const SHAPES: { name: string; gameW: number; gameH: number; touch: boolean }[] = [
+    { name: '16:9 desktop', gameW: 1280, gameH: 720, touch: false },
+    { name: 'iPad landscape', gameW: 1280, gameH: 889, touch: true },
+    { name: 'phone landscape (scaled menu camera)', gameW: 1562, gameH: 720, touch: true },
+    { name: 'boxy tablet', gameW: 1280, gameH: 940, touch: false },
+  ];
+
+  it.each(SHAPES.map((s) => [s.name, s] as const))('on %s', (_name, s) => {
+    const g = achievementLayout({ gameW: s.gameW, gameH: s.gameH, count: ACHIEVEMENTS.length, touch: s.touch });
+    const close = rect(s.gameW / 2, g.closeY, CLOSE_BTN.w, CLOSE_BTN.h);
+    const prev = rect(g.prevX, g.pagerY, g.pagerBtn.w, g.pagerBtn.h);
+    const next = rect(g.nextX, g.pagerY, g.pagerBtn.w, g.pagerBtn.h);
+    expect(hits(prev, close), 'PREV overlaps CLOSE').toBe(false);
+    expect(hits(next, close), 'NEXT overlaps CLOSE').toBe(false);
+    // and neither lands on the last row of achievements
+    expect(prev.t).toBeGreaterThanOrEqual(g.contentBottom - 0.5);
+    // everything stays inside the modal
+    expect(close.b).toBeLessThanOrEqual(g.bottom + 0.5);
+    expect(prev.t).toBeGreaterThanOrEqual(g.top);
+  });
+
+  it('still needs a pager at all — the list really is multi-page', () => {
+    const g = achievementLayout({ gameW: 1280, gameH: 720, count: ACHIEVEMENTS.length, touch: false });
+    expect(g.pages).toBeGreaterThan(1);
+  });
+
+  it('did not cost a row to fix', () => {
+    for (const s of SHAPES) {
+      const g = achievementLayout({ gameW: s.gameW, gameH: s.gameH, count: ACHIEVEMENTS.length, touch: s.touch });
+      expect(g.rowsPerPage, s.name).toBeGreaterThanOrEqual(7);
+    }
   });
 });

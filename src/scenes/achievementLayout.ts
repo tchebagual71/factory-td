@@ -17,8 +17,28 @@
 const ROW_H = 52;
 /** Distance from the modal's top edge to the first row — clears the title. */
 const HEADER_H = 70;
-/** Space kept at the bottom for the pager and the CLOSE button. */
-const FOOTER_H = 104;
+/**
+ * Space kept at the bottom for the pager *and* the CLOSE button.
+ *
+ * 126, not the original 104. The pager used to sit at `bottom - 68` while
+ * MenuScene's shared `modalClose` independently placed a 180×44 button at
+ * `bottom - 44` — two sources of truth for the same strip, 24px apart, both 44px
+ * tall. They overlapped on every device, and `prevX`/`nextX` at only ±92 from
+ * centre sat inside the 180-wide button horizontally too. With 28 achievements
+ * the list is two pages, so the pager is the *only* route to the second half —
+ * and a tap near its inner edge closed the modal instead of paging.
+ *
+ * The pager now sits a clear 12px above the CLOSE row, and `CLOSE_BTN`/`closeY`
+ * below make this module the single owner of that strip. Row count is unchanged
+ * at every shipped shape: the extra 22px comes out of slack, not out of a row.
+ */
+const FOOTER_H = 126;
+
+/**
+ * The modal's CLOSE button, owned here rather than by the scene that draws it.
+ * MenuScene reads `closeY` for this modal so the two cannot drift apart again.
+ */
+export const CLOSE_BTN = { w: 180, h: 44 } as const;
 /** Horizontal padding inside the modal. */
 const PAD = 20;
 const COLS = 2;
@@ -61,6 +81,8 @@ export interface AchGrid {
   nextX: number;
   /** finger-sized on touch, compact on desktop */
   pagerBtn: { w: number; h: number };
+  /** centre-line of the CLOSE button; the pager is placed clear of it */
+  closeY: number;
 }
 
 export interface AchLayoutOpts {
@@ -93,6 +115,10 @@ export function achievementLayout({ gameW, gameH, count, touch = false }: AchLay
 
   const colW = (modalW - PAD * 2) / COLS;
   const pagerBtn = touch ? { w: 56, h: 44 } : { w: 44, h: 32 };
+  // The CLOSE row sits on the modal's bottom edge; the pager stacks clear above
+  // it rather than beside it, so this never depends on CLOSE's *width*.
+  const closeY = bottom - CLOSE_BTN.h;
+  const pagerY = closeY - CLOSE_BTN.h / 2 - pagerBtn.h / 2 - 12;
 
   return {
     modalW,
@@ -109,10 +135,11 @@ export function achievementLayout({ gameW, gameH, count, touch = false }: AchLay
     colW,
     // leaves room for the star column on the left and a margin on the right
     barW: colW - 70,
-    pagerY: bottom - 68,
+    pagerY,
     prevX: gameW / 2 - 92,
     nextX: gameW / 2 + 92,
     pagerBtn,
+    closeY,
   };
 }
 

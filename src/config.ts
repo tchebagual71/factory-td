@@ -56,7 +56,12 @@ export function uiHeightForViewport({
 }): number {
   // Touch always gets the roomy HUD: finger-sized buttons matter more than a
   // few extra rows of board, and there is no keyboard to fall back on.
-  const min = touch ? 220 : UI_H_MIN;
+  //
+  // 168 rather than 220 because the touch palette is now tabbed: one row of
+  // large slots instead of two rows of thirteen. That bar was 40% of a phone
+  // screen and left the board under a third of it. The touch pad's cells stay
+  // comfortably past 40 css px at this height, which is what sets the floor.
+  const min = touch ? 168 : UI_H_MIN;
   if (!width || !height) return min;
   // Portrait is handled by the rotate prompt; size for the landscape equivalent.
   const aspect = Math.min(height, width) / Math.max(height, width);
@@ -174,6 +179,49 @@ export const PLAYFIELD_H = metrics.playfieldH;
 
 /** True when the HUD has room for the two-row, big-button layout. */
 export const ROOMY_UI = UI_H >= UI_H_ROOMY;
+
+/**
+ * What `Scale.FIT` will multiply the canvas by on this device — the bridge
+ * between the units the HUD is written in and the units a finger works in.
+ *
+ * Every size in the HUD is authored in *canvas* pixels, and the canvas is
+ * scaled to the device. On a phone that factor is around 0.72, so a control the
+ * code calls 44px reaches the player as ~32 css px and 11px type arrives at
+ * about 8. The guideline the tests were enforcing was being enforced in the
+ * wrong unit. Kept because `TEXT_RES` below is derived from it.
+ *
+ * Note: an earlier attempt used this to impose a minimum *font* size, which
+ * roughly doubled every label while the boxes holding them stayed put, and the
+ * HUD overlapped itself. Type and the boxes around it have to scale together —
+ * see the note on TEXT_RES for the part of that idea which was actually sound.
+ */
+export const CANVAS_SCALE = ((): number => {
+  if (!viewport.width || !viewport.height) return 1;
+  return Math.min(viewport.width / GAME_W, viewport.height / GAME_H);
+})();
+
+
+/**
+ * How many *physical* pixels the screen gives each canvas pixel.
+ *
+ * The canvas is a fixed-size buffer stretched onto the device, and once its
+ * aspect matches the screen that stretch is pure upscaling: a 1280×544 canvas
+ * on an iPhone 15 Pro in landscape covers 2202×936 real pixels, so every canvas
+ * pixel is blown up 1.72×. Art can live with that — it is chunky on purpose —
+ * but text cannot: a glyph is rasterised once at its canvas size and then
+ * stretched, which is exactly what "the text got blurry" means.
+ *
+ * Phaser can rasterise text at a multiple of the canvas resolution, and this is
+ * that multiple. Note it is > 1 on an ordinary desktop too (a 1280-wide canvas
+ * on a 1920-wide window is a 1.5× stretch), so this sharpens every device
+ * rather than patching one.
+ */
+export const TEXT_RES = ((): number => {
+  const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1;
+  // Capped: past 3 the text textures cost more memory than the sharpness is
+  // worth, and no display we target needs it.
+  return Math.min(3, Math.max(1, CANVAS_SCALE * dpr));
+})();
 
 /**
  * The title screen needs about 720px of vertical room for its button stack, and
