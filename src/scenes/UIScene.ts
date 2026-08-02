@@ -15,7 +15,6 @@ import { meta } from '../state/meta';
 import { progress } from '../state/progress';
 import { renderMode } from '../state/renderMode';
 import { BuildingType } from '../types';
-import { sharpenText } from '../utils/sharpText';
 import { isMuted, sfx, toggleMute } from '../utils/sfx';
 import { cardDrawLayout, comboAnchor, fitCardCopy, gameOverLayout, hudCardCopyLimits, HudLayout, hudLayout, legendBand, overlayZones, reportCard, slotContent, STRIP } from './hudLayout';
 import { overlayPlan } from './overlayPolicy';
@@ -110,7 +109,6 @@ export class UIScene extends Phaser.Scene {
   }
 
   create(): void {
-    sharpenText(this);
     // ----- top status strip (pure geometry: see hudLayout.topStrip) -----
     const top = STRIP;
     this.stripBottom = top.stats.y + top.h;

@@ -59,7 +59,6 @@ import { isHudObject } from './hudObjects';
 import { binding, GameAction, phaserKeyName } from './keymap';
 import { coachMessage } from './coach';
 import { HAPTIC, haptic, reducedFx } from '../utils/feel';
-import { sharpenText } from '../utils/sharpText';
 import { sfx } from '../utils/sfx';
 import type { IsoView } from '../iso/IsoView';
 import { renderMode, setRenderMode } from '../state/renderMode';
@@ -262,7 +261,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
-    sharpenText(this);
     this.ready = false;
     this.saveDirty = false;
     this.floaters = 0; // restart wipes the tweens, so their onComplete never decrements

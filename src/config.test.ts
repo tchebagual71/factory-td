@@ -158,18 +158,16 @@ describe('filling the device screen', () => {
   });
 
   /**
-   * The title screen needs ~720px of vertical room for its button stack, which
-   * the canvas is now allowed to be shorter than. It is drawn through a scaled
-   * camera instead of reflowed, so the virtual space must never be the short one.
+   * The title screen used to preserve a 720px virtual surface and shrink it a
+   * second time after Phaser fitted the canvas. That made 11px copy roughly 6px
+   * on a phone. It now lays out directly in the actual canvas.
    */
-  it('gives the title screen its full design height however short the canvas', async () => {
+  it('does not apply a second menu scale on a short phone canvas', async () => {
     for (const [, w, h] of phones) {
       const c = await loadConfig({ innerWidth: w, innerHeight: h, touch: true });
-      expect(c.MENU_H).toBeGreaterThanOrEqual(720);
-      // and the backdrop still reaches both edges rather than being letterboxed
-      // inside its own canvas
-      expect(c.MENU_W * c.MENU_SCALE).toBeCloseTo(c.GAME_W, 6);
-      expect(c.MENU_H * c.MENU_SCALE).toBeCloseTo(c.GAME_H, 6);
+      expect(c.MENU_SCALE).toBe(1);
+      expect(c.MENU_W).toBe(c.GAME_W);
+      expect(c.MENU_H).toBe(c.GAME_H);
     }
   });
 

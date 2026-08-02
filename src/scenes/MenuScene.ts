@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { IS_TOUCH, MENU_H, MENU_SCALE, MENU_W, TILE } from '../config';
+import { IS_TOUCH, MENU_H, MENU_W, TILE } from '../config';
 import { BOARD_CX, BOARD_CZ, toView } from '../iso/isoMath';
 import { ACHIEVEMENTS } from '../data/achievements';
 import {
@@ -23,9 +23,9 @@ import { clearLocal, lastPickedMap, loadLocal, setPendingLoad, setPendingMap } f
 import { progress } from '../state/progress';
 import { isoSupported, renderMode, toggleRenderMode } from '../state/renderMode';
 import { achievementCells, achievementLayout } from './achievementLayout';
+import { MenuLayout, menuLayout } from './menuLayout';
 import { anchorInput } from '../utils/htmlInput';
 import { reducedFx, toggleReducedFx } from '../utils/feel';
-import { sharpenText } from '../utils/sharpText';
 import { getVolume, isMuted, setVolume, sfx, toggleMute } from '../utils/sfx';
 
 const FONT = { fontFamily: 'monospace' };
@@ -46,36 +46,31 @@ export class MenuScene extends Phaser.Scene {
   /** Mode-specific decoration, torn down and rebuilt when the view is toggled. */
   private backdrop: Phaser.GameObjects.GameObject[] = [];
   private subtitle!: Phaser.GameObjects.Text;
+  private layout!: MenuLayout;
 
   constructor() {
     super('menu');
   }
 
   create(): void {
-    sharpenText(this);
     this.confirmingNewRun = false;
     this.modal = [];
+    const save = loadLocal();
+    this.layout = menuLayout({ gameW: MENU_W, gameH: MENU_H, touch: IS_TOUCH, hasSave: Boolean(save) });
     // Depth -2 so the mode backdrop (-1) sits above it and the buttons (0)
     // above that. The backdrop is rebuilt on toggle, so it cannot rely on
     // display-list insertion order to stay behind the UI.
-    // Draw the whole title screen through a scaled camera. On a phone the canvas
-    // is shorter than the menu's button stack needs, and scaling the camera is
-    // the one change that cannot leave two layouts to keep in agreement — see
-    // MENU_SCALE in config.
-    this.cameras.main.setZoom(MENU_SCALE);
-    this.cameras.main.centerOn(MENU_W / 2, MENU_H / 2);
+    this.cameras.main.setZoom(this.layout.cameraZoom);
+    this.cameras.main.centerOn(this.layout.designW / 2, this.layout.designH / 2);
 
     this.add.rectangle(0, 0, MENU_W, MENU_H, 0x0e0f1a).setOrigin(0).setDepth(-2);
-    // The canvas grows on boxier screens, so the whole title screen is laid out
-    // relative to a vertical origin rather than pinned to a 720px-tall canvas.
-    const TOP = Math.round((MENU_H - 720) / 2);
     this.buildBackdrop();
     const title = this.add
-      .text(MENU_W / 2, TOP + 130, 'FACTORY TD', { ...FONT, fontSize: '64px', fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 10 })
+      .text(MENU_W / 2, this.layout.title.y, 'FACTORY TD', { ...FONT, fontSize: `${this.layout.title.size}px`, fontStyle: 'bold', color: '#ffe066', stroke: '#000', strokeThickness: 10 })
       .setOrigin(0.5);
     this.tweens.add({ targets: title, scale: 1.03, yoyo: true, repeat: -1, duration: 1600, ease: 'Sine.inOut' });
     this.subtitle = this.add
-      .text(MENU_W / 2, TOP + 185, '', { ...FONT, fontSize: '15px', color: '#cdd6e4' })
+      .text(MENU_W / 2, this.layout.subtitle.y, '', { ...FONT, fontSize: `${this.layout.subtitle.size}px`, color: '#cdd6e4' })
       .setOrigin(0.5);
     this.paintSubtitle();
 
@@ -87,7 +82,7 @@ export class MenuScene extends Phaser.Scene {
 
     // ----- account chip (top-right) -----
     const chip = this.add
-      .text(MENU_W - 16, 16, '...', { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(MENU_W - 16, 16, '...', { ...FONT, fontSize: `${this.layout.account.labelSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(1, 0);
     const accountBtn = this.add
       .rectangle(MENU_W - 16, 42, 150, 30, 0x1e2233)
@@ -95,7 +90,7 @@ export class MenuScene extends Phaser.Scene {
       .setStrokeStyle(2, 0x2b3040)
       .setInteractive({ useHandCursor: true });
     const accountBtnText = this.add
-      .text(MENU_W - 91, 57, 'ACCOUNT', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(MENU_W - 91, 57, 'ACCOUNT', { ...FONT, fontSize: `${this.layout.account.buttonSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(0.5);
     accountBtn.on('pointerdown', () => {
       sfx.place();
@@ -110,17 +105,14 @@ export class MenuScene extends Phaser.Scene {
     });
 
     // ----- main buttons -----
-    const save = loadLocal();
-    let y = TOP + 265;
     if (save) {
       const savedMap = MAPS.find((m) => m.id === save.map)?.name ?? MAPS[0].name;
-      this.button(y, `CONTINUE  ${savedMap} · Wave ${save.wave} · $${save.money}`, 0x2e7d4f, 0x5ef078, () => {
+      this.button(this.layout.main.continueY!, `CONTINUE  ${savedMap} · Wave ${save.wave} · $${save.money}`, 0x2e7d4f, 0x5ef078, () => {
         setPendingLoad(save);
         this.startGame();
       });
-      y += 62;
     }
-    const newRunBtn = this.button(y, 'NEW RUN', save ? 0x1e2233 : 0x2e7d4f, save ? 0x2b3040 : 0x5ef078, () => {
+    const newRunBtn = this.button(this.layout.main.newRunY, 'NEW RUN', save ? 0x1e2233 : 0x2e7d4f, save ? 0x2b3040 : 0x5ef078, () => {
       if (save && !this.confirmingNewRun) {
         this.confirmingNewRun = true;
         newRunBtn.label.setText('OVERWRITE SAVE? CLICK AGAIN');
@@ -137,14 +129,13 @@ export class MenuScene extends Phaser.Scene {
       clearLocal();
       this.startGame();
     });
-    y += 62;
     // Paired on one row: the stack has to stay inside the canvas, and neither of
     // these needs the full width.
-    const half = 186;
+    const half = this.layout.compact ? 246 : 186;
     const halfX = MENU_W / 2 - half / 2 - 4;
-    this.button(y, 'HOW TO PLAY', 0x1e2233, 0x2b3040, () => this.showHowToPlay(), half, halfX);
+    this.button(this.layout.main.actionsY, 'HOW TO PLAY', 0x1e2233, 0x2b3040, () => this.showHowToPlay(), half, halfX);
     this.button(
-      y,
+      this.layout.main.actionsY,
       `★ ${progress.unlocked.size}/${ACHIEVEMENTS.length}`,
       0x1e2233,
       0x2b3040,
@@ -152,13 +143,12 @@ export class MenuScene extends Phaser.Scene {
       half,
       MENU_W / 2 + half / 2 + 4,
     );
-    y += 62;
-    this.button(y, 'LEADERBOARD', 0x1e2233, 0x2b3040, () => void this.showLeaderboard(), half, halfX);
+    this.button(this.layout.main.secondaryY, 'LEADERBOARD', 0x1e2233, 0x2b3040, () => void this.showLeaderboard(), half, halfX);
     // Lit whenever something is actually affordable — an unspent wallet is the
     // one thing on this screen the player should not walk past.
     const canSpend = META_NODES.some((n) => meta.canBuy(n.id));
     this.button(
-      y,
+      this.layout.main.secondaryY,
       `⚙ WORKSHOP · ${meta.scrap}`,
       canSpend ? 0x2f6f5c : 0x1e2233,
       canSpend ? 0x7cf7c4 : 0x2b3040,
@@ -167,24 +157,22 @@ export class MenuScene extends Phaser.Scene {
       MENU_W / 2 + half / 2 + 4,
     );
 
-    // Stack the rest sequentially so adding a row can never silently collide
-    // with the one below it (the canvas height is no longer a fixed 720).
-    y += 74;
-    this.buildMapPicker(y);
-    y += 88;
-    this.buildVolumeControl(y);
-    y += 40;
+    this.buildMapPicker(this.layout.map.y);
+    this.buildVolumeControl(this.layout.settings.y);
 
     if (progress.stats.bestWave > 0) {
       this.add
-        .text(MENU_W / 2, y, `Personal best: wave ${progress.stats.bestWave}`, { ...FONT, fontSize: '14px', color: '#ffe066' })
+        .text(MENU_W / 2, this.layout.best.y, `Personal best: wave ${progress.stats.bestWave}`, { ...FONT, fontSize: `${this.layout.best.size}px`, color: '#ffe066' })
         .setOrigin(0.5);
     }
-    this.add
-      .text(MENU_W / 2, MENU_H - 26, IS_TOUCH
+    const footer = this.layout.footer.short
+      ? 'Tap HOW TO PLAY · tap a build slot then the map · pinch to zoom · [?] help'
+      : IS_TOUCH
         ? 'New here? Tap HOW TO PLAY · tap a build slot then tap the map · drag to pan, pinch to zoom · SELL refunds 50% · [?] in-game help'
-        : 'New here? Read HOW TO PLAY · 1-9 factory · ZXCV guns · R rotate · drag paints belts · right-click sells · SPACE wave · L logistics · H help', {
-        ...FONT, fontSize: '11px', color: '#8892a6',
+        : 'New here? Read HOW TO PLAY · 1-9 factory · ZXCV guns · R rotate · drag paints belts · right-click sells · SPACE wave · L logistics · H help';
+    this.add
+      .text(MENU_W / 2, this.layout.footer.y, footer, {
+        ...FONT, fontSize: `${this.layout.footer.size}px`, color: '#8892a6',
       })
       .setOrigin(0.5);
 
@@ -314,7 +302,7 @@ export class MenuScene extends Phaser.Scene {
   private buildViewToggle(): void {
     const supported = isoSupported();
     const label = this.add
-      .text(16, 16, 'VIEW', { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#8892a6' })
+      .text(16, 16, 'VIEW', { ...FONT, fontSize: `${this.layout.view.labelSize}px`, fontStyle: 'bold', color: '#8892a6' })
       .setOrigin(0, 0);
     label.setVisible(supported);
     if (!supported) return;
@@ -325,7 +313,7 @@ export class MenuScene extends Phaser.Scene {
       .setStrokeStyle(2, 0x2b3040)
       .setInteractive({ useHandCursor: true });
     const text = this.add
-      .text(91, 57, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(91, 57, '', { ...FONT, fontSize: `${this.layout.view.labelSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(0.5);
     const paint = () => {
       const iso = renderMode() === 'iso';
@@ -351,15 +339,21 @@ export class MenuScene extends Phaser.Scene {
     fill: number,
     stroke: number,
     onClick: () => void,
-    width = 380,
+    width?: number,
     cx = MENU_W / 2,
   ): { frame: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text } {
+    const buttonW = width ?? (this.layout.compact ? 500 : 380);
     const frame = this.add
-      .rectangle(cx, y, width, 50, fill)
+      .rectangle(cx, y, buttonW, this.layout.main.buttonH, fill)
       .setStrokeStyle(2, stroke)
       .setInteractive({ useHandCursor: true });
     const label = this.add
-      .text(cx, y, text, { ...FONT, fontSize: width < 300 ? '14px' : '16px', fontStyle: 'bold', color: '#ffffff' })
+      .text(cx, y, text, {
+        ...FONT,
+        fontSize: `${buttonW < 300 ? this.layout.main.halfLabelSize : this.layout.main.fullLabelSize}px`,
+        fontStyle: 'bold',
+        color: '#ffffff',
+      })
       .setOrigin(0.5);
     frame.on('pointerover', () => frame.setFillStyle(fill + 0x0a0a14));
     frame.on('pointerout', () => frame.setFillStyle(fill));
@@ -655,10 +649,10 @@ export class MenuScene extends Phaser.Scene {
   private buildMapPicker(y: number): void {
     const current = lastPickedMap() ?? DEFAULT_MAP_ID;
     this.add
-      .text(MENU_W / 2, y - 16, 'MAP', { ...FONT, fontSize: '11px', fontStyle: 'bold', color: '#8892a6' })
+      .text(MENU_W / 2, y - 16, 'MAP', { ...FONT, fontSize: `${this.layout.map.headingSize}px`, fontStyle: 'bold', color: '#8892a6' })
       .setOrigin(0.5);
     const blurb = this.add
-      .text(MENU_W / 2, y + 50, '', { ...FONT, fontSize: '11px', color: '#8892a6' })
+      .text(MENU_W / 2, y + 50, '', { ...FONT, fontSize: `${this.layout.map.blurbSize}px`, color: '#8892a6' })
       .setOrigin(0.5);
 
     const W = 176;
@@ -684,7 +678,7 @@ export class MenuScene extends Phaser.Scene {
         .setStrokeStyle(2, 0x2b3040)
         .setInteractive({ useHandCursor: true });
       const label = this.add
-        .text(x + W / 2, y + 17, map.name, { ...FONT, fontSize: '13px', fontStyle: 'bold', color: '#cdd6e4' })
+        .text(x + W / 2, y + 17, map.name, { ...FONT, fontSize: `${this.layout.map.labelSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
         .setOrigin(0.5);
       frame.on('pointerover', () => blurb.setText(map.blurb));
       frame.on('pointerout', () => blurb.setText(MAPS.find((m) => m.id === (lastPickedMap() ?? DEFAULT_MAP_ID))?.blurb ?? ''));
@@ -709,10 +703,10 @@ export class MenuScene extends Phaser.Scene {
     const bars: Phaser.GameObjects.Rectangle[] = [];
 
     this.add
-      .text(x0 - 14, y + 8, '♪', { ...FONT, fontSize: '15px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(x0 - 14, y + 8, '♪', { ...FONT, fontSize: `${this.layout.settings.labelSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(1, 0.5);
     const readout = this.add
-      .text(x0 + total + 14, y + 8, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(x0 + total + 14, y + 8, '', { ...FONT, fontSize: `${this.layout.settings.labelSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(0, 0.5);
 
     const paint = () => {
@@ -753,7 +747,7 @@ export class MenuScene extends Phaser.Scene {
       .setStrokeStyle(2, 0x2b3040)
       .setInteractive({ useHandCursor: true });
     const fxLabel = this.add
-      .text(fxX + 125, y + 8, '', { ...FONT, fontSize: '12px', fontStyle: 'bold', color: '#cdd6e4' })
+      .text(fxX + 125, y + 8, '', { ...FONT, fontSize: `${this.layout.settings.labelSize}px`, fontStyle: 'bold', color: '#cdd6e4' })
       .setOrigin(0.5);
     const paintFx = () => {
       const off = reducedFx();
