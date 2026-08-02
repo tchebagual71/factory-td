@@ -126,3 +126,97 @@ describe('rarity buys spectacle only', () => {
     expect(CARDS.map((c) => `${c.id}:${c.weight}:${c.max}`)).toEqual(snapshot);
   });
 });
+
+/**
+ * Colour safety for the rarity ladder.
+ *
+ * Measured against the card fill (`0x1a1830`) and through protanopia /
+ * deuteranopia / tritanopia simulation:
+ *
+ * - contrast is 8.1 / 10.9 / 10.6 : 1 — all past WCAG AAA for normal text;
+ * - **keystone is unmistakable**, 127–214 RGB units from the other two under
+ *   every colour-vision model. That is the distinction that decides a pick;
+ * - **common vs rare is the weak pair**: 65 normally, and only 42 under
+ *   deuteranopia, because steel-blue and teal converge there.
+ *
+ * The last point is *mitigated rather than fixed*, deliberately. Tier is also
+ * carried by the badge word and the frame weight, so a player who cannot
+ * separate those two hues still reads STANDARD vs RARE — which is why the
+ * assertions below pin the **non-colour** channels as the guarantee, and treat
+ * hue as an accelerator. Repainting the palette is a live-game aesthetic change
+ * that wants a human eye; the measured alternative is in CLAUDE.md.
+ */
+describe('rarity is legible without relying on hue', () => {
+  const CARD_FILL = 0x1a1830;
+  const chan = (h: number): [number, number, number] => [(h >> 16) & 255, (h >> 8) & 255, h & 255];
+  const toLinear = (c: number): number => {
+    const n = c / 255;
+    return n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (h: number): number => {
+    const [r, g, b] = chan(h).map(toLinear);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a: number, b: number): number => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const CVD: Record<string, number[][]> = {
+    protanopia: [[0.152, 1.053, -0.205], [0.115, 0.786, 0.099], [-0.004, -0.048, 1.052]],
+    deuteranopia: [[0.367, 0.861, -0.228], [0.280, 0.673, 0.047], [-0.012, 0.043, 0.969]],
+    tritanopia: [[1.256, -0.077, -0.181], [-0.078, 0.931, 0.148], [0.005, 0.691, 0.304]],
+  };
+  const simulate = (hex: number, m: number[][]): number => {
+    const [r, g, b] = chan(hex).map(toLinear);
+    const gamma = (v: number): number => {
+      const c = Math.min(1, Math.max(0, v));
+      return c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055;
+    };
+    const out = m.map((row) => Math.round(gamma(row[0] * r + row[1] * g + row[2] * b) * 255));
+    return (out[0] << 16) | (out[1] << 8) | out[2];
+  };
+  const apart = (a: number, b: number): number => {
+    const [x, y] = [chan(a), chan(b)];
+    return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]);
+  };
+
+  it('puts every tier past WCAG AAA against the card it is printed on', () => {
+    for (const tier of ['common', 'rare', 'keystone'] as const) {
+      expect(contrast(RARITY[tier].hex, CARD_FILL), tier).toBeGreaterThanOrEqual(7);
+    }
+  });
+
+  /** The pick-deciding distinction, and the one that must survive everything. */
+  it('keeps the keystone unmistakable under every colour-vision model', () => {
+    for (const [name, m] of Object.entries(CVD)) {
+      for (const other of ['common', 'rare'] as const) {
+        const gold = simulate(RARITY.keystone.hex, m);
+        expect(apart(gold, simulate(RARITY[other].hex, m)), `${other} vs keystone, ${name}`)
+          .toBeGreaterThan(100);
+      }
+    }
+  });
+
+  /**
+   * The actual guarantee. Hue is an accelerator; these are what a player reads
+   * when hue fails, so they must differ for *every* pair — not just the ones
+   * whose colours happen to be far apart.
+   */
+  it('separates every tier by word and by frame weight, not only by hue', () => {
+    const tiers = ['common', 'rare', 'keystone'] as const;
+    const labels = tiers.map((t) => RARITY[t].label);
+    const strokes = tiers.map((t) => RARITY[t].stroke);
+    expect(new Set(labels).size, 'two tiers share a badge word').toBe(tiers.length);
+    expect(new Set(strokes).size, 'two tiers share a frame weight').toBe(tiers.length);
+  });
+
+  /** Records the known-weak pair so a palette change is a deliberate decision. */
+  it('documents common vs rare as the hue-weak pair', () => {
+    const worst = Math.min(
+      apart(RARITY.common.hex, RARITY.rare.hex),
+      ...Object.values(CVD).map((m) => apart(simulate(RARITY.common.hex, m), simulate(RARITY.rare.hex, m))),
+    );
+    expect(worst).toBeGreaterThan(35);  // still separable, and the badge carries it
+    expect(worst).toBeLessThan(100);    // fails loudly if someone repaints — re-read the note above
+  });
+});
