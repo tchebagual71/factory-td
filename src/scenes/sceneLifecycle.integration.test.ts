@@ -645,6 +645,67 @@ describe('production scene lifecycle seams', () => {
     expect(scene.touchGesture).toMatchObject({ kind: 'pending-single', owner: 3 });
   });
 
+  it('counts a non-interactive GameScene HUD touch before a board touch can capture intent', () => {
+    const shieldPointer = {
+      id: 1, x: 1100, y: 180, isDown: true, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const boardPointer = {
+      id: 2, x: 96, y: 112, isDown: true, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const freshPointer = {
+      id: 3, x: 128, y: 144, isDown: false, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const captureTouchIntent = vi.fn();
+    const scene = Object.assign(Object.create(GameScene.prototype), {
+      touchGesture: { kind: 'idle' as const },
+      touchIntent: null,
+      touchDeliveries: new WeakMap<object, Set<string>>(),
+      activeTouchPointers: new Set<number>(),
+      input: { manager: { pointers: [shieldPointer, boardPointer, freshPointer] } },
+      pendingTap: null,
+      sellDown: null,
+      dragPan: null,
+      pinch: null,
+      captureTouchIntent,
+      endStroke: vi.fn(),
+      endSweep: vi.fn(),
+      overHud: vi.fn((x: number) => x >= 1000),
+    });
+    const handleDown = (GameScene.prototype as unknown as {
+      handleTouchPointerDown(this: typeof scene, p: typeof shieldPointer): boolean;
+    }).handleTouchPointerDown;
+    const finish = (GameScene.prototype as unknown as {
+      finishTouchPointer(this: typeof scene, p: typeof shieldPointer, outside: boolean): void;
+    }).finishTouchPointer;
+
+    expect(handleDown.call(scene, shieldPointer)).toBe(true);
+    expect(scene.touchGesture).toMatchObject({ kind: 'pending-single', owner: 1 });
+    expect(captureTouchIntent).not.toHaveBeenCalled();
+
+    expect(handleDown.call(scene, boardPointer)).toBe(true);
+    expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+    expect(scene.touchIntent).toBeNull();
+    expect(captureTouchIntent).not.toHaveBeenCalled();
+
+    boardPointer.isDown = false;
+    boardPointer.event = {};
+    finish.call(scene, boardPointer, false);
+    expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+    expect(captureTouchIntent).not.toHaveBeenCalled();
+
+    shieldPointer.isDown = false;
+    shieldPointer.event = {};
+    finish.call(scene, shieldPointer, false);
+    expect(scene.touchGesture).toEqual({ kind: 'idle' });
+
+    freshPointer.isDown = true;
+    freshPointer.event = {};
+    expect(handleDown.call(scene, freshPointer)).toBe(true);
+    expect(scene.touchGesture).toMatchObject({ kind: 'pending-single', owner: 3 });
+    expect(captureTouchIntent).toHaveBeenCalledOnce();
+    expect(captureTouchIntent).toHaveBeenCalledWith(freshPointer);
+  });
+
   it('forwards HUD-captured touch lifecycle through the top scene without duplicate delivery', () => {
     const uiInput = new InputEmitter();
     const ui = Object.assign(Object.create(UIScene.prototype), {

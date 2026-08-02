@@ -1314,14 +1314,11 @@ export class GameScene extends Phaser.Scene {
     on('view', () => this.toggleIso());
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (this.handleTouchPointerDown(p)) return;
       // Phaser fires GameObject handlers first and then this scene-level one
       // regardless, so without this guard clicking UPGRADE would immediately
       // deselect the tower underneath and shut the panel it lives in.
       if (p.y >= PLAYFIELD_H || this.overHud(p.x, p.y)) return;
-      if (IS_TOUCH && p.wasTouch) {
-        this.routeTouchPointerDown(p, () => this.captureTouchIntent(p));
-        return;
-      }
       this.pressAt = this.time.now;
       this.pressX = p.x;
       this.pressY = p.y;
@@ -1380,7 +1377,7 @@ export class GameScene extends Phaser.Scene {
      * painting a belt can never refund the belt you just laid down.
      */
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
-      if (IS_TOUCH && p.wasTouch) {
+      if (p.wasTouch) {
         this.finishTouchPointer(p, false);
         return;
       }
@@ -1397,11 +1394,11 @@ export class GameScene extends Phaser.Scene {
       this.resolveInspectTap(tap.tx, tap.ty, held);
     });
     this.input.on('pointerupoutside', (p: Phaser.Input.Pointer) => {
-      if (IS_TOUCH && p.wasTouch) this.finishTouchPointer(p, true);
+      if (p.wasTouch) this.finishTouchPointer(p, true);
     });
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
-      if (IS_TOUCH && p.wasTouch) {
+      if (p.wasTouch) {
         const transition = touchMove(
           this.touchGesture,
           { id: p.id, x: p.x, y: p.y },
@@ -1485,6 +1482,18 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerup', () => {
       this.panFrom = null;
     });
+  }
+
+  /**
+   * Every real touch owns a classifier slot, even when it lands on a shielded
+   * non-interactive GameScene HUD region. Only genuine board targets receive a
+   * capture callback; mouse input continues through the immediate path.
+   */
+  private handleTouchPointerDown(p: Phaser.Input.Pointer): boolean {
+    if (!p.wasTouch) return false;
+    const boardTarget = p.y < PLAYFIELD_H && !this.overHud(p.x, p.y);
+    this.routeTouchPointerDown(p, boardTarget ? () => this.captureTouchIntent(p) : undefined);
+    return true;
   }
 
   private claimTouchDelivery(p: Phaser.Input.Pointer, phase: 'down' | 'up'): boolean {
