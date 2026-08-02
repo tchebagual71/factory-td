@@ -89,7 +89,8 @@ type TouchIntent =
   | { kind: 'build'; tx: number; ty: number; type: BuildingType }
   | { kind: 'survey'; tx: number; ty: number }
   | { kind: 'sell'; tx: number; ty: number }
-  | { kind: 'inspect'; tx: number; ty: number };
+  | { kind: 'inspect'; tx: number; ty: number }
+  | { kind: 'upgrade'; choice: 0 | 1; pointerId: number };
 
 /** Mk-pip / float-text tint per specialization path. */
 const PATH_COLORS: Record<PathId, number> = {
@@ -916,7 +917,10 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0)
       .setStrokeStyle(1, 0x5ef078)
       .setInteractive({ useHandCursor: true });
-    this.panelBtnA.on('pointerdown', () => this.tryUpgrade(0));
+    this.panelBtnA.on('pointerdown', (p: Phaser.Input.Pointer) => this.handleUpgradePointerDown(p, 0));
+    this.panelBtnA.on('pointerup', (p: Phaser.Input.Pointer) => {
+      if (p.wasTouch) this.finishTouchPointer(p, false, 0);
+    });
     this.panelBtnAText = this.add
       .text(layout.buttonA.x + layout.buttonA.w / 2, layout.buttonA.y + layout.buttonA.h / 2, 'UPGRADE [U]', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '18px' : '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
@@ -925,7 +929,10 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0)
       .setStrokeStyle(1, 0x5ef078)
       .setInteractive({ useHandCursor: true });
-    this.panelBtnB.on('pointerdown', () => this.tryUpgrade(1));
+    this.panelBtnB.on('pointerdown', (p: Phaser.Input.Pointer) => this.handleUpgradePointerDown(p, 1));
+    this.panelBtnB.on('pointerup', (p: Phaser.Input.Pointer) => {
+      if (p.wasTouch) this.finishTouchPointer(p, false, 1);
+    });
     this.panelBtnBText = this.add
       .text(layout.buttonB.x + layout.buttonB.w / 2, layout.buttonB.y + layout.buttonB.h / 2, '', { fontFamily: 'monospace', fontSize: IS_TOUCH ? '18px' : '10px', fontStyle: 'bold', color: '#ffffff' })
       .setOrigin(0.5);
@@ -1359,18 +1366,7 @@ export class GameScene extends Phaser.Scene {
      */
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
       if (IS_TOUCH && p.wasTouch) {
-        const transition = touchUp(this.touchGesture, p.id, this.boardPointersDown(p.id));
-        this.touchGesture = transition.state;
-        if (transition.tap) {
-          if (p.y < PLAYFIELD_H && !this.overHud(p.x, p.y)) this.resolveTouchTap();
-          else this.touchIntent = null;
-        }
-        if (this.touchGesture.kind === 'idle') {
-          this.endStroke();
-          this.endSweep();
-          this.touchIntent = null;
-          this.dragPan = null;
-        }
+        this.finishTouchPointer(p, false);
         return;
       }
       this.endStroke();
@@ -1384,6 +1380,9 @@ export class GameScene extends Phaser.Scene {
       const moved = Math.hypot(p.x - this.pressX, p.y - this.pressY);
       if (moved > 12) return; // the finger travelled: a pan, not a tap
       this.resolveInspectTap(tap.tx, tap.ty, held);
+    });
+    this.input.on('pointerupoutside', (p: Phaser.Input.Pointer) => {
+      if (IS_TOUCH && p.wasTouch) this.finishTouchPointer(p, true);
     });
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
@@ -1493,6 +1492,24 @@ export class GameScene extends Phaser.Scene {
             : { kind: 'inspect', tx, ty };
   }
 
+  private captureUpgradeTouch(p: Phaser.Input.Pointer, choice: 0 | 1): void {
+    const down = this.boardPointersDown();
+    const transition = touchDown(this.touchGesture, { id: p.id, x: p.x, y: p.y }, down);
+    this.touchGesture = transition.state;
+    if (transition.cancelBoard) {
+      this.cancelTouchBoardAction();
+      return;
+    }
+    this.pendingTap = null;
+    this.dragPan = null;
+    this.touchIntent = { kind: 'upgrade', choice, pointerId: p.id };
+  }
+
+  private handleUpgradePointerDown(p: Phaser.Input.Pointer, choice: 0 | 1): void {
+    if (!p.wasTouch) this.tryUpgrade(choice);
+    else this.captureUpgradeTouch(p, choice);
+  }
+
   private cancelTouchBoardAction(): void {
     this.touchIntent = null;
     this.pendingTap = null;
@@ -1502,11 +1519,39 @@ export class GameScene extends Phaser.Scene {
     this.endStroke();
   }
 
+  private finishTouchPointer(p: Phaser.Input.Pointer, outside: boolean, upgradeChoice?: 0 | 1): void {
+    const transition = touchUp(this.touchGesture, p.id, this.boardPointersDown(p.id));
+    this.touchGesture = transition.state;
+    const intent = this.touchIntent;
+    const matchingUpgrade = intent?.kind === 'upgrade'
+      && intent.pointerId === p.id
+      && intent.choice === upgradeChoice;
+    const matchingBoard = intent?.kind !== 'upgrade'
+      && upgradeChoice === undefined
+      && p.y < PLAYFIELD_H
+      && !this.overHud(p.x, p.y);
+    const canResolve = transition.tap
+      && !p.wasCanceled
+      && !outside
+      && (matchingUpgrade || matchingBoard);
+    if (canResolve) this.resolveTouchTap();
+    else if (transition.tap || p.wasCanceled || outside) this.cancelTouchBoardAction();
+    if (this.touchGesture.kind === 'idle') {
+      this.endStroke();
+      this.endSweep();
+      this.touchIntent = null;
+      this.dragPan = null;
+      this.pinch = null;
+    }
+  }
+
   private resolveTouchTap(): void {
     const intent = this.touchIntent;
     this.touchIntent = null;
     if (!intent) return;
-    if (intent.kind === 'belt') {
+    if (intent.kind === 'upgrade') {
+      this.tryUpgrade(intent.choice);
+    } else if (intent.kind === 'belt') {
       if (this.selected !== 'belt') return;
       this.startStroke(intent.tx, intent.ty);
       this.endStroke();

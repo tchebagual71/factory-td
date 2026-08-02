@@ -151,4 +151,175 @@ describe('production scene lifecycle seams', () => {
     expect(scene.startStroke).toHaveBeenCalledWith(3, 4);
     expect(scene.paintBeltTo).toHaveBeenCalledWith(6, 7);
   });
+
+  it.each([
+    ['touchcancel', true, false],
+    ['pointerupoutside', false, true],
+  ] as const)('terminates %s without resolving the captured board intent', (_name, wasCanceled, outside) => {
+    const startStroke = vi.fn();
+    const scene = Object.assign(Object.create(GameScene.prototype), {
+      touchGesture: { kind: 'pending-single' as const, owner: 1, x: 96, y: 112 },
+      touchIntent: { kind: 'belt' as const, tx: 3, ty: 4 },
+      input: { manager: { pointers: [{ id: 1, isDown: true, y: 112 }] } },
+      pendingTap: null,
+      sellDown: null,
+      dragPan: null,
+      pinch: null,
+      selected: 'belt',
+      startStroke,
+      endStroke: vi.fn(),
+      endSweep: vi.fn(),
+      overHud: vi.fn(() => false),
+    });
+    const finish = (GameScene.prototype as unknown as {
+      finishTouchPointer(
+        this: typeof scene,
+        p: { id: number; x: number; y: number; wasCanceled: boolean },
+        outside: boolean,
+      ): void;
+    }).finishTouchPointer;
+
+    finish.call(scene, { id: 1, x: 96, y: 112, wasCanceled }, outside);
+
+    expect(startStroke).not.toHaveBeenCalled();
+    expect(scene.touchGesture).toEqual({ kind: 'idle' });
+    expect(scene.touchIntent).toBeNull();
+    expect(scene.dragPan).toBeNull();
+    expect(scene.pinch).toBeNull();
+  });
+
+  it('classifies a board-first, upgrade-panel-second touch as pinch before upgrading', () => {
+    const tryUpgrade = vi.fn();
+    const scene = Object.assign(Object.create(GameScene.prototype), {
+      touchGesture: { kind: 'pending-single' as const, owner: 1, x: 96, y: 112 },
+      touchIntent: { kind: 'belt' as const, tx: 3, ty: 4 },
+      input: { manager: { pointers: [
+        { id: 1, isDown: true, y: 112 },
+        { id: 2, isDown: true, y: 180 },
+      ] } },
+      pendingTap: null,
+      sellDown: null,
+      dragPan: null,
+      pinch: null,
+      endStroke: vi.fn(),
+      tryUpgrade,
+    });
+    const pointerDown = (GameScene.prototype as unknown as {
+      handleUpgradePointerDown(
+        this: typeof scene,
+        p: { id: number; x: number; y: number; wasTouch: boolean },
+        choice: 0 | 1,
+      ): void;
+    }).handleUpgradePointerDown;
+
+    pointerDown.call(scene, { id: 2, x: 1100, y: 180, wasTouch: true }, 0);
+
+    expect(tryUpgrade).not.toHaveBeenCalled();
+    expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+    expect(scene.touchIntent).toBeNull();
+  });
+
+  it('keeps mouse upgrade pointerdown immediate without capturing touch intent', () => {
+    const tryUpgrade = vi.fn();
+    const captureUpgradeTouch = vi.fn();
+    const scene = { tryUpgrade, captureUpgradeTouch };
+    const pointerDown = (GameScene.prototype as unknown as {
+      handleUpgradePointerDown(
+        this: typeof scene,
+        p: { wasTouch: boolean },
+        choice: 0 | 1,
+      ): void;
+    }).handleUpgradePointerDown;
+
+    pointerDown.call(scene, { wasTouch: false }, 1);
+
+    expect(tryUpgrade).toHaveBeenCalledOnce();
+    expect(tryUpgrade).toHaveBeenCalledWith(1);
+    expect(captureUpgradeTouch).not.toHaveBeenCalled();
+  });
+
+  it('resolves a touch upgrade only for its owning pointer on the same button release', () => {
+    const tryUpgrade = vi.fn();
+    const scene = Object.assign(Object.create(GameScene.prototype), {
+      touchGesture: { kind: 'idle' as const },
+      touchIntent: null,
+      input: { manager: { pointers: [{ id: 7, isDown: true, y: 180 }] } },
+      pendingTap: null,
+      sellDown: null,
+      dragPan: null,
+      pinch: null,
+      endStroke: vi.fn(),
+      endSweep: vi.fn(),
+      overHud: vi.fn(() => true),
+      tryUpgrade,
+    });
+    const capture = (GameScene.prototype as unknown as {
+      captureUpgradeTouch(
+        this: typeof scene,
+        p: { id: number; x: number; y: number; wasTouch: boolean },
+        choice: 0 | 1,
+      ): void;
+    }).captureUpgradeTouch;
+    const finish = (GameScene.prototype as unknown as {
+      finishTouchPointer(
+        this: typeof scene,
+        p: { id: number; x: number; y: number; wasCanceled: boolean },
+        outside: boolean,
+        upgradeChoice?: 0 | 1,
+      ): void;
+    }).finishTouchPointer;
+
+    capture.call(scene, { id: 7, x: 1100, y: 180, wasTouch: true }, 1);
+    expect(tryUpgrade).not.toHaveBeenCalled();
+    expect(scene.touchIntent).toEqual({ kind: 'upgrade', choice: 1, pointerId: 7 });
+
+    finish.call(scene, { id: 8, x: 1100, y: 180, wasCanceled: false }, false, 1);
+    expect(tryUpgrade).not.toHaveBeenCalled();
+    expect(scene.touchIntent).toEqual({ kind: 'upgrade', choice: 1, pointerId: 7 });
+
+    finish.call(scene, { id: 7, x: 1100, y: 180, wasCanceled: false }, false, 1);
+    expect(tryUpgrade).toHaveBeenCalledOnce();
+    expect(tryUpgrade).toHaveBeenCalledWith(1);
+    expect(scene.touchGesture).toEqual({ kind: 'idle' });
+    expect(scene.touchIntent).toBeNull();
+  });
+
+  it('cancels a touch upgrade released over the other upgrade button', () => {
+    const tryUpgrade = vi.fn();
+    const scene = Object.assign(Object.create(GameScene.prototype), {
+      touchGesture: { kind: 'idle' as const },
+      touchIntent: null,
+      input: { manager: { pointers: [{ id: 9, isDown: true, y: 180 }] } },
+      pendingTap: null,
+      sellDown: null,
+      dragPan: null,
+      pinch: null,
+      endStroke: vi.fn(),
+      endSweep: vi.fn(),
+      overHud: vi.fn(() => true),
+      tryUpgrade,
+    });
+    const capture = (GameScene.prototype as unknown as {
+      captureUpgradeTouch(
+        this: typeof scene,
+        p: { id: number; x: number; y: number; wasTouch: boolean },
+        choice: 0 | 1,
+      ): void;
+    }).captureUpgradeTouch;
+    const finish = (GameScene.prototype as unknown as {
+      finishTouchPointer(
+        this: typeof scene,
+        p: { id: number; x: number; y: number; wasCanceled: boolean },
+        outside: boolean,
+        upgradeChoice?: 0 | 1,
+      ): void;
+    }).finishTouchPointer;
+
+    capture.call(scene, { id: 9, x: 1050, y: 180, wasTouch: true }, 0);
+    finish.call(scene, { id: 9, x: 1150, y: 180, wasCanceled: false }, false, 1);
+
+    expect(tryUpgrade).not.toHaveBeenCalled();
+    expect(scene.touchGesture).toEqual({ kind: 'idle' });
+    expect(scene.touchIntent).toBeNull();
+  });
 });
