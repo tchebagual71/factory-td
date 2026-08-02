@@ -38,6 +38,7 @@ import { ConveyorSystem } from '../systems/ConveyorSystem';
 import { GridSystem, minedResource } from '../systems/GridSystem';
 import { LogisticsSystem } from '../systems/LogisticsSystem';
 import { ProductionSystem } from '../systems/ProductionSystem';
+import { SimulationSystems, stepSimulation } from '../systems/simulationStep';
 import { WaveSystem } from '../systems/WaveSystem';
 import { Building, BuildingType, Dir, ItemType, PathId } from '../types';
 import { beltRun } from '../systems/beltPaint';
@@ -122,6 +123,8 @@ export class GameScene extends Phaser.Scene {
   private waveSystem!: WaveSystem;
   private combat!: CombatSystem;
   private logistics!: LogisticsSystem;
+  private simulation!: SimulationSystems;
+  private readonly simulationHalted = (): boolean => GameState.gameOver || GameState.frozen;
 
   private selected: BuildingType | null = null;
   private buildDir: Dir = 0;
@@ -286,6 +289,13 @@ export class GameScene extends Phaser.Scene {
     this.waveSystem = new WaveSystem(this);
     this.combat = new CombatSystem(this, this.grid, this.waveSystem);
     this.logistics = new LogisticsSystem(this, this.grid);
+    this.simulation = {
+      wave: this.waveSystem,
+      conveyor: this.conveyor,
+      production: this.production,
+      combat: this.combat,
+      logistics: this.logistics,
+    };
 
     // Animations live on the game-wide manager, so this survives scene restarts
     // and must only ever be registered once.
@@ -435,6 +445,13 @@ export class GameScene extends Phaser.Scene {
       this.iso?.render(this);
       return;
     }
+    const dt = Math.min(deltaMs / 1000, MAX_DT) * GameState.speed;
+    stepSimulation(this.simulation, dt, this.simulationHalted);
+    if (GameState.gameOver || GameState.frozen) {
+      if (!GameState.gameOver) this.updateGhost();
+      this.iso?.render(this);
+      return;
+    }
     if (this.saveDirty && GameState.phase === 'build') {
       this.saveTimer -= deltaMs / 1000; // real time, not game-speed scaled
       if (this.saveTimer <= 0) {
@@ -442,12 +459,6 @@ export class GameScene extends Phaser.Scene {
         this.saveRun();
       }
     }
-    const dt = Math.min(deltaMs / 1000, MAX_DT) * GameState.speed;
-    this.waveSystem.update(dt);
-    this.conveyor.update(dt);
-    this.production.update(dt);
-    this.combat.update(dt);
-    this.logistics.update(dt); // observes the settled tick — must run last
     this.updateGhost();
 
     // Deposits thin out continuously; repaint on a slow cadence (or at once

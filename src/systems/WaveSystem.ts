@@ -166,6 +166,7 @@ export class WaveSystem {
       const fromX = e.x;
       const fromY = e.y;
       this.move(e, dt);
+      if (GameState.gameOver) break;
       e.sprite.setPosition(e.x, e.y);
       e.aura?.setPosition(e.x, e.y);
       // Face the way it is walking. Sprites are drawn nose-East, so this is the
