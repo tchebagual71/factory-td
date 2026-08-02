@@ -59,6 +59,7 @@ import type { BoardOverlayVisibility } from './overlayPresentation';
 import { isHudObject } from './hudObjects';
 import { binding, GameAction, phaserKeyName } from './keymap';
 import { coachMessage } from './coach';
+import { idleTouchGesture, touchDown, TouchGesture, touchMove, touchUp } from './touchGesture';
 import { HAPTIC, haptic, reducedFx } from '../utils/feel';
 import { sfx } from '../utils/sfx';
 import type { IsoView } from '../iso/IsoView';
@@ -82,6 +83,13 @@ const LONG_PRESS_MS = 450;
  * both a pan and a tap.
  */
 const PAN_SLOP = 8;
+
+type TouchIntent =
+  | { kind: 'belt'; tx: number; ty: number }
+  | { kind: 'build'; tx: number; ty: number; type: BuildingType }
+  | { kind: 'survey'; tx: number; ty: number }
+  | { kind: 'sell'; tx: number; ty: number }
+  | { kind: 'inspect'; tx: number; ty: number };
 
 /** Mk-pip / float-text tint per specialization path. */
 const PATH_COLORS: Record<PathId, number> = {
@@ -149,6 +157,8 @@ export class GameScene extends Phaser.Scene {
    * the board may be mutated before that decision.
    */
   private pendingTap: { tx: number; ty: number } | null = null;
+  private touchGesture: TouchGesture = idleTouchGesture();
+  private touchIntent: TouchIntent | null = null;
   private saveDirty = false;
   private saveTimer = 0;
   /** false while create() is mid-flight — reset()/applySnapshot() event bursts must not autosave a half-built scene */
@@ -418,6 +428,12 @@ export class GameScene extends Phaser.Scene {
     // REBUILD restarts this scene but the instance keeps its fields; a staged
     // placement or a half-finished erase sweep must not survive into a new run.
     this.pending = null;
+    this.touchGesture = idleTouchGesture();
+    this.touchIntent = null;
+    this.pendingTap = null;
+    this.pinch = null;
+    this.panFrom = null;
+    this.dragPan = null;
     this.facingDirty = true;
     this.beginSweep();
     this.undoSales = [];
@@ -1273,6 +1289,17 @@ export class GameScene extends Phaser.Scene {
       // regardless, so without this guard clicking UPGRADE would immediately
       // deselect the tower underneath and shut the panel it lives in.
       if (p.y >= PLAYFIELD_H || this.overHud(p.x, p.y)) return;
+      if (IS_TOUCH && p.wasTouch) {
+        const down = this.boardPointersDown();
+        const transition = touchDown(this.touchGesture, { id: p.id, x: p.x, y: p.y }, down);
+        this.touchGesture = transition.state;
+        if (transition.cancelBoard) {
+          this.cancelTouchBoardAction();
+          return;
+        }
+        this.captureTouchIntent(p);
+        return;
+      }
       this.pressAt = this.time.now;
       this.pressX = p.x;
       this.pressY = p.y;
@@ -1292,9 +1319,7 @@ export class GameScene extends Phaser.Scene {
       if (this.surveyMode) {
         // A survey costs money and its price climbs every time, so a mis-aimed
         // tap is exactly as expensive as a mis-aimed building — same staging.
-        if (!IS_TOUCH) this.placeSurvey(tx, ty);
-        else if (this.pending?.kind === 'survey' && this.pending.tx === tx && this.pending.ty === ty) this.commitPending();
-        else this.stagePending(tx, ty, false, 'survey');
+        this.placeSurvey(tx, ty);
         return;
       }
       if (this.sellMode) {
@@ -1311,12 +1336,7 @@ export class GameScene extends Phaser.Scene {
       }
       if (this.selected) {
         if (this.selected === 'belt') this.startStroke(tx, ty);
-        else if (!IS_TOUCH) this.tryPlace(this.selected, tx, ty, false);
-        // Touch stages instead of building: a second tap on the same tile
-        // confirms, a tap anywhere else moves it, and CONFIRM does the same as
-        // the second tap for anyone who would rather press a button.
-        else if (this.pending && this.pending.tx === tx && this.pending.ty === ty) this.commitPending();
-        else this.stagePending(tx, ty);
+        else this.tryPlace(this.selected, tx, ty, false);
       } else {
         // Deliberately does NOT act yet. This gesture is not classified until
         // pointerup: the same press becomes a tap (rotate / open the panel) or
@@ -1338,6 +1358,21 @@ export class GameScene extends Phaser.Scene {
      * painting a belt can never refund the belt you just laid down.
      */
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
+      if (IS_TOUCH && p.wasTouch) {
+        const transition = touchUp(this.touchGesture, p.id, this.boardPointersDown(p.id));
+        this.touchGesture = transition.state;
+        if (transition.tap) {
+          if (p.y < PLAYFIELD_H && !this.overHud(p.x, p.y)) this.resolveTouchTap();
+          else this.touchIntent = null;
+        }
+        if (this.touchGesture.kind === 'idle') {
+          this.endStroke();
+          this.endSweep();
+          this.touchIntent = null;
+          this.dragPan = null;
+        }
+        return;
+      }
       this.endStroke();
       this.endSweep();
       const tap = this.pendingTap;
@@ -1348,24 +1383,23 @@ export class GameScene extends Phaser.Scene {
       const held = this.time.now - this.pressAt;
       const moved = Math.hypot(p.x - this.pressX, p.y - this.pressY);
       if (moved > 12) return; // the finger travelled: a pan, not a tap
-      const b = this.grid.cellAt(tap.tx, tap.ty)?.building;
-
-      if (held >= LONG_PRESS_MS) {
-        if (b) {
-          this.beginSaleGroup();
-          this.requestSell(b);
-        }
-        return;
-      }
-      // Sorters spend their tap on configuration; R and Shift+wheel still go
-      // through rotateAt, so changing the guaranteed line never also re-aims it.
-      // Towers open their panel; every other building turns as before.
-      if (b?.type === 'sorter') this.cycleSorterFilter(b);
-      else if (b && !isTower(b.type)) this.rotateBuilding(b);
-      else this.selectTower(b ?? null);
+      this.resolveInspectTap(tap.tx, tap.ty, held);
     });
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if (IS_TOUCH && p.wasTouch) {
+        const down = this.boardPointersDown();
+        const transition = touchMove(this.touchGesture, { id: p.id, x: p.x, y: p.y }, down, PAN_SLOP);
+        this.touchGesture = transition.state;
+        if (transition.cancelBoard) this.cancelTouchBoardAction();
+        if (this.touchGesture.kind === 'pinch') {
+          this.updateGesture();
+          return;
+        }
+        if (transition.beginDrag) this.beginTouchDrag(p);
+        else if (this.touchGesture.kind === 'single-drag') this.continueTouchDrag(p);
+        return;
+      }
       // A live pinch or pan owns the board; painting during one would lay a
       // trail of belts across everything the gesture passes over.
       if (this.updateGesture()) return;
@@ -1433,6 +1467,120 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerup', () => {
       this.panFrom = null;
     });
+  }
+
+  private boardPointersDown(excludeId?: number): number {
+    return this.input.manager.pointers.filter(
+      (pointer) => pointer.isDown && pointer.y < PLAYFIELD_H && pointer.id !== excludeId,
+    ).length;
+  }
+
+  private captureTouchIntent(p: Phaser.Input.Pointer): void {
+    this.pressAt = this.time.now;
+    this.pressX = p.x;
+    this.pressY = p.y;
+    this.pendingTap = null;
+    this.dragPan = null;
+    const { tx, ty } = this.tileAt(p.x, p.y);
+    this.touchIntent = this.surveyMode
+      ? { kind: 'survey', tx, ty }
+      : this.sellMode
+        ? { kind: 'sell', tx, ty }
+        : this.selected === 'belt'
+          ? { kind: 'belt', tx, ty }
+          : this.selected
+            ? { kind: 'build', tx, ty, type: this.selected }
+            : { kind: 'inspect', tx, ty };
+  }
+
+  private cancelTouchBoardAction(): void {
+    this.touchIntent = null;
+    this.pendingTap = null;
+    this.sellDown = null;
+    this.dragPan = null;
+    this.pinch = null;
+    this.endStroke();
+  }
+
+  private resolveTouchTap(): void {
+    const intent = this.touchIntent;
+    this.touchIntent = null;
+    if (!intent) return;
+    if (intent.kind === 'belt') {
+      if (this.selected !== 'belt') return;
+      this.startStroke(intent.tx, intent.ty);
+      this.endStroke();
+    } else if (intent.kind === 'build') {
+      if (this.selected !== intent.type) return;
+      if (this.pending?.kind === 'build' && this.pending.tx === intent.tx && this.pending.ty === intent.ty) this.commitPending();
+      else this.stagePending(intent.tx, intent.ty);
+    } else if (intent.kind === 'survey') {
+      if (!this.surveyMode) return;
+      if (this.pending?.kind === 'survey' && this.pending.tx === intent.tx && this.pending.ty === intent.ty) this.commitPending();
+      else this.stagePending(intent.tx, intent.ty, false, 'survey');
+    } else if (intent.kind === 'sell') {
+      if (!this.sellMode) return;
+      const b = this.grid.cellAt(intent.tx, intent.ty)?.building;
+      if (b) {
+        this.beginSaleGroup();
+        this.requestSell(b);
+      }
+    } else {
+      this.resolveInspectTap(intent.tx, intent.ty, this.time.now - this.pressAt);
+    }
+  }
+
+  private resolveInspectTap(tx: number, ty: number, heldMs: number): void {
+    const b = this.grid.cellAt(tx, ty)?.building;
+    if (heldMs >= LONG_PRESS_MS) {
+      if (b) {
+        this.beginSaleGroup();
+        this.requestSell(b);
+      }
+      return;
+    }
+    if (b?.type === 'sorter') this.cycleSorterFilter(b);
+    else if (b && !isTower(b.type)) this.rotateBuilding(b);
+    else this.selectTower(b ?? null);
+  }
+
+  private beginTouchDrag(p: Phaser.Input.Pointer): void {
+    const intent = this.touchIntent;
+    if (!intent) return;
+    const current = this.tileAt(p.x, p.y);
+    if (intent.kind === 'belt' && this.selected === 'belt') {
+      this.startStroke(intent.tx, intent.ty);
+      this.paintBeltTo(current.tx, current.ty);
+    } else if (intent.kind === 'sell' && this.sellMode) {
+      this.beginSweep();
+      this.beginSaleGroup();
+      this.sweepSell(intent.tx, intent.ty);
+      this.sweepSell(current.tx, current.ty);
+    } else if (intent.kind === 'inspect') {
+      this.dragPan = { x: p.x, y: p.y };
+    } else if (intent.kind === 'survey' && this.surveyMode) {
+      this.stagePending(intent.tx, intent.ty, true, 'survey');
+      this.stagePending(current.tx, current.ty, true, 'survey');
+    } else if (intent.kind === 'build' && this.selected === intent.type) {
+      this.stagePending(intent.tx, intent.ty, true, 'build');
+      this.stagePending(current.tx, current.ty, true, 'build');
+    }
+  }
+
+  private continueTouchDrag(p: Phaser.Input.Pointer): void {
+    const intent = this.touchIntent;
+    if (!intent || p.y >= PLAYFIELD_H) return;
+    const current = this.tileAt(p.x, p.y);
+    if (intent.kind === 'belt' && this.selected === 'belt') this.paintBeltTo(current.tx, current.ty);
+    else if (intent.kind === 'sell' && this.sellMode) this.sweepSell(current.tx, current.ty);
+    else if (intent.kind === 'inspect' && this.dragPan) {
+      this.panScreen(p.x - this.dragPan.x, p.y - this.dragPan.y);
+      this.dragPan = { x: p.x, y: p.y };
+    } else if (intent.kind === 'survey' && this.surveyMode) {
+      this.stagePending(current.tx, current.ty, true, 'survey');
+    } else if (intent.kind === 'build' && this.selected === intent.type) {
+      this.stagePending(current.tx, current.ty, true, 'build');
+    }
   }
 
   /** Is this canvas point over the open upgrade panel? */
