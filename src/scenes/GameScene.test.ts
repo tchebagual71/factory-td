@@ -33,9 +33,13 @@ describe('GameScene screenshake policy', () => {
   it('delegates once to the main camera when effects are enabled', () => {
     setReducedFx(false);
     const cameraShake = vi.fn();
-    const scene = { cameras: { main: { shake: cameraShake } } };
+    const scene = Object.create(GameScene.prototype) as {
+      cameras: { main: { shake: typeof cameraShake } };
+      shake(duration: number, intensity: number): void;
+    };
+    scene.cameras = { main: { shake: cameraShake } };
 
-    GameScene.prototype.shake.call(scene as never, 180, 0.006);
+    scene.shake(180, 0.006);
 
     expect(cameraShake).toHaveBeenCalledOnce();
     expect(cameraShake).toHaveBeenCalledWith(180, 0.006);
@@ -44,9 +48,13 @@ describe('GameScene screenshake policy', () => {
   it('does not touch the camera when reduced effects are enabled', () => {
     setReducedFx(true);
     const cameraShake = vi.fn();
-    const scene = { cameras: { main: { shake: cameraShake } } };
+    const scene = Object.create(GameScene.prototype) as {
+      cameras: { main: { shake: typeof cameraShake } };
+      shake(duration: number, intensity: number): void;
+    };
+    scene.cameras = { main: { shake: cameraShake } };
 
-    GameScene.prototype.shake.call(scene as never, 180, 0.006);
+    scene.shake(180, 0.006);
 
     expect(cameraShake).not.toHaveBeenCalled();
   });
