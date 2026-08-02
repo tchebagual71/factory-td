@@ -124,7 +124,8 @@ export class GameScene extends Phaser.Scene {
   private combat!: CombatSystem;
   private logistics!: LogisticsSystem;
   private simulation!: SimulationSystems;
-  private readonly simulationHalted = (): boolean => GameState.gameOver || GameState.frozen;
+  private readonly simulationHalted = (): boolean =>
+    GameState.gameOver || GameState.frozen || !this.scene.isActive();
 
   private selected: BuildingType | null = null;
   private buildDir: Dir = 0;
@@ -447,7 +448,8 @@ export class GameScene extends Phaser.Scene {
     }
     const dt = Math.min(deltaMs / 1000, MAX_DT) * GameState.speed;
     stepSimulation(this.simulation, dt, this.simulationHalted);
-    if (GameState.gameOver || GameState.frozen) {
+    if (this.simulationHalted()) {
+      if (!this.scene.isActive()) return;
       if (!GameState.gameOver) this.updateGhost();
       this.iso?.render(this);
       return;
