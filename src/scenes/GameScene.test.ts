@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GAME_W, IS_TOUCH, PLAYFIELD_H } from '../config';
+import { makeBuilding } from '../test/helpers';
 import { setReducedFx } from '../utils/feel';
 import { boardOverlayVisibility } from './overlayPresentation';
 import { overlayPlan } from './overlayPolicy';
@@ -57,5 +58,28 @@ describe('GameScene screenshake policy', () => {
     scene.shake(180, 0.006);
 
     expect(cameraShake).not.toHaveBeenCalled();
+  });
+});
+
+describe('GameScene saved building restoration', () => {
+  it.each([
+    { saved: undefined, expected: 0 },
+    { saved: 7, expected: 7 },
+  ])('restores tower ammo $saved as $expected', ({ saved, expected }) => {
+    const tower = makeBuilding('tower', 3, 3);
+    tower.ammo = 12; // proves absent legacy ammo cannot retain placement preload
+    const scene = {
+      grid: { canRestore: () => true },
+      placeBuilding: () => tower,
+      paintSorterFilter: vi.fn(),
+      addMkPip: vi.fn(),
+    };
+    const restore = (GameScene.prototype as unknown as {
+      restoreBuilding(this: typeof scene, saved: Record<string, unknown>): typeof tower | null;
+    }).restoreBuilding;
+    const savedBuilding = { t: 'tower', x: 3, y: 3, d: 0, inv: 90 } as Record<string, unknown>;
+    if (saved !== undefined) savedBuilding.ammo = saved;
+
+    expect(restore.call(scene, savedBuilding)?.ammo).toBe(expected);
   });
 });

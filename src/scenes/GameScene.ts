@@ -1184,7 +1184,7 @@ export class GameScene extends Phaser.Scene {
     const b = this.placeBuilding(sb.t, sb.x, sb.y, sb.d);
     b.mk = sb.mk ?? 1;
     b.path = sb.path ?? null;
-    if (sb.ammo !== undefined) b.ammo = sb.ammo;
+    if (isTower(sb.t)) b.ammo = sb.ammo ?? 0;
     b.fed = sb.fed ?? 0;
     b.timer = sb.timer ?? 0;
     b.crafting = sb.crafting ?? false;

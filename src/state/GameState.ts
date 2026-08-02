@@ -414,6 +414,7 @@ class GameStateClass {
     wave: number;
     speed: 1 | 2 | 3;
     auto: boolean;
+    buildElapsed?: number;
     surveys?: number;
     research?: number;
     researchLevel?: number;
@@ -432,7 +433,7 @@ class GameStateClass {
     this.gameOver = false;
     this.speed = s.speed;
     this.auto = s.auto;
-    this.buildElapsed = 0;
+    this.buildElapsed = s.buildElapsed ?? 0;
     this.tally = emptyTally();
     this.surveys = s.surveys ?? 0;
     this.runKills = 0;

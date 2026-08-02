@@ -9,6 +9,7 @@ import {
   UPGRADE_TREE,
 } from '../data/buildings';
 import { RESERVES } from '../data/map';
+import { EARLY_SEND_WINDOW } from '../data/waves';
 import { Building, BuildingType, Dir, ItemEnt, ItemType, PathId } from '../types';
 
 /** No tile can legitimately hold more than the richest deposit type. */
@@ -91,6 +92,8 @@ export interface SaveV1 {
   wave: number;
   speed: 1 | 2 | 3;
   auto: boolean;
+  /** elapsed build-phase time, used to preserve early-send entitlement */
+  buildElapsed?: number;
   buildings: SavedBuilding[];
   items: SavedItem[];
   /** surveys bought (drives the next survey's price); absent in pre-prospecting saves */
@@ -112,6 +115,7 @@ interface Snapshot {
   wave: number;
   speed: 1 | 2 | 3;
   auto: boolean;
+  buildElapsed?: number;
   surveys?: number;
   research?: number;
   researchLevel?: number;
@@ -139,6 +143,7 @@ export function captureRun(
     wave: gs.wave,
     speed: gs.speed,
     auto: gs.auto,
+    buildElapsed: Math.min(EARLY_SEND_WINDOW, Math.max(0, gs.buildElapsed ?? 0)),
     surveys: gs.surveys ?? 0,
     research: gs.research ?? 0,
     researchLevel: gs.researchLevel ?? 0,
@@ -167,7 +172,7 @@ export function captureBuilding(b: Building): SavedBuilding {
   const sb: SavedBuilding = { t: b.type, x: b.x, y: b.y, d: b.dir, inv: b.invested };
   if (b.mk > 1) sb.mk = b.mk;
   if (b.path) sb.path = b.path;
-  if (b.ammo > 0) sb.ammo = b.ammo;
+  if (isTower(b.type)) sb.ammo = b.ammo;
   if (b.fed > 0) sb.fed = b.fed;
   if (b.timer > 0) sb.timer = b.timer;
   if (b.crafting) sb.crafting = true;
@@ -259,6 +264,10 @@ export function validateSave(raw: unknown): SaveV1 | null {
   if (!isFiniteNum(s.wave) || s.wave < 1 || s.wave > 10000) return null;
   if (s.speed !== 1 && s.speed !== 2 && s.speed !== 3) return null;
   if (typeof s.auto !== 'boolean') return null;
+  if (
+    s.buildElapsed !== undefined &&
+    (!isFiniteNum(s.buildElapsed) || s.buildElapsed < 0 || s.buildElapsed > EARLY_SEND_WINDOW)
+  ) return null;
   if (!Array.isArray(s.buildings) || !Array.isArray(s.items)) return null;
 
   /** cell key -> the building type occupying it, so items can be host-checked below */

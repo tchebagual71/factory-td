@@ -145,4 +145,22 @@ describe('build clock', () => {
     GameState.applySnapshot({ money: 10, lives: 3, wave: 4, speed: 1, auto: true });
     expect(GameState.buildElapsed).toBe(0);
   });
+
+  it('restores buildElapsed from a save snapshot', () => {
+    GameState.applySnapshot({
+      money: 10,
+      lives: 3,
+      wave: 4,
+      speed: 1,
+      auto: false,
+      buildElapsed: 18,
+    });
+    expect(GameState.buildElapsed).toBe(18);
+  });
+
+  it('defaults a legacy snapshot build clock to zero', () => {
+    GameState.buildElapsed = 18;
+    GameState.applySnapshot({ money: 10, lives: 3, wave: 4, speed: 1, auto: false });
+    expect(GameState.buildElapsed).toBe(0);
+  });
 });

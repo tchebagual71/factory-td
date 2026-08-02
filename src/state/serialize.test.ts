@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GRID_W } from '../config';
 import { MACHINES } from '../data/buildings';
+import { EARLY_SEND_WINDOW, earlySendBonus } from '../data/waves';
 import { makeBuilding, makeSprite } from '../test/helpers';
 import { Building, ItemEnt } from '../types';
 import { captureBuilding, captureRun, SaveV1, validateSave } from './serialize';
@@ -25,6 +26,38 @@ function itemOn(b: Building, alpha = 1): ItemEnt {
 }
 
 describe('captureRun → validateSave round trip', () => {
+  it('writes an empty tower magazine explicitly while non-towers omit ammo', () => {
+    const tower = towerAt(7, 5);
+    tower.ammo = 0;
+    const press = makeBuilding('press', 8, 5);
+
+    const save = captureRun([tower, press], [], SNAPSHOT);
+
+    expect(save.buildings[0]).toHaveProperty('ammo', 0);
+    expect(save.buildings[1]).not.toHaveProperty('ammo');
+  });
+
+  it('clamps the saved build clock to the early-send window', () => {
+    expect(captureRun([], [], { ...SNAPSHOT, buildElapsed: 7.5 }).buildElapsed).toBe(7.5);
+    expect(captureRun([], [], { ...SNAPSHOT, buildElapsed: EARLY_SEND_WINDOW * 4 }).buildElapsed)
+      .toBe(EARLY_SEND_WINDOW);
+  });
+
+  it('preserves the early-send entitlement through JSON validation', () => {
+    const before = earlySendBonus(SNAPSHOT.wave, 12.5);
+    const save = captureRun([], [], { ...SNAPSHOT, buildElapsed: 12.5 });
+    const back = validateSave(JSON.parse(JSON.stringify(save)))!;
+    expect(earlySendBonus(back.wave, back.buildElapsed ?? 0)).toBe(before);
+  });
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, EARLY_SEND_WINDOW + 0.001])(
+    'rejects invalid buildElapsed %s',
+    (buildElapsed) => {
+      const raw = { ...captureRun([], [], SNAPSHOT), buildElapsed };
+      expect(validateSave(raw)).toBeNull();
+    },
+  );
+
   it('survives JSON with buildings, counters, and items intact', () => {
     const belt = makeBuilding('belt', 5, 5, 1);
     const press = makeBuilding('press', 6, 5);
