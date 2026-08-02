@@ -222,25 +222,15 @@ git commit -m "fix: keep phone menu text readable"
 - Consumes: Phaser's normal per-object text rendering.
 - Produces: no scene-level `ADDED_TO_SCENE` listener and no global `setResolution()` call.
 
-- [ ] **Step 1: Add a regression source-contract test**
+- [ ] **Step 1: Use the phone readability test as the regression guard**
 
-Add a test to `src/scenes/menuLayout.test.ts` that reads the three scene sources and asserts they do not import or call `sharpenText`, and that `src/utils/sharpText.ts` is absent after implementation. The production change that makes this pass is removal of the global override and its call sites.
+The failing rendered-font-size cases from Task 1 are the behavioral regression tests for this repair. Do not add a source-grep test for `sharpenText`: symbol presence is an implementation detail, while readable output is the contract.
 
-- [ ] **Step 2: Run the regression test and verify RED**
-
-Run:
-
-```bash
-npx vitest run src/scenes/menuLayout.test.ts
-```
-
-Expected: FAIL because all three scenes still call `sharpenText` and the helper still exists.
-
-- [ ] **Step 3: Remove the helper and call sites**
+- [ ] **Step 2: Remove the helper and call sites**
 
 Delete the imports and `sharpenText(this)` calls from all three scenes, then delete `src/utils/sharpText.ts`. Do not change `pixelArt: true` or the canvas CSS.
 
-- [ ] **Step 4: Run focused tests and verify GREEN**
+- [ ] **Step 3: Run focused tests and verify GREEN**
 
 Run:
 
@@ -251,10 +241,10 @@ npm run typecheck
 
 Expected: tests and type checking pass.
 
-- [ ] **Step 5: Commit the rendering cleanup**
+- [ ] **Step 4: Commit the rendering cleanup**
 
 ```bash
-git add src/scenes/GameScene.ts src/scenes/MenuScene.ts src/scenes/UIScene.ts src/scenes/menuLayout.test.ts src/utils/sharpText.ts
+git add src/scenes/GameScene.ts src/scenes/MenuScene.ts src/scenes/UIScene.ts src/utils/sharpText.ts
 git commit -m "fix: remove global Phaser text resolution override"
 ```
 
