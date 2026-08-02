@@ -21,6 +21,17 @@ class InputEmitter {
   }
 }
 
+class InteractiveFrame extends InputEmitter {
+  setOrigin(): this { return this; }
+  setStrokeStyle(): this { return this; }
+  setInteractive(): this { return this; }
+  setFillStyle(): this { return this; }
+}
+
+class ButtonLabel {
+  setOrigin(): this { return this; }
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   GameState.events
@@ -182,6 +193,7 @@ describe('production scene lifecycle seams', () => {
     const scene = Object.assign(Object.create(GameScene.prototype), {
       touchGesture: { kind: 'pending-single' as const, owner: 1, x: 96, y: 112 },
       touchIntent: { kind: 'belt' as const, tx: 3, ty: 4 },
+      activeTouchPointers: new Set([1]),
       input: { manager: { pointers: [{ id: 1, isDown: true, y: 112 }] } },
       pendingTap: null,
       sellDown: null,
@@ -215,6 +227,7 @@ describe('production scene lifecycle seams', () => {
     const scene = Object.assign(Object.create(GameScene.prototype), {
       touchGesture: { kind: 'pending-single' as const, owner: 1, x: 96, y: 112 },
       touchIntent: { kind: 'belt' as const, tx: 3, ty: 4 },
+      activeTouchPointers: new Set([1]),
       input: { manager: { pointers: [
         { id: 1, isDown: true, y: 112 },
         { id: 2, isDown: true, y: 180 },
@@ -267,6 +280,7 @@ describe('production scene lifecycle seams', () => {
       touchGesture: { kind: 'idle' as const },
       touchIntent: null,
       touchDeliveries: new WeakMap<object, Set<string>>(),
+      activeTouchPointers: new Set<number>(),
       input: { manager: { pointers: [{ id: 7, isDown: true, y: 180 }] } },
       pendingTap: null,
       sellDown: null,
@@ -326,6 +340,7 @@ describe('production scene lifecycle seams', () => {
       touchGesture: { kind: 'idle' as const },
       touchIntent: null,
       touchDeliveries: new WeakMap<object, Set<string>>(),
+      activeTouchPointers: new Set<number>(),
       input: { manager: { pointers: [{ id: 9, isDown: true, y: 180 }] } },
       pendingTap: null,
       sellDown: null,
@@ -405,9 +420,238 @@ describe('production scene lifecycle seams', () => {
     expect(scene.touchIntent).toBeNull();
   });
 
+  it('classifies a HUD touch before the shared button action can commit board state', () => {
+    const boardPointer = {
+      id: 1, x: 96, y: 112, isDown: true, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const hudPointer = {
+      id: 2, x: 400, y: 700, isDown: true, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const scene = Object.assign(Object.create(GameScene.prototype), {
+      touchGesture: { kind: 'idle' as const },
+      touchIntent: null,
+      touchDeliveries: new WeakMap<object, Set<string>>(),
+      activeTouchPointers: new Set<number>(),
+      input: { manager: { pointers: [boardPointer, hudPointer] } },
+      pendingTap: null,
+      sellDown: null,
+      dragPan: null,
+      pinch: null,
+      endStroke: vi.fn(),
+      endSweep: vi.fn(),
+    });
+    const setupGame = (GameScene.prototype as unknown as {
+      setupForwardedTouchLifecycle(this: typeof scene): void;
+    }).setupForwardedTouchLifecycle;
+    const routeDown = (GameScene.prototype as unknown as {
+      routeTouchPointerDown(this: typeof scene, p: typeof boardPointer, capture?: () => void): void;
+    }).routeTouchPointerDown;
+    const frame = new InteractiveFrame();
+    const ui = Object.assign(Object.create(UIScene.prototype), {
+      hudTouchPointers: new Set<number>(),
+      add: {
+        rectangle: () => frame,
+        text: () => new ButtonLabel(),
+      },
+    });
+    const hudButton = (UIScene.prototype as unknown as {
+      hudButton(
+        this: typeof ui,
+        x: number, y: number, w: number, h: number, text: string, fontSize: number,
+        action: () => void,
+      ): { frame: InteractiveFrame };
+    }).hudButton;
+    const commitPending = vi.fn();
+
+    setupGame.call(scene);
+    routeDown.call(scene, boardPointer, () => {
+      scene.touchIntent = { kind: 'build', tx: 3, ty: 4, type: 'tower' };
+    });
+    hudButton.call(ui, 0, 0, 48, 48, 'PLACE', 14, () => {
+      expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+      expect(scene.touchIntent).toBeNull();
+      commitPending();
+    });
+
+    frame.emit('pointerdown', hudPointer);
+
+    expect(commitPending).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['ordinary release', false],
+    ['canceled release', true],
+  ] as const)('forwards an empty-over %s for a previously captured HUD touch', (_name, wasCanceled) => {
+    const uiInput = new InputEmitter();
+    const ui = Object.assign(Object.create(UIScene.prototype), {
+      input: uiInput,
+      events: new InputEmitter(),
+      hudTouchPointers: new Set<number>(),
+    });
+    const setupUi = (UIScene.prototype as unknown as {
+      setupTouchForwarding(this: typeof ui): void;
+    }).setupTouchForwarding;
+    const hudPointer = {
+      id: 2, x: 400, y: 700, isDown: true, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const boardPointer = {
+      id: 1, x: 96, y: 112, isDown: false, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const scene = Object.assign(Object.create(GameScene.prototype), {
+      touchGesture: { kind: 'idle' as const },
+      touchIntent: null,
+      touchDeliveries: new WeakMap<object, Set<string>>(),
+      activeTouchPointers: new Set<number>(),
+      input: { manager: { pointers: [boardPointer, hudPointer] } },
+      pendingTap: null,
+      sellDown: null,
+      dragPan: null,
+      pinch: null,
+      endStroke: vi.fn(),
+      endSweep: vi.fn(),
+      overHud: vi.fn(() => false),
+    });
+    const setupGame = (GameScene.prototype as unknown as {
+      setupForwardedTouchLifecycle(this: typeof scene): void;
+    }).setupForwardedTouchLifecycle;
+    const routeDown = (GameScene.prototype as unknown as {
+      routeTouchPointerDown(this: typeof scene, p: typeof boardPointer, capture?: () => void): void;
+    }).routeTouchPointerDown;
+
+    setupGame.call(scene);
+    setupUi.call(ui);
+    uiInput.emit('pointerdown', hudPointer, [{}]);
+    expect(scene.touchGesture).toMatchObject({ kind: 'pending-single', owner: 2 });
+
+    hudPointer.isDown = false;
+    hudPointer.wasCanceled = wasCanceled;
+    hudPointer.event = {};
+    uiInput.emit('pointerup', hudPointer, []);
+
+    expect(scene.touchGesture).toEqual({ kind: 'idle' });
+    expect(scene.touchIntent).toBeNull();
+
+    boardPointer.isDown = true;
+    boardPointer.event = {};
+    routeDown.call(scene, boardPointer, () => {
+      scene.touchIntent = { kind: 'belt', tx: 8, ty: 9 };
+    });
+    expect(scene.touchGesture).toMatchObject({ kind: 'pending-single', owner: 1 });
+    expect(scene.touchIntent).toEqual({ kind: 'belt', tx: 8, ty: 9 });
+  });
+
+  it('clears captured HUD ownership when UIScene sleeps before pointerup', () => {
+    const uiInput = new InputEmitter();
+    const sceneEvents = new InputEmitter();
+    const ui = Object.assign(Object.create(UIScene.prototype), {
+      input: uiInput,
+      events: sceneEvents,
+      hudTouchPointers: new Set<number>(),
+    });
+    const setupUi = (UIScene.prototype as unknown as {
+      setupTouchForwarding(this: typeof ui): void;
+    }).setupTouchForwarding;
+    const hudPointer = {
+      id: 2, x: 400, y: 700, isDown: true, wasTouch: true, wasCanceled: false, event: {},
+    };
+
+    setupUi.call(ui);
+    uiInput.emit('pointerdown', hudPointer, [{}]);
+    expect(ui.hudTouchPointers).toEqual(new Set([2]));
+
+    sceneEvents.emit('sleep');
+
+    expect(ui.hudTouchPointers).toEqual(new Set());
+  });
+
+  it('keeps pinch ownership when the board finger releases before a held HUD finger', () => {
+    const uiInput = new InputEmitter();
+    const ui = Object.assign(Object.create(UIScene.prototype), {
+      input: uiInput,
+      events: new InputEmitter(),
+      hudTouchPointers: new Set<number>(),
+    });
+    const setupUi = (UIScene.prototype as unknown as {
+      setupTouchForwarding(this: typeof ui): void;
+    }).setupTouchForwarding;
+    const boardPointer = {
+      id: 1, x: 96, y: 112, isDown: true, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const hudPointer = {
+      id: 2, x: 400, y: 700, isDown: true, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const thirdPointer = {
+      id: 3, x: 160, y: 128, isDown: false, wasTouch: true, wasCanceled: false, event: {},
+    };
+    const scene = Object.assign(Object.create(GameScene.prototype), {
+      touchGesture: { kind: 'idle' as const },
+      touchIntent: null,
+      touchDeliveries: new WeakMap<object, Set<string>>(),
+      activeTouchPointers: new Set<number>(),
+      input: { manager: { pointers: [boardPointer, hudPointer, thirdPointer] } },
+      pendingTap: null,
+      sellDown: null,
+      dragPan: null,
+      pinch: null,
+      endStroke: vi.fn(),
+      endSweep: vi.fn(),
+      overHud: vi.fn(() => false),
+    });
+    const setupGame = (GameScene.prototype as unknown as {
+      setupForwardedTouchLifecycle(this: typeof scene): void;
+    }).setupForwardedTouchLifecycle;
+    const routeDown = (GameScene.prototype as unknown as {
+      routeTouchPointerDown(this: typeof scene, p: typeof boardPointer, capture?: () => void): void;
+    }).routeTouchPointerDown;
+    const finish = (GameScene.prototype as unknown as {
+      finishTouchPointer(this: typeof scene, p: typeof boardPointer, outside: boolean): void;
+    }).finishTouchPointer;
+    const thirdMutation = vi.fn();
+
+    setupGame.call(scene);
+    setupUi.call(ui);
+    routeDown.call(scene, boardPointer, () => {
+      scene.touchIntent = { kind: 'belt', tx: 3, ty: 4 };
+    });
+    uiInput.emit('pointerdown', hudPointer, [{}]);
+    expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+
+    boardPointer.isDown = false;
+    boardPointer.event = {};
+    finish.call(scene, boardPointer, false);
+    expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+
+    thirdPointer.isDown = true;
+    thirdPointer.event = {};
+    routeDown.call(scene, thirdPointer, thirdMutation);
+    expect(thirdMutation).not.toHaveBeenCalled();
+    expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+
+    thirdPointer.isDown = false;
+    thirdPointer.event = {};
+    finish.call(scene, thirdPointer, false);
+    expect(scene.touchGesture).toEqual({ kind: 'pinch' });
+
+    hudPointer.isDown = false;
+    hudPointer.event = {};
+    uiInput.emit('pointerup', hudPointer, []);
+    expect(scene.touchGesture).toEqual({ kind: 'idle' });
+
+    thirdPointer.isDown = true;
+    thirdPointer.event = {};
+    routeDown.call(scene, thirdPointer, thirdMutation);
+    routeDown.call(scene, thirdPointer, thirdMutation);
+    expect(thirdMutation).toHaveBeenCalledOnce();
+    expect(scene.touchGesture).toMatchObject({ kind: 'pending-single', owner: 3 });
+  });
+
   it('forwards HUD-captured touch lifecycle through the top scene without duplicate delivery', () => {
     const uiInput = new InputEmitter();
-    const ui = { input: uiInput };
+    const ui = Object.assign(Object.create(UIScene.prototype), {
+      input: uiInput,
+      events: new InputEmitter(),
+      hudTouchPointers: new Set<number>(),
+    });
     const setupUi = (UIScene.prototype as unknown as {
       setupTouchForwarding(this: typeof ui): void;
     }).setupTouchForwarding;
@@ -438,6 +682,7 @@ describe('production scene lifecycle seams', () => {
       touchGesture: { kind: 'idle' as const },
       touchIntent: null,
       touchDeliveries: new WeakMap<object, Set<string>>(),
+      activeTouchPointers: new Set<number>(),
       input: { manager: { pointers: [boardPointer, hudPointer] } },
       pendingTap: null,
       sellDown: null,

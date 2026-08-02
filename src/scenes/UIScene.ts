@@ -103,31 +103,55 @@ export class UIScene extends Phaser.Scene {
   /** UI-local cursor: rotating the contract card never mutates GameState.missions. */
   private presentedMission: string | null = null;
   private boardOverlay: BoardOverlayVisibility = { objective: false, coach: false, inspector: false };
+  /** Touches whose down phase was captured by an interactive UIScene object. */
+  private hudTouchPointers = new Set<number>();
 
   constructor() {
     super('ui');
   }
 
+  private captureHudTouchDown(p: Phaser.Input.Pointer): void {
+    if (!p.wasTouch || this.hudTouchPointers.has(p.id)) return;
+    this.hudTouchPointers.add(p.id);
+    GameState.events.emit('ui:touchdown', p);
+  }
+
+  /** Wrap every HUD action so touch classification happens before mutation. */
+  private hudAction(action: () => void): (p: Phaser.Input.Pointer) => void {
+    return (p) => {
+      this.captureHudTouchDown(p);
+      action();
+    };
+  }
+
   /**
    * Interactive objects in this top scene hide captured pointer phases from
-   * GameScene. Forward those phases after the HUD object handler has run so a
-   * second touch can cancel board work without changing the HUD action.
+   * GameScene. Keep ownership from down through termination; `currentlyOver`
+   * can be empty after a captured pointer moves out or is canceled.
    */
   private setupTouchForwarding(): void {
+    this.hudTouchPointers.clear();
+    // A MENU touch can sleep UIScene before its pointerup is delivered. Clear
+    // ownership at that lifecycle edge so Phaser pointer-ID reuse stays fresh.
+    this.events.on('sleep', () => this.hudTouchPointers.clear());
     this.input.on(
       'pointerdown',
       (p: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => {
-        if (p.wasTouch && over.length > 0) GameState.events.emit('ui:touchdown', p);
+        if (over.length > 0) this.captureHudTouchDown(p);
       },
     );
     this.input.on(
       'pointerup',
       (p: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => {
-        if (p.wasTouch && over.length > 0) GameState.events.emit('ui:touchup', p);
+        if (!p.wasTouch) return;
+        const tracked = this.hudTouchPointers.delete(p.id);
+        if (tracked || over.length > 0) GameState.events.emit('ui:touchup', p);
       },
     );
     this.input.on('pointerupoutside', (p: Phaser.Input.Pointer) => {
-      if (p.wasTouch) GameState.events.emit('ui:touchupoutside', p);
+      if (p.wasTouch && this.hudTouchPointers.delete(p.id)) {
+        GameState.events.emit('ui:touchupoutside', p);
+      }
     });
   }
 
@@ -189,7 +213,7 @@ export class UIScene extends Phaser.Scene {
       .setOrigin(0.5);
     prospectBtn.on('pointerover', () => prospectBtn.setFillStyle(controlVisual('hover').fill, 0.98));
     prospectBtn.on('pointerout', () => prospectBtn.setFillStyle(controlVisual('idle').fill, 0.98));
-    prospectBtn.on('pointerdown', () => GameState.events.emit('ui:prospect'));
+    prospectBtn.on('pointerdown', this.hudAction(() => GameState.events.emit('ui:prospect')));
     GameState.events.on('surveys', () => this.refreshStats());
     // Armed survey mode: the button stays lit until a site is picked or cancelled
     GameState.events.on('surveymode', (on: boolean) => {
@@ -474,7 +498,7 @@ export class UIScene extends Phaser.Scene {
     // untouched and closing restores whatever they had chosen.
     GameState.modalOpen = true;
     const dim = this.add.rectangle(0, 0, GAME_W, GAME_H, 0x000000, 0.78).setOrigin(0).setDepth(80).setInteractive();
-    dim.on('pointerdown', () => this.closeHelp());
+    dim.on('pointerdown', this.hudAction(() => this.closeHelp()));
     const panel = this.add
       .rectangle(x, y, W, H, 0x141625, 0.99)
       .setOrigin(0)
@@ -613,7 +637,7 @@ export class UIScene extends Phaser.Scene {
       .setOrigin(0.5);
     frame.on('pointerover', () => frame.setFillStyle(controlVisual('hover', accent).fill));
     frame.on('pointerout', () => frame.setFillStyle(visual.fill));
-    frame.on('pointerdown', onClick);
+    frame.on('pointerdown', this.hudAction(onClick));
     return { frame, label };
   }
 
@@ -645,10 +669,10 @@ export class UIScene extends Phaser.Scene {
           ...FONT, fontSize: '12px', fontStyle: 'bold', color: cat.css,
         })
         .setOrigin(0.5);
-      frame.on('pointerdown', () => {
+      frame.on('pointerdown', this.hudAction(() => {
         sfx.place();
         this.showShelf(gi);
-      });
+      }));
       this.tabParts.push({ frame, label, color: cat.color });
     });
   }
@@ -697,7 +721,7 @@ export class UIScene extends Phaser.Scene {
         .setOrigin(0)
         .setStrokeStyle(2, cat.color, 0.45)
         .setInteractive({ useHandCursor: true });
-      frame.on('pointerdown', () => GameState.events.emit('ui:select', info.type));
+      frame.on('pointerdown', this.hudAction(() => GameState.events.emit('ui:select', info.type)));
       frame.on('pointerover', () => {
         if (this.selectedType === info.type) {
           frame.setFillStyle(UI_COLOR.surfaceRaised.hex).setStrokeStyle(3, UI_COLOR.money.hex, 1);
@@ -915,7 +939,7 @@ export class UIScene extends Phaser.Scene {
         ...FONT, fontSize: ROOMY_UI ? '12px' : '11px', fontStyle: 'bold', color: UI_COLOR.ink.css,
       })
       .setOrigin(0.5);
-    this.waveBtn.on('pointerdown', () => GameState.events.emit('ui:startwave'));
+    this.waveBtn.on('pointerdown', this.hudAction(() => GameState.events.emit('ui:startwave')));
 
     const [a, s, l, m] = toggles;
     const auto = this.hudButton(a.x, a.y, a.w, a.h, 'AUTO OFF', 13, () => GameState.toggleAuto());
@@ -982,7 +1006,7 @@ export class UIScene extends Phaser.Scene {
     }).setOrigin(1, 0);
     container.add([frame, name, progress, fill, extra]);
     frame.setInteractive({ useHandCursor: true });
-    frame.on('pointerdown', () => this.cycleMissionCard());
+    frame.on('pointerdown', this.hudAction(() => this.cycleMissionCard()));
     this.missionCard = { container, frame, name, progress, fill, extra };
   }
 
@@ -1048,10 +1072,10 @@ export class UIScene extends Phaser.Scene {
       .text(zone.w - inset - closeSize / 2, zone.h / 2, '×', { ...FONT, fontSize: IS_TOUCH ? '24px' : '16px', color: UI_COLOR.textMuted.css })
       .setOrigin(0.5);
     this.coachCard.add([frame, badge, this.coachStep, this.coachAction, this.descText, close, closeText]);
-    close.on('pointerdown', () => {
+    close.on('pointerdown', this.hudAction(() => {
       this.coachDismissed = true;
       this.applyOverlayPlan();
-    });
+    }));
   }
 
   private refreshCoach(message: CoachMessage): void {
@@ -1242,7 +1266,7 @@ export class UIScene extends Phaser.Scene {
     // exactly that long — cleared when the next wave starts (`phase`), or by a
     // tap for anyone who wants the board back sooner.
     bg.setInteractive({ useHandCursor: true });
-    bg.on('pointerdown', () => this.closeReportNow());
+    bg.on('pointerdown', this.hudAction(() => this.closeReportNow()));
     GameState.events.emit('report', true);
   }
 
@@ -1365,7 +1389,7 @@ export class UIScene extends Phaser.Scene {
         parts.forEach((o) => this.tweens.killTweensOf(o));
         settle(0, 110, 'Quad.out');
       });
-      frame.on('pointerdown', () => this.pickCard(card.id));
+      frame.on('pointerdown', this.hudAction(() => this.pickCard(card.id)));
 
       // The deal: each card drops in and overshoots, one after the next, with
       // its rarity's sting. A rarer card dwells fractionally longer before the
@@ -1649,13 +1673,13 @@ export class UIScene extends Phaser.Scene {
       this.terminalOpen = false;
       if (restoreAmbient) this.restoreLowerOverlays();
     };
-    btn.on('pointerdown', () => {
+    btn.on('pointerdown', this.hudAction(() => {
       clearOverlay(true);
       this.scene.get('game').scene.restart();
-    });
-    menuBtn.on('pointerdown', () => {
+    }));
+    menuBtn.on('pointerdown', this.hudAction(() => {
       clearOverlay();
       GameState.events.emit('ui:menu'); // GameScene owns the transition (and any final save)
-    });
+    }));
   }
 }

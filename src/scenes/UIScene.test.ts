@@ -34,7 +34,7 @@ describe('UIScene description handoff', () => {
   it('gives a hovered build slot the semantic bright hover border', () => {
     const frames: PaletteObject[] = [];
     const object = () => new PaletteObject();
-    const scene = {
+    const scene = Object.assign(Object.create(UIScene.prototype), {
       add: {
         container: () => ({ add: () => undefined }),
         rectangle: (_x: number, _y: number, _w: number, _h: number, fill: number) => {
@@ -56,7 +56,7 @@ describe('UIScene description handoff', () => {
       paletteState: new Map(),
       showDesc: () => undefined,
       showHint: () => undefined,
-    };
+    });
     const buildPalette = (UIScene.prototype as unknown as { buildPalette(layout: unknown): void }).buildPalette;
     buildPalette.call(scene, {
       slots: BUILD_INFO.map((_, index) => ({ x: index * 80, y: 0, w: 76, h: 64 })),
@@ -72,7 +72,7 @@ describe('UIScene description handoff', () => {
   it('keeps a selected build slot gold rim through hover and hover-out', () => {
     const frames: PaletteObject[] = [];
     const object = () => new PaletteObject();
-    const scene = {
+    const scene = Object.assign(Object.create(UIScene.prototype), {
       add: {
         container: () => ({ add: () => undefined }),
         rectangle: (_x: number, _y: number, _w: number, _h: number, fill: number) => {
@@ -94,7 +94,7 @@ describe('UIScene description handoff', () => {
       paletteState: new Map(),
       showDesc: () => undefined,
       showHint: () => undefined,
-    };
+    });
     const proto = UIScene.prototype as unknown as {
       buildPalette(layout: unknown): void;
       refreshSelection(type: 'belt'): void;
